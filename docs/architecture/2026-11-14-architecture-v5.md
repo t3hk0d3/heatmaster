@@ -1,6 +1,6 @@
 # Heatmaster architecture v5
 
-**Status:** revision 3, after two adversarial reviews and a re-check (section 16). Decisions D1–D5 made by the user on 2026-11-14. Replaces the architecture of plan 1 v4. Overrides spec §4 (in part), §5.1, §5.10, §9.1–9.4 and §9.7; the product design is otherwise unchanged (see spec §10).
+**Status:** revision 4, after two adversarial reviews, a re-check, and two reviews of the plan built on it (sections 16 and 17). Decisions D1–D5 made by the user on 2026-11-14. Replaces the architecture of plan 1 v4. Overrides spec §4 (in part), §5.1, §5.10, §9.1–9.4 and §9.7; the product design is otherwise unchanged (see spec §10).
 
 **Sources:** five independent redesigns in `proposals/`, four research reports in `../research/`. Facts about Home Assistant and Zigbee2MQTT (Z2M) come from reading current docs and source. None is measured on this house yet; section 12 lists what must be measured. Numbers marked *provisional* are set by those measurements.
 
@@ -208,7 +208,7 @@ All services are admin-only, check that in the handler, and call one pure `core`
 
 Rollback is `apply_config` with no rooms.
 
-**Per room:** a device with a `climate` entity (read-only target until plan 2), a temperature sensor, a problem binary sensor and a sync sensor with states `in_sync`, `pending`, `not_holding`, `unknown`, `held`, `frozen`.
+**Per room:** a device with a `climate` entity (read-only target until plan 2), a temperature sensor, a problem binary sensor and a sync sensor with states `in_sync`, `pending`, `not_holding`, `unverified`, `held`, `frozen`.
 
 **Problems** are level-triggered and synced to Repairs as plain issues that name the service to use (fix flows come in plan 3): config unreadable, ledger unreadable, transport unusable, valve not adopted, valve orphaned, valve unsupported, valve silent, setting not holding, release stalled, schedule not followed, room has no fresh temperature, sensor stale, sensor liveness unobservable (an MQTT sensor that is not a Z2M device), temperature feed lost.
 
@@ -291,3 +291,25 @@ The re-check of revision 2 found four more, applied in revision 3:
 | A rejoining TRV-ZBT was refused because of Heatmaster's own group 3 | Refusals apply only to valves without a record (§6) |
 | TRV-ZBT days of another group could read as equal; restoring them would write the wrong group's days | Days observed only with edit group 3; not captured or restored on TRV-ZBT (§7, §10) |
 | "Schedule not followed" fired on a knob turn | Narrowed to the previous set point's temperature, 5–15 min after a change (§7) |
+
+## 17. Refinements made while planning
+
+Two reviews of plan 1 found gaps that belong to the design. They are part of this architecture; the plan holds the exact contracts and wins on file structure, the lists of effects and events, and the transport contract.
+
+| Finding | Refinement |
+|---|---|
+| A valve could never join: only valves already in the config were followed, so a new one had no observed settings to capture | Every transport device that has a profile is followed, configured or not. A valve from which no message has arrived cannot join |
+| A ledger file that vanished would be replaced by an empty one, dropping release orders and letting Heatmaster's values be captured as originals | A missing ledger while the config has valves counts as unreadable |
+| A release could finish at once on a stale "equal since" from an earlier release | Reset while managed; must be later than the release order |
+| The setpoint write could reach a releasing valve | Managed valves only |
+| "Schedule not followed" fired while writes were held or just after an edit | Only when not held and the schedule has been observed equal since before the set point |
+| A long broker outage looked like every valve being dead | While the link is down liveness is unknown; the outage is one problem of its own |
+| An MQTT reconnect can hide a Zigbee2MQTT restart | A reconnect counts as a bridge restart |
+| Marks set by an event during a tick's effects were overwritten | The tick's memory is stored before the first effect is awaited |
+| A publish that failed still counted as asserted | A failed publish marks the valve's groups again |
+| Preview listed a marked group ten times, or not at all | Preview treats each mark as ready once |
+| A TRV-ZBT whose active group could not be read might have had its live schedule overwritten | Joining needs the active group observed and not 3; this cannot be overridden |
+| A group that is both different and marked | All its members are sent |
+| Sync state `unknown` collided with Home Assistant's own | Renamed `unverified`; a valve not heard since start is `unverified`, not `in_sync` |
+| The 7-day schedule assert never fires in a house restarted weekly | Known limit: the schedule is then covered by the valve not following it |
+| Event handling lived in the shell | `core/events`: pure, shared by the runtime and the simulator |
