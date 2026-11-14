@@ -72,3 +72,9 @@ http://:8080 {
 ```
 
 https://caddyserver.com/docs/caddyfile/matchers#remote-ip, https://caddyserver.com/docs/caddyfile/patterns#single-page-apps-spas, https://caddyserver.com/docs/caddyfile/directives#directive-order, https://github.com/caddyserver/caddy/releases/tag/v2.11.9
+
+## Corrections found later (2026-11-14, plan review)
+
+- Item 5: the path for enabling an s6-overlay v3 service is believed to be `/etc/s6-overlay/s6-rc.d/user/contents.d/<service>`, not `user-bundles.d`. Confirm against the s6-overlay README before use.
+- Item 5: s6 services do not inherit the container's environment unless their run script starts through `with-contenv`. Not checked here.
+- Not covered here and used by the plan, each to be confirmed where the plan says so: whether a non-admin user can reach a `panel_admin` app through ingress; that the in-process test broker speaks MQTT 3.1.1 only; changing MQTT.js's protocol version between attempts; what a retained message looks like to a new subscriber.
