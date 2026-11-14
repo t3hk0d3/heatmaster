@@ -79,6 +79,11 @@ input[type=range]{accent-color:var(--text-accent);min-width:0}
 .rc .big{font-size:26px;line-height:1.1}
 .rc .top{display:flex;align-items:center;gap:6px}
 .rc .top .ch{margin-left:auto}
+.rtg{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:8px}
+.rt{border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;background:var(--surface-1)}
+.rt .n{font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:4px}
+.rt .t{font-size:22px;font-weight:500;line-height:1.2}
+.rt .s{font-size:11px}
 .day{display:grid;grid-template-columns:84px minmax(0,1fr) 34px;gap:10px;align-items:center;margin-bottom:8px}
 .bar{display:flex;height:34px;border-radius:var(--radius);overflow:hidden;font-size:12px}
 .bar span{display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
@@ -120,6 +125,7 @@ footer{color:var(--text-muted);font-size:12px}
 <symbol id="i-back" viewBox="0 0 24 24"><path d="M5 12h14 M5 12l6-6 M5 12l6 6"/></symbol>
 <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6h16 M4 12h16 M4 18h16"/></symbol>
 <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z"/></symbol>
+<symbol id="i-tiles" viewBox="0 0 24 24"><path d="M4 4h4v4H4z M10 4h4v4h-4z M16 4h4v4h-4z M4 10h4v4H4z M10 10h4v4h-4z M16 10h4v4h-4z M4 16h4v4H4z M10 16h4v4h-4z M16 16h4v4h-4z"/></symbol>
 <symbol id="i-dots" viewBox="0 0 24 24"><path d="M5 12h.01 M12 12h.01 M19 12h.01" stroke-width="3"/></symbol>
 <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol>
@@ -130,38 +136,23 @@ footer{color:var(--text-muted);font-size:12px}
   <h1>Heatmaster UI sketches</h1>
   <p class="lede">Rough mockups of the admin panel and the family room card. All values are made-up sample data. Controls are drawn, not wired. The first-run setup wizard is not drawn yet.</p>
   <nav aria-label="Sketches">
-    <a href="#rooms-list">Rooms, list</a><a href="#rooms-cards">Rooms, cards</a><a href="#room">Room detail</a><a href="#schedule">Schedule, presets</a><a href="#curve">Schedule, Advanced</a><a href="#seasons">Seasons</a><a href="#modes">House modes</a><a href="#heat">Heat source</a><a href="#health">Health</a><a href="#card">Room card</a>
+    <a href="#rooms-cards">Rooms, cards</a><a href="#rooms-tiles">Rooms, tiles</a><a href="#room">Room detail</a><a href="#schedule">Schedule, presets</a><a href="#curve">Schedule, Advanced</a><a href="#seasons">Seasons</a><a href="#modes">House modes</a><a href="#heat">Heat source</a><a href="#health">Health</a><a href="#card">Room card</a>
   </nav>
 </header>
 
-<section id="rooms-list">
-  <h2>Rooms, as a list</h2>
-  <p class="cap">Option A. One dense row per room: current and target temperature, what happens next, and why the room is or isn't asking for heat.</p>
-  <div class="frame"><div class="mock">
+<section id="rooms-cards">
+  <h2>Rooms tab, cards</h2>
+  <p class="cap">The default view of the Rooms tab. A status strip for the whole house, then one card per room with its temperature, target, what happens next and any problem.</p>
+  <div class="frame"><div class="mock free">
     <div class="row"><svg class="ic t-warn" style="font-size:20px" aria-hidden="true"><use href="#i-flame"/></svg><span class="b" style="font-size:17px">Heatmaster</span><span class="ch bad" style="margin-left:auto"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg> 2 repairs</span></div>
-    <div class="tabs"><span class="cur">Rooms</span><span>Schedules</span><span>Seasons and modes</span><span>Heat source</span><span>Health</span></div>
-    <div class="tiles" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:14px">
+    <div class="tabs" style="flex-wrap:wrap;gap:4px 20px"><span class="cur">Rooms</span><span>Schedules</span><span>Seasons and modes</span><span>Heat source</span><span>Health</span></div>
+    <div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:16px">
       <div class="tile"><div class="mu">Season</div><div class="v">Autumn <span class="mu">auto</span></div><div class="mu t-ok">Heating allowed · 7.4 °C avg</div></div>
       <div class="tile"><div class="mu">House mode</div><div class="v">Home</div><div class="mu">2 of 2 people home</div></div>
       <div class="tile"><div class="mu">Heat request</div><div class="v t-warn"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg> On · 14 min</div><div class="mu">3 rooms asking</div></div>
       <div class="tile"><div class="mu">Output</div><div class="v">Dry run</div><div class="mu">Not armed</div></div>
     </div>
-    <div class="ln mu" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px;padding-bottom:5px"><span>Room</span><span>Now / target</span><span>Status</span><span>Schedule</span></div>
-    <div class="ln" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px"><div><div class="b">Living room</div><div class="mu">2 valves · 2 sensors · 3 windows</div></div><div><span class="big">19.6°</span> <span class="mu">/ 20°</span></div><div><div>Comfort until 23:00, then Eco</div><div class="mu t-warn"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg> Asking for heat · below target</div></div><span class="ch ok">In sync</span></div>
-    <div class="ln" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px"><div><div class="b">Kids' room</div><div class="mu">1 valve · 1 sensor · <svg class="ic" role="img" aria-label="Child lock on"><use href="#i-lock"/></svg></div></div><div><span class="big">19.8°</span> <span class="mu">/ 22°</span></div><div><div>Override 22° · 1 h 12 min left</div><div class="mu">Set on the valve knob · then Eco</div></div><span class="ch ok">In sync</span></div>
-    <div class="ln" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px"><div><div class="b">Bedroom</div><div class="mu">1 valve · 1 sensor · 1 window</div></div><div><span class="big">17.1°</span> <span class="mu">/ off</span></div><div><div><svg class="ic" aria-hidden="true"><use href="#i-window"/></svg> Window open · 18 min</div><div class="mu">Resumes Eco 17° when closed</div></div><span class="ch ok">In sync</span></div>
-    <div class="ln" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px"><div><div class="b">Bathroom</div><div class="mu">1 valve · 1 sensor</div></div><div><span class="big">18.2°</span> <span class="mu">/ 21°</span></div><div><div>Comfort until 09:00, then Eco</div><div class="mu t-bad"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg> Heating 70 min, room not warming</div></div><span class="ch ok">In sync</span></div>
-    <div class="ln" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px"><div><div class="b">Entrance</div><div class="mu">1 valve · no sensor</div></div><div><span class="big t-mut">–</span> <span class="mu">/ 17°</span></div><div><div class="t-bad"><svg class="ic" aria-hidden="true"><use href="#i-off"/></svg> Valve offline since 22:42</div><div class="mu">Nothing written until it returns</div></div><span class="ch warn">Pending</span></div>
-    <div class="ln last" style="grid-template-columns:minmax(0,1.3fr) 110px minmax(0,2fr) 72px"><div><div class="b">Attic</div><div class="mu">1 valve · 1 sensor</div></div><div><span class="big">16.5°</span> <span class="mu">/ 19°</span></div><div><div>Comfort until 23:00, then Eco</div><div class="mu t-warn"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg> Asking for heat · valve reports heating</div></div><span class="ch ok">In sync</span></div>
-    <div class="row" style="margin-top:14px"><button><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg> Add room</button><button>Set house mode</button></div>
-  </div></div>
-</section>
-
-<section id="rooms-cards">
-  <h2>Rooms, as cards</h2>
-  <p class="cap">Option B. Faster to read at a glance and better on a phone. Proposed: both views behind the toggle, cards by default on narrow screens.</p>
-  <div class="frame"><div class="mock free">
-    <div class="row" style="margin-bottom:12px"><span class="b">Rooms</span><span style="margin-left:auto;display:flex;gap:4px"><button aria-label="List view"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button><button class="on" aria-label="Card view"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg></button></span></div>
+    <div class="row" style="margin-bottom:12px"><span class="b">Rooms</span><span style="margin-left:auto;display:flex;gap:4px"><button class="on" aria-label="Card view"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg> Cards</button><button aria-label="Tile view"><svg class="ic" aria-hidden="true"><use href="#i-tiles"/></svg> Tiles</button></span></div>
     <div class="cards">
       <div class="rc"><div class="top"><span class="b">Living room</span><span class="ch warn"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg> Heating</span></div><div><span class="big">19.6°</span> <span class="mu">target 20°</span></div><div style="font-size:13px">Comfort until 23:00, then Eco</div><div class="mu">2 valves · 2 sensors · 3 windows</div></div>
       <div class="rc"><div class="top"><span class="b">Kids' room</span><svg class="ic mu" role="img" aria-label="Child lock on"><use href="#i-lock"/></svg><span class="ch info">Override</span></div><div><span class="big">19.8°</span> <span class="mu">target 22°</span></div><div style="font-size:13px">Override · 1 h 12 min left</div><div class="mu">Set on the valve knob · then Eco</div></div>
@@ -170,6 +161,27 @@ footer{color:var(--text-muted);font-size:12px}
       <div class="rc" style="border-color:var(--border-danger)"><div class="top"><span class="b">Entrance</span><span class="ch bad"><svg class="ic" aria-hidden="true"><use href="#i-off"/></svg> Offline</span></div><div><span class="big t-mut">–</span> <span class="mu">target 17°</span></div><div style="font-size:13px">Valve offline since 22:42</div><div class="mu">Schedule sync pending</div></div>
       <div class="rc"><div class="top"><span class="b">Attic</span><span class="ch warn"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg> Heating</span></div><div><span class="big">16.5°</span> <span class="mu">target 19°</span></div><div style="font-size:13px">Comfort until 23:00, then Eco</div><div class="mu">1 valve · 1 sensor</div></div>
     </div>
+    <div class="row" style="margin-top:14px"><button><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg> Add room</button><button>Set house mode</button></div>
+  </div></div>
+</section>
+
+<section id="rooms-tiles">
+  <h2>Rooms tab, tiles</h2>
+  <p class="cap">The compact view, for seeing the whole house at once on a phone or a wall tablet. Each tile shows the room, its temperature and target, with colour and an icon for its state. Tapping a tile opens the room.</p>
+  <div class="frame"><div class="mock free">
+    <div class="row" style="margin-bottom:12px"><span class="b">Rooms</span><span style="margin-left:auto;display:flex;gap:4px"><button aria-label="Card view"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg> Cards</button><button class="on" aria-label="Tile view"><svg class="ic" aria-hidden="true"><use href="#i-tiles"/></svg> Tiles</button></span></div>
+    <div class="rtg">
+      <div class="rt warn"><div class="n"><span>Living room</span><svg class="ic" role="img" aria-label="Heating"><use href="#i-flame"/></svg></div><div class="t">19.6°</div><div class="s">to 20°</div></div>
+      <div class="rt info"><div class="n"><span>Kids' room</span><svg class="ic" role="img" aria-label="Override"><use href="#i-clock"/></svg></div><div class="t">19.8°</div><div class="s">to 22° · 1 h 12</div></div>
+      <div class="rt neu"><div class="n"><span>Bedroom</span><svg class="ic" role="img" aria-label="Window open"><use href="#i-window"/></svg></div><div class="t">17.1°</div><div class="s">off · window</div></div>
+      <div class="rt bad"><div class="n"><span>Bathroom</span><svg class="ic" role="img" aria-label="Problem"><use href="#i-alert"/></svg></div><div class="t">18.2°</div><div class="s">to 21° · not warming</div></div>
+      <div class="rt bad"><div class="n"><span>Entrance</span><svg class="ic" role="img" aria-label="Offline"><use href="#i-off"/></svg></div><div class="t">–</div><div class="s">valve offline</div></div>
+      <div class="rt warn"><div class="n"><span>Attic</span><svg class="ic" role="img" aria-label="Heating"><use href="#i-flame"/></svg></div><div class="t">16.5°</div><div class="s">to 19°</div></div>
+      <div class="rt"><div class="n"><span>Kitchen</span></div><div class="t">19.4°</div><div class="s">at 19°</div></div>
+      <div class="rt"><div class="n"><span>Study</span></div><div class="t">20.1°</div><div class="s">at 20°</div></div>
+      <div class="rt"><div class="n"><span>Guest room</span></div><div class="t">17.3°</div><div class="s">at 17°</div></div>
+    </div>
+    <div class="row mu" style="gap:14px;margin-top:12px"><span><span class="pill warn">Heating</span></span><span><span class="pill info">Override</span></span><span><span class="pill neu">Window open</span></span><span><span class="pill bad">Problem</span></span><span><span class="pill" style="background:var(--surface-1)">At target</span></span></div>
   </div></div>
 </section>
 
