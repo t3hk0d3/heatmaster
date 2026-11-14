@@ -1,5 +1,7 @@
 # Heatmaster architecture v5
 
+**Superseded by `2026-11-14-architecture-v6.md`** (standalone application). Kept as the record of how the core design was reached and reviewed.
+
 **Status:** revision 4, after two adversarial reviews, a re-check, and two reviews of the plan built on it (sections 16 and 17). Decisions D1–D5 made by the user on 2026-11-14. Replaces the architecture of plan 1 v4. Overrides spec §4 (in part), §5.1, §5.10, §9.1–9.4 and §9.7; the product design is otherwise unchanged (see spec §10).
 
 **Sources:** five independent redesigns in `proposals/`, four research reports in `../research/`. Facts about Home Assistant and Zigbee2MQTT (Z2M) come from reading current docs and source. None is measured on this house yet; section 12 lists what must be measured. Numbers marked *provisional* are set by those measurements.
