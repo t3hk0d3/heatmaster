@@ -104,7 +104,7 @@ Per valve, derived every tick:
 | unreadable, or empty with ledger records | — | any | **Frozen** |
 | empty, ledger empty | — | — | fresh install |
 
-A config change (`plan_change`): validate; compare valve sets over the whole config (a moved valve is neither joining nor leaving; a joining valve that already has a record keeps it). Refuse on: unreadable config without `overwrite_unreadable`; stale revision; unknown or unsupported valve; unusable transport; ledger unreadable and anything joins; a new valve from which no message has arrived (`valve_not_observed`; the server then asks the valve to report, and the caller retries); a new valve whose captured setting cannot be read and was not accepted; an invalid sensor reference; no time zone (no Home Assistant link and none in the config). Effects in order: save ledger with new records, write the readable copy, save config with leaving valves added to `releasing`. A dry run returns the preview only.
+A config change (`plan_change`): validate; compare valve sets over the whole config (a moved valve is neither joining nor leaving; a joining valve that already has a record keeps it). Refuse on: unreadable config without `overwrite_unreadable`; stale revision; unknown or unsupported valve; unusable transport; ledger unreadable and anything joins; a new valve from which no message has arrived (`valve_not_observed`; the server then asks the valve to report, and the caller retries); a new valve whose captured setting cannot be read and was not accepted; an invalid sensor reference; no time zone (no Home Assistant link, none in the new config, and the current config is missing, unreadable or names one). Effects in order: save ledger with new records, write the readable copy, save config with leaving valves added to `releasing`. A dry run returns the preview only.
 
 ## 9. Observation and evidence
 
@@ -167,7 +167,7 @@ per valve that is managed or releasing and has a profile:
 - `z2m:<ieee>` with a payload key (default `temperature`): read from MQTT, liveness from the life token. Needs no Home Assistant. A sensor's id is its reference, plus the key for a Z2M sensor.
 - `ha:<entity id>`: value from state changes; liveness from `last_reported`, polled every 2 minutes with one REST request per watched sensor, because events do not carry it. Nothing is polled while no such sensor is configured. A state that is not a number keeps the last number until the staleness timeout (10 minutes at least). An entity from Home Assistant's MQTT integration that is not a Z2M device cannot be judged and is used with a warning. While the link is down these sensors are pending, not stale.
 
-Without a Home Assistant link, `ha:` sensors are refused at config time and the time zone comes from the settings; a config that names none is refused (`timezone_missing`).
+Without a Home Assistant link, `ha:` sensors are refused at config time and the time zone comes from the settings; a config that names none is refused (`timezone_missing`), unless the config it replaces is readable and names none either.
 
 ## 12. One instance
 
@@ -191,7 +191,7 @@ The MQTT client uses a fixed client id and tries MQTT 5 first; it changes the pr
 
 One image, two processes under s6-overlay:
 - **Caddy** listens on the ingress port, admits only the Supervisor's ingress address, serves the web UI's files with a single-page fallback, and proxies `/api/*` (including the socket) to the server. A second listener with a password is off by default and serves plain-container installs.
-- **The server** (Node 26, Fastify) listens on `127.0.0.1` only. s6 starts it again when it ends, but the fifth start within 15 minutes halts the container: every start asks every managed valve to report, so a crash loop must not become a read loop.
+- **The server** (Node 26, Fastify) listens on `127.0.0.1` only. s6 starts it again when it ends, but the server starts at most five times in any 15 minutes: a further start halts the container without starting the server. The count is kept in the data folder, so it holds whoever starts the container again. Every start asks every managed valve to report, so a crash loop must not become a read loop.
 
 Built on Home Assistant's base image with Node and Caddy copied in from their official images; `amd64` and `aarch64`. The app manifest asks for the MQTT service, the Home Assistant API, ingress with an admin-only panel, and the public config folder. The same image runs as a plain container with environment variables.
 
@@ -255,10 +255,11 @@ Plan 1 v6 was reviewed three times on 2026-11-14: core contracts and arithmetic 
 | Server M7 | A test needed a broker that leaves a CONNECT unanswered, which the helper did not offer | Plan Task 15: `withholdConnack` on the raw broker; Task 19 consumes it |
 | Server M8 | `panel_admin` was treated as access control without proof that it is one | Plan Task 22: confirm in Home Assistant Core; then refuse non-admins by the ingress header, or state plainly who can change the config |
 | Safety M1 | Temperature pushes were unbounded when a room's freshness flapped | Section 10; plan Task 7: `lastPushAt` survives a stopped feed, and the next push waits for the interval; Task 14's budget line |
-| Safety M2 | A crash loop was an unbounded read loop | Section 14; plan Task 22: the fifth start within 15 minutes halts the container |
+| Safety M2 | A crash loop was an unbounded read loop | Section 14; plan Task 22: a restart limit of five starts in 15 minutes (final form in the "Verification N1" row) |
 | Safety M3 | With both files lost, or after a reinstall, Heatmaster's own values were captured as originals | Section 7; plan Task 17: a missing ledger is locked while the readable copy holds a record; Tasks 13, 18, 19 and 21 follow |
 | Safety M4 | Three facts the design depends on were not measured or gated | Plan Task 2: the fallback time and the return from it, and `last_seen` after a write and after a `get`, each with a stop rule; Task 23 checks the fallback if the user declined the wait |
 | Safety M5 | A valve that is not in `auto` read `in_sync` for ever | Section 13; plan Tasks 8 and 10: the problem `valve_not_auto` |
+| Verification N1 | The restart limit halted one start early, its test lines could not pass, and a restart of the halted container could start the count again | Section 14; plan Task 22 (v6.2): the count is kept in the data folder, so the server starts at most five times in any 15 minutes, whoever starts the container again |
 
 Design changes from the should-fix findings and the rulings, in the sections above: marks are not replaced before they were acted on, and are stamped with the time the request went out (sections 9 and 10); `active_group` waits for an unmarked schedule (section 9); no refresh without a readable group, and one refresh for a settled release (sections 9 and 10); the `push failed` event (section 10); the clock-jump rule (section 6); the 2-minute REST poll and the 10-minute lower limit of the staleness timeout (section 11); the refusal without a time zone (sections 8 and 11); the takeover count under both protocol versions, the permanent stop and `mqtt_auth_failed` (section 12); the problems "valve not in auto" and "a store that could not be written" (section 13).
 
