@@ -69,7 +69,7 @@ A pnpm workspace:
 | `packages/core` | All decision logic, pure. Config model and validation, schedule, temperature, settings, observation, ledger shapes and membership, memory, pacing, feed, desired, events, control, change, status, profiles with their bindings | nothing outside itself |
 | `packages/server` | The shell: MQTT transport, Home Assistant link, stores, runtime, MQTT discovery publisher, Fastify HTTP API | `core` |
 | `packages/web` | The web UI, a Vite single-page app with relative paths | the API types of `core` |
-| `packaging/` | Dockerfile, Caddyfile, s6 service definitions, the app manifest, the repository file | — |
+| `packaging/` | Dockerfile, Caddyfile, s6 service definitions, the app manifest (the repository file sits at the repository root) | — |
 
 Time: the core never reads the clock. It receives `now` as a `Temporal.ZonedDateTime` in the house's time zone and compares instants as epoch milliseconds. Durations are milliseconds.
 
@@ -110,7 +110,7 @@ A config change (`plan_change`): validate; compare valve sets over the whole con
 
 - A transport delivers device messages with a **life token** that changes if and only if the device itself spoke (Z2M: `last_seen`). A device is *heard* when its token differs from the stored one; the first token after a start or after the link came back is stored without counting.
 - Liveness: unknown, live, silent (valves after 2 h unheard; sensors after the staleness timeout). While a link is down its devices are unknown, not silent.
-- **Observable:** at least one message from the valve has arrived since start. Nothing is written to a valve that is not observable.
+- **Observable:** at least one message from the valve has arrived since start. Nothing is written to a valve that is not observable. Every followed device has a state from the moment it is listed, so one that never speaks becomes silent in time.
 - Per group of settings the binding states the **evidence**: `acked` or `echoed`, and whether the group is **readable** through `get`.
 - **Marks.** A mark on a group means "do not trust the cached value". Marks are set on every group at start, on rejoin, on Z2M restart or MQTT reconnect, when a valve returns from silence, on `resync`, and when the group's maximum age passes (24 h for every group, *provisional*).
   - A marked **readable** group is cleared by a heard message that comes after Heatmaster asked the valve to report (`Refresh`). If the fresh value differs, the ordinary rule writes it.
@@ -135,8 +135,9 @@ On TRV-ZBT Heatmaster writes days only into group 3, always naming the group in 
 
 ```
 per valve that is managed or releasing and has a profile:
-  writes held, transport unusable, link down, or valve silent → nothing
+  transport unusable, link down, or valve silent → nothing
   not observable → refresh (paced); nothing else
+  writes held → refreshes still happen; nothing below that writes or pushes
   desired = from the room's schedule and temperature state, or the originals when releasing
   a mark lacks its evidence → refresh (paced)
   candidates = groups, in profile order, whose desired value differs from the observed one,
@@ -148,7 +149,7 @@ per valve that is managed or releasing and has a profile:
 - **Activation.** `none`, or `setpoint`: after a schedule write whose days differed is observed equal while the valve is in `auto`, the current set point's temperature is written once. A mode toggle is not designed; if measurement shows it is needed, work stops and it is designed first.
 - **Temperature push** (as v5 §9): on a change of 0.2 °C no sooner than the interval, and every 30 min; only to managed, observable, non-silent valves; stops when the room goes stale, when the valve is off (unless the profile says it may be fed) and on release; never queued or confirmed.
 - **Release** finishes when every restorable setting has stayed equal for the release hold (*provisional:* 15 min), counted from after the release order, and the valve was heard during that time. Then the record moves to `released` and the valve leaves `releasing`.
-- **Hold writes** is a config setting, on by default, and an input to the tick: while on, no publish, push or refresh is decided and pacing is untouched.
+- **Hold writes** is a config setting, on by default, and an input to the tick: while on, no publish, setpoint write or push is decided. Reads continue, so a held installation still learns what its valves hold.
 - **Preview** runs the same selection on a copy with pacing off, hold ignored, pushes assumed sent and each mark treated as satisfied once, until nothing more is written.
 - **Events between ticks** (`applyEvent`, pure): device message, rejoined, bridge restarted, link up, resync requested. They update observations and set or clear marks.
 - Removed from v5: the "schedule not followed" detection and everything it needed.
@@ -156,24 +157,24 @@ per valve that is managed or releasing and has a profile:
 ## 11. Inputs
 
 **MQTT** (MQTT.js, the server's own client). Broker address and credentials come from the Supervisor's MQTT service in the app, or from environment variables in a plain container.
-- Z2M transport: base topic from settings (default `zigbee2mqtt`), confirmed by `bridge/info`; devices from `bridge/devices`; state from `<base>/<friendly name>`; writes to `…/set`, reads to `…/get`; link state from the MQTT connection and `bridge/state`; rejoins from `bridge/event`. Faults: bridge unknown, unsupported version, `last_seen` off.
+- Z2M transport: base topic from the app's options (default `zigbee2mqtt`), confirmed by `bridge/info`; devices from `bridge/devices`; state from `<base>/<friendly name>`; writes to `…/set`, reads to `…/get`; link state from the MQTT connection and `bridge/state`; rejoins from `bridge/event`. Faults: bridge unknown, unsupported version, `last_seen` off.
 - Every Z2M device that has a valve profile is followed, configured or not, so a valve can be captured before it joins.
 
 **Home Assistant link** (optional; `home-assistant-js-websocket`). In the app it connects through the Supervisor's proxy with the Supervisor token; in a plain container with a URL and a long-lived token. It supplies: states of sensors that are not on Z2M, the entity, device and area registries (names, device classes), and the house's time zone. It is never used for valves.
 
 **Room sensors** are named by reference:
-- `z2m:<ieee>` with a payload key (default `temperature`): read from MQTT, liveness from the life token. Needs no Home Assistant.
+- `z2m:<ieee>` with a payload key (default `temperature`): read from MQTT, liveness from the life token. Needs no Home Assistant. A sensor's id is its reference, plus the key for a Z2M sensor.
 - `ha:<entity id>`: value from state changes; liveness from `last_reported`, polled every 5 minutes because events do not carry it. An entity from Home Assistant's MQTT integration that is not a Z2M device cannot be judged and is used with a warning. While the link is down these sensors are pending, not stale.
 
 Without a Home Assistant link, `ha:` sensors are refused at config time and the time zone comes from the settings.
 
 ## 12. One instance
 
-The MQTT client uses a fixed client id and MQTT 5. If the broker reports "session taken over", another Heatmaster has connected: this one stops its MQTT client, stops writing and shows a problem. With a broker that only speaks MQTT 3.1.1 a takeover looks like a dropped connection; three drops within 30 s of connecting are treated the same way. The newest instance wins.
+The MQTT client uses a fixed client id and MQTT 5. If the broker reports "session taken over", another Heatmaster has connected: this one stops its MQTT client, stops writing and shows its transport as unusable with the reason "another instance". With a broker that only speaks MQTT 3.1.1 a takeover looks like a dropped connection; three drops within 30 s of connecting are treated the same way. The newest instance wins.
 
 ## 13. Outputs
 
-**MQTT discovery** (prefix from settings, default `homeassistant`), one device message per room and one for Heatmaster itself, with availability through the client's last will:
+**MQTT discovery** (prefix from the app's options, default `homeassistant`), one device message per room and one for Heatmaster itself, with availability through the client's last will:
 - per room: temperature sensor, target temperature sensor, problem binary sensor, sync sensor (`in_sync`, `pending`, `not_holding`, `unverified`, `held`, `frozen`);
 - for Heatmaster: problem binary sensor, problem count sensor with the list as attributes, "writes held" binary sensor, and a "stop writing" button. The button only turns hold on; turning it off needs the UI, because a button press cannot be checked for admin rights.
 - A room `climate` entity is **not** published in plan 1 (fact 12). It arrives in plan 2 together with its command topics.
@@ -181,7 +182,7 @@ The MQTT client uses a fixed client id and MQTT 5. If the broker reports "sessio
 
 **HTTP API** (Fastify, bound to `127.0.0.1`): state snapshot and a live-update socket; export; preview; apply; resync; refresh a valve; restore and forget a valve; import originals; diagnostics. Every handler calls one pure `core` function or one runtime method.
 
-**Problems** are level-triggered and appear in the API, the UI and the discovery entities. Critical ones may also raise a Home Assistant persistent notification when the link is up. Kinds: config unreadable, ledger unreadable, another instance, link down, transport unusable, valve not adopted, valve orphaned, valve unsupported, valve silent, setting not holding, release stalled, schedule clamped, room has no fresh temperature, sensor stale, sensor out of range, sensor liveness unobservable, temperature feed lost.
+**Problems** are level-triggered and appear in the API, the UI and the discovery entities. Critical ones may also raise a Home Assistant persistent notification when the link is up. Kinds: config unreadable, ledger unreadable, link down, transport unusable (including "another instance"), valve not adopted, valve orphaned, valve unsupported, valve silent, setting not holding, release stalled, schedule clamped, room has no fresh temperature, sensor stale, sensor out of range, sensor liveness unobservable, temperature feed lost.
 
 **Web UI** (plan 1): one page with rooms and valves, problems, the config editor with preview and apply, the hold switch and the valve actions; English and Russian. The full panel is plan 4.
 
