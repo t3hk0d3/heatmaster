@@ -130,7 +130,7 @@ footer{color:var(--text-muted);font-size:12px}
   <h1>Heatmaster UI sketches</h1>
   <p class="lede">Rough mockups of the admin panel and the family room card. All values are made-up sample data. Controls are drawn, not wired. The first-run setup wizard is not drawn yet.</p>
   <nav aria-label="Sketches">
-    <a href="#rooms-list">Rooms, list</a><a href="#rooms-cards">Rooms, cards</a><a href="#room">Room detail</a><a href="#schedule">Schedule editor</a><a href="#measured">Measured temperature</a><a href="#seasons">Seasons and modes</a><a href="#heat">Heat source</a><a href="#health">Health</a><a href="#card">Room card</a>
+    <a href="#rooms-list">Rooms, list</a><a href="#rooms-cards">Rooms, cards</a><a href="#room">Room detail</a><a href="#schedule">Schedule editor</a><a href="#measured">Measured temperature</a><a href="#curve">Curve editor</a><a href="#seasons">Seasons and modes</a><a href="#heat">Heat source</a><a href="#health">Health</a><a href="#card">Room card</a>
   </nav>
 </header>
 
@@ -231,6 +231,27 @@ footer{color:var(--text-muted);font-size:12px}
       <div class="ins"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg> Reaches 20° at about 10:00, 2 h after the slot starts.</div>
     </div></div>
     <div class="day" style="grid-template-columns:84px minmax(0,1fr);margin:0"><span></span><div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div></div>
+  </div></div>
+</section>
+
+<section id="curve">
+  <h2>Schedule editor, as a curve</h2>
+  <p class="cap">Proposed, not decided. Up to 6 draggable points per day group, each a time and a temperature, with a curve through them. The dashed line is what the valve stores onboard: plain steps it falls back to if Home Assistant is down.</p>
+  <div class="frame"><div class="mock">
+    <div class="row" style="margin-bottom:8px"><span class="b" style="font-size:16px">Living room</span><span style="display:flex;gap:4px"><button class="on">Mon–Fri</button><button>Sat–Sun</button></span><span class="mu" style="margin-left:auto">6 of 6 points used</span></div>
+    <svg viewBox="0 0 600 212" style="width:100%;display:block" role="img" aria-label="Temperature curve for Monday to Friday through six points: 17 degrees at midnight, 20 at 06:30, 17 at 09:00, 20.5 at 17:00, 19 at 21:00, 17 at 23:00">
+      <rect x="40" y="20" width="540" height="160" fill="var(--surface-1)" rx="4"/>
+      <line x1="40" y1="80" x2="580" y2="80" stroke="var(--text-warning)" stroke-opacity="0.45" stroke-width="1"/><line x1="40" y1="140" x2="580" y2="140" stroke="var(--text-accent)" stroke-opacity="0.45" stroke-width="1"/>
+      <text x="574" y="76" text-anchor="end" style="fill:var(--text-warning);font-size:11px">Comfort 20°</text><text x="574" y="154" text-anchor="end" style="fill:var(--text-accent);font-size:11px">Eco 17°</text>
+      <text x="34" y="24" text-anchor="end" style="fill:var(--text-muted);font-size:11px">23°</text><text x="34" y="184" text-anchor="end" style="fill:var(--text-muted);font-size:11px">15°</text>
+      <path d="M40,140 H186.25 V80 H242.5 V140 H422.5 V70 H512.5 V100 H557.5 V140 H580" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <path d="M40,140 C113,140 113,80 186.25,80 C214,80 214,140 242.5,140 C332,140 332,70 422.5,70 C467,70 467,100 512.5,100 C535,100 535,140 557.5,140 L580,140" fill="none" stroke="var(--text-primary)" stroke-width="2.5"/>
+      <circle cx="40" cy="140" r="6" fill="var(--surface-2)" stroke="var(--text-primary)" stroke-width="2"/><circle cx="186.25" cy="80" r="6" fill="var(--surface-2)" stroke="var(--text-primary)" stroke-width="2"/><circle cx="242.5" cy="140" r="6" fill="var(--surface-2)" stroke="var(--text-primary)" stroke-width="2"/><circle cx="422.5" cy="70" r="8" fill="var(--text-primary)"/><circle cx="512.5" cy="100" r="6" fill="var(--surface-2)" stroke="var(--text-primary)" stroke-width="2"/><circle cx="557.5" cy="140" r="6" fill="var(--surface-2)" stroke="var(--text-primary)" stroke-width="2"/>
+      <text x="422.5" y="54" text-anchor="middle" style="fill:var(--text-primary);font-size:12px;font-weight:500">17:00 · 20.5°</text>
+      <text x="40" y="200" text-anchor="middle" style="fill:var(--text-muted);font-size:11px">00</text><text x="175" y="200" text-anchor="middle" style="fill:var(--text-muted);font-size:11px">06</text><text x="310" y="200" text-anchor="middle" style="fill:var(--text-muted);font-size:11px">12</text><text x="445" y="200" text-anchor="middle" style="fill:var(--text-muted);font-size:11px">18</text><text x="580" y="200" text-anchor="middle" style="fill:var(--text-muted);font-size:11px">24</text>
+    </svg>
+    <div class="row mu" style="gap:16px;margin:6px 0 12px 40px"><span><svg width="26" height="8" aria-hidden="true"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--text-primary)" stroke-width="2.5"/></svg> target curve</span><span><svg width="26" height="8" aria-hidden="true"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--text-secondary)" stroke-width="1.5" stroke-dasharray="4 3"/></svg> steps stored on the valve</span></div>
+    <div class="tile row"><span class="mu">Selected point</span><label style="font-size:13px">Time <input type="text" value="17:00" style="width:64px" aria-label="Point time"></label><label style="font-size:13px">Temperature <input type="text" value="20.5" aria-label="Point temperature"> °C</label><select aria-label="Snap to preset"><option>Free temperature</option><option>Snap to Comfort</option><option>Snap to Eco</option><option>Snap to Frost</option></select><select aria-label="Shape to next point"><option>Smooth to next point</option><option>Hold, then jump</option></select><button aria-label="Delete point" style="margin-left:auto"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button></div>
   </div></div>
 </section>
 
