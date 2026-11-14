@@ -1,6 +1,6 @@
 # Heatmaster architecture v5
 
-**Status:** revision 2, after two adversarial reviews (section 16). Decisions D1–D5 made by the user on 2026-11-14. Replaces the architecture of plan 1 v4. Overrides spec §4 (in part), §5.1, §5.10, §9.1–9.4 and §9.7; the product design is otherwise unchanged (see spec §10).
+**Status:** revision 3, after two adversarial reviews and a re-check (section 16). Decisions D1–D5 made by the user on 2026-11-14. Replaces the architecture of plan 1 v4. Overrides spec §4 (in part), §5.1, §5.10, §9.1–9.4 and §9.7; the product design is otherwise unchanged (see spec §10).
 
 **Sources:** five independent redesigns in `proposals/`, four research reports in `../research/`. Facts about Home Assistant and Zigbee2MQTT (Z2M) come from reading current docs and source. None is measured on this house yet; section 12 lists what must be measured. Numbers marked *provisional* are set by those measurements.
 
@@ -58,13 +58,13 @@ Two more causes: destructive actions were inferred from absence (no config meant
 
 `core/` imports nothing from Home Assistant.
 
-**The world** passed to `tick`: the config or its state (`ok`, `empty`, `unreadable`); the ledger or `unreadable`; per device its `Observed`, liveness and whether its transport is usable; link state; room sensor readings with liveness; the in-memory value (pacing, feed, assert marks, release timers); `now`.
+**The world** passed to `tick`: the config or its state (`ok`, `empty`, `unreadable`); the ledger or `unreadable`; per device its `Observed`, liveness and whether its transport is usable; link state; room sensor readings with liveness; the in-memory value (pacing, feed, assert marks, release timers); whether writes are held; `now`.
 
 **Effects**, executed strictly in order, each awaited: `SaveLedger`, `WriteOriginalsCopy`, `SaveConfig`, `Publish(valve, {setting: value})`, `PushTemperature(valve, celsius)`. Later plans add `SaveState` and `SwitchOutput`.
 
 **`TickResult`**: the new in-memory value, the effects, room statuses, problems.
 
-**Runtime rules.** One lock covers a tick with its effects and every config change, so the two never interleave. Ticks run every 30 s and after transport events, coalesced. A failed effect aborts the rest of that tick. Pacing is charged when a write is decided; a publish that then fails is treated as a lost write. "Hold writes" is a config setting, on by default: with it on, `Publish` and `PushTemperature` are dropped by the runtime and everything else runs.
+**Runtime rules.** One lock covers a tick with its effects and every config change, so the two never interleave. Ticks run every 30 s and after transport events, coalesced. A failed effect aborts the rest of that tick. Pacing is charged when a write is decided; a publish that then fails is treated as a lost write. "Hold writes" is a config setting, on by default, and an input to `tick`: while it is on no write or push is decided, so pacing, marks and feed state are untouched and the sync status is `held`. Preview ignores it.
 
 ## 5. What is stored
 
@@ -95,6 +95,7 @@ Derived every tick, per valve:
 | ok | neither | yes | **Orphan**: no writes; Repairs issue naming `restore_valve` and `forget_valve` |
 | empty, ledger empty | — | — | Fresh install: nothing to do |
 | unreadable, or empty with ledger records | — | any | **Frozen**: no writes; Repairs issue |
+| ok, ledger unreadable | a room or `releasing` | unknown | **Frozen**: no writes; Repairs issue; release orders are kept |
 
 A valve in a room and in `releasing` is treated as in a room. On top of any row: a valve whose transport is unusable (for Z2M: `last_seen` off, bridge offline, unknown Z2M version) gets no writes and a Repairs issue.
 
@@ -106,11 +107,11 @@ plan_change(current, candidate, ledger, devices, now):
   compare valve sets over the whole config:
       joining   = in a room now, not before          (a valve moved between rooms is neither)
       leaving   = in a room before, not now
-      rejoining = joining and in `releasing` or orphaned: its stored originals are kept
+      rejoining = joining and already has a ledger record: its stored originals are kept
   refuse if: revision is stale; the ledger is unreadable and anything joins;
-      a joining valve has an owned setting that cannot be read and is not listed in
-      `accept_unknown_originals`; a joining TRV-ZBT has group 3 active
-  preview = captures, releases, and every write the new config leads to
+      a joining valve without a record has a captured setting that cannot be read and is
+      not listed in `accept_unknown_originals`; a joining TRV-ZBT without a record has group 3 active
+  preview = captures, releases, and every write the new config leads to (pacing off, pushes assumed sent)
   dry run → return the preview; change nothing
 effects, in order:
   1. SaveLedger with records created for joining valves
@@ -135,42 +136,43 @@ A crash between 1 and 3 leaves an orphan record for a valve that was never writt
 - **Liveness** is separate from values. A device is *heard* when its `life_token` differs from the previous one. States: unknown (not heard since start or since the link came back), live, silent. A valve is silent after 2 h unheard; a room sensor is stale after the staleness timeout (default 60 min). Time while the link is down does not count. Intervals use Home Assistant's clock; the token is only compared with itself.
 - **No write goes to a valve before one message from it has arrived since start.** Values from Z2M's replay at start are used as they are.
 - **Evidence class** per setting, from the binding: `reported` (the valve reports it by itself), `acked` (Z2M publishes it only after the valve acknowledged), `echoed` (Z2M publishes what it sent).
-- **Assert marks.** A setting group marked "assert again" counts as different even if its value is equal; the mark is cleared when the write is decided. All `acked` and `echoed` groups of a valve are marked on `Rejoined`, on `BridgeRestarted`, when the valve goes from silent to live, on `resync`, and when the group's maximum age passes (*provisional:* sensor source 24 h, schedule 7 days). The schedule group is also marked, at most once a day, when a valve in `auto` shows a setpoint other than the scheduled one in a message heard within 15 min after a set point passed.
+- **Assert marks.** A setting group marked "assert again" counts as different even if its value is equal. A marked group is written only once the valve was heard at or after the marking, and all its members are sent. The mark is cleared by the first heard message after that write; if none comes, the mark stays and backoff applies. All `acked` and `echoed` groups of a valve are marked on `Rejoined`, on `BridgeRestarted`, when the valve goes from silent to live, on `resync`, and when the group's maximum age passes (*provisional:* sensor source 24 h, schedule 7 days). `sensor_source` is also marked once at every start, because a rejoin may have been missed while Home Assistant was down. The schedule group is also marked, at most once a day, when the valve is **not following its schedule**: in `auto`, it shows the previous set point's temperature in a message heard between 5 and 15 min after a set point with a different temperature passed.
 - Readings that are not settings are kept too: mode, setpoint, local temperature, running state, battery, feed health.
 
 **Plan 1 settings.**
 
 | Group | Members | Policy | Wanted | Captured as original | Restored on release |
 |---|---|---|---|---|---|
-| `schedule` | seven days | enforce | always, from the room's schedule | yes | yes |
+| `schedule` | seven days | enforce | always, from the room's schedule | TRVZB only | TRVZB only |
 | `active_group` (TRV-ZBT) | one | enforce | group 3, only while `schedule` is observed equal in a message whose edit group is 3 | yes | yes, with no precondition |
 | `sensor_source` | one | enforce | `external` once a push went out and the room temperature is fresh; `internal` once the room's sensors are stale; otherwise left alone | yes | yes, unless the original cannot be written |
 | `external_temperature` | one | stream | section 9 | no | no |
 
-Mode and setpoint are readings in plan 1, not settings. A setting absent from `Desired` is never written and never blocks a release. The binding decodes `remote_source_offline` as source `external` with feed health "lost", so it is reported, not rewritten.
+On TRV-ZBT the days are observed only from messages whose edit group is 3; what group 3 held before Heatmaster used it is not captured, and its ledger entries are created as "unknown" without asking. Mode and setpoint are readings in plan 1, not settings. A setting absent from `Desired` is never written and never blocks a release. The binding decodes `remote_source_offline` as source `external` with feed health "lost", so it is reported, not rewritten.
 
 ## 8. Write path
 
 ```
 per valve, each tick:
-  membership or transport says no writes       → nothing
+  writes held, or membership or transport says no writes → nothing
   link down, valve silent, or no message yet   → nothing
   desired = desired_settings(...)               (exists even for a valve never heard from)
   candidates = groups, in profile order, whose precondition holds, that have a ledger entry,
-               and whose observed value differs from desired or that are marked "assert again"
+               and whose observed value differs from desired, or that are marked "assert again"
+               and the valve was heard since the marking
   take the first candidate that pacing allows   (a group in backoff does not block the next)
-  effects = [Publish(valve, the differing members of that group)]
+  effects = [Publish(valve, the differing members of that group; all members if marked)]
 ```
 
 - **Pacing**, per valve, in memory:
   - *Spacing:* at least 2 s between writes to one valve.
-  - *Backoff:* a (group, value) written before waits before it is written again: 2 min, 10 min, 1 h, then 6 h, by the number of times that value was written in the last 24 h. A new desired value does not wait.
+  - *Backoff:* a group's value that was written before waits before it is written again: 2 min, 10 min, 1 h, then 6 h, by the number of times it was written in the last 24 h since the group's desired value last changed. A new desired value does not wait.
   - *Budget:* a token bucket per valve (*provisional:* 6 tokens, one back every 30 min, 3 at start).
-  - Three writes of the same value in 24 h raise the problem "setting not holding", whether the valve never took it or something keeps changing it back. Nothing is "failed for good".
+  - Three such writes that were not caused by an assert mark raise the problem "setting not holding", whether the valve never took the value or something keeps changing it back. Nothing is "failed for good".
 - **Bound.** Per valve per day: the pushes of section 9, plus at most the budget. Each restart adds at most the starting tokens.
 - **Schedule.** Only days that differ are sent, in one message. On TRV-ZBT the message also names group 3.
-- **Making a schedule effective.** The profile names a strategy chosen by measurement 1. `none`: nothing more. `setpoint`: after a schedule write is observed equal while the valve is in `auto`, the current set point's temperature is written once; the reminder to do so is in memory, and losing it means the valve follows from its next set point. A mode toggle is **not designed**. If measurement 1 shows it is needed, it is designed before build step 8 is planned, with these constraints: a stored two-step record written before the days; `auto` published once after any restart whatever the cache shows; cleared only by `auto` in a heard message; `auto` exempt from backoff with reserved tokens; honoured in every membership row.
-- **Preview** runs `tick` repeatedly on a copy of the world, assuming each write lands, until nothing more is written, and lists the writes in order. For a valve never heard from it lists them with "current value unknown".
+- **Making a schedule effective.** The profile names a strategy chosen by measurement 1. `none`: nothing more. `setpoint`: after a schedule write whose days differed (never an assert rewrite) is observed equal while the valve is in `auto`, the current set point's temperature is written once, drawing from the budget; the reminder to do so is in memory, and losing it means the valve follows from its next set point. This one write is the only exception to principle 6. A mode toggle is **not designed**. If measurement 1 shows it is needed, it is designed before build step 8 is planned, with these constraints: a stored two-step record written before the days; `auto` published once after any restart whatever the cache shows; cleared only by `auto` in a heard message; `auto` exempt from backoff with reserved tokens; honoured in every membership row.
+- **Preview** runs the same selection repeatedly on a copy of the world, with pacing off, hold ignored and pushes assumed sent, assuming each write lands, until nothing more is written, and lists the writes in order. For a valve never heard from it lists them with "current value unknown".
 
 ## 9. Temperature push
 
@@ -190,7 +192,7 @@ per valve, each tick:
 - **Release** is the normal rule with the originals as the desired values. It finishes when every restorable setting has stayed equal for the release hold (*provisional:* 15 min; the longest time a queued write takes to land) and the valve was heard during that time. Then the record is removed from the ledger, kept in the readable copy, and the valve is dropped from `releasing`.
 - A release that cannot finish stays visible as a problem. `forget_valve` ends it by hand.
 - **Removing the integration (D5)** writes nothing. If no valve is managed or releasing, the stores are deleted. Otherwise the ledger and the readable copy are kept and a persistent notification says which valves were not given back.
-- **Known limits.** A restored TRVZB schedule is confirmed only by Z2M's echo. Restoring a Home Assistant backup loses originals captured after it; the readable copy is the remedy.
+- **Known limits.** A restored TRVZB schedule is confirmed only by Z2M's echo. On TRV-ZBT, release restores the active group and leaves Heatmaster's days in group 3. A Z2M restart or rejoin missed while Home Assistant was down is caught for the sensor source at the next start and for the schedule by its maximum age or by the valve not following it. Restoring a Home Assistant backup loses originals captured after it; the readable copy is the remedy.
 
 ## 11. Services, entities, problems (plan 1)
 
@@ -278,3 +280,14 @@ Two adversarial reviews of revision 1 returned "ready with fixes". Applied in th
 | Transport rules left open | Stated (§7) |
 | Plan-1 surface unplaced | §11; `core/change` owns config changes |
 | Temperature lane unowned | `core/feed` (§9) |
+
+The re-check of revision 2 found four more, applied in revision 3:
+
+| Finding | Change |
+|---|---|
+| An assert mark was spent on a write that could be lost | Marks wait for the valve to be heard and are cleared only by a heard message after the write (§7) |
+| Backoff and "setting not holding" counted legitimate writes | Counted since the desired value last changed; assert writes do not count towards the problem (§8) |
+| "Hold writes" charged pacing and spent marks | Hold is an input to `tick`; nothing is decided while it is on (§4, §8) |
+| A rejoining TRV-ZBT was refused because of Heatmaster's own group 3 | Refusals apply only to valves without a record (§6) |
+| TRV-ZBT days of another group could read as equal; restoring them would write the wrong group's days | Days observed only with edit group 3; not captured or restored on TRV-ZBT (§7, §10) |
+| "Schedule not followed" fired on a knob turn | Narrowed to the previous set point's temperature, 5–15 min after a change (§7) |
