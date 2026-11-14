@@ -130,7 +130,7 @@ footer{color:var(--text-muted);font-size:12px}
   <h1>Heatmaster UI sketches</h1>
   <p class="lede">Rough mockups of the admin panel and the family room card. All values are made-up sample data. Controls are drawn, not wired. The first-run setup wizard is not drawn yet.</p>
   <nav aria-label="Sketches">
-    <a href="#rooms-list">Rooms, list</a><a href="#rooms-cards">Rooms, cards</a><a href="#room">Room detail</a><a href="#schedule">Schedule, presets</a><a href="#curve">Schedule, Advanced</a><a href="#seasons">Seasons and modes</a><a href="#heat">Heat source</a><a href="#health">Health</a><a href="#card">Room card</a>
+    <a href="#rooms-list">Rooms, list</a><a href="#rooms-cards">Rooms, cards</a><a href="#room">Room detail</a><a href="#schedule">Schedule, presets</a><a href="#curve">Schedule, Advanced</a><a href="#seasons">Seasons</a><a href="#modes">House modes</a><a href="#heat">Heat source</a><a href="#health">Health</a><a href="#card">Room card</a>
   </nav>
 </header>
 
@@ -195,6 +195,7 @@ footer{color:var(--text-muted);font-size:12px}
       <label class="row" style="font-size:13px"><input type="checkbox" checked> Overrides beat Away and warm-weather shutoff</label>
       <label class="fld">Longest override <select><option>24 hours</option><option>4 hours</option><option>No limit</option></select></label>
       <label class="row" style="font-size:13px"><input type="checkbox"> Own preset temperatures for this room</label>
+      <label class="row" style="font-size:13px"><input type="checkbox" checked> Follows house mode (Away and Holiday)</label>
       <label class="row" style="font-size:13px"><input type="checkbox"> Ignore this room's heat request <span class="mu">heats only when another room runs the heat source</span></label>
     </div>
     <div class="row" style="margin-top:16px"><button>Edit schedule</button><button>Add valve</button><button>Add sensor</button><button style="margin-left:auto">Resync valves</button></div>
@@ -236,8 +237,8 @@ footer{color:var(--text-muted);font-size:12px}
 </section>
 
 <section id="seasons">
-  <h2>Seasons and modes</h2>
-  <p class="cap">The year as a strip of months with draggable season edges, the autumn and spring rule next to its live reading, and house mode with automatic Away. The date ranges shown are proposed defaults.</p>
+  <h2>Seasons</h2>
+  <p class="cap">Top half of the Seasons and modes tab. The year as a strip of months with draggable season edges, and the autumn and spring rule next to its live reading. The date ranges shown are proposed defaults.</p>
   <div class="frame"><div class="mock">
     <div class="row"><span class="b">Season</span><select aria-label="Season"><option>Automatic, by date</option><option>Force Winter</option><option>Force Autumn or Spring</option><option>Force Summer</option></select><span class="mu">Now: Autumn · heating allowed</span></div>
     <div class="sec">Date ranges · drag the edges to change</div>
@@ -253,13 +254,45 @@ footer{color:var(--text-muted);font-size:12px}
       </div>
       <div class="tile"><div class="mu">Right now</div><div style="font-size:24px;font-weight:500">7.4°</div><div class="mu">24 h average · lowest 3.1°</div><div class="t-ok" style="font-size:13px;margin-top:6px"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Heating allowed since 2 Nov</div></div>
     </div>
-    <div class="row" style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px"><span class="b">House mode</span><span style="display:flex;gap:4px"><button class="on">Home</button><button>Away</button></span><span class="mu">Set by presence · 2 of 2 home</span></div>
-    <div class="two" style="margin-top:12px">
-      <label class="fld">While away, rooms go to <select><option>Eco</option><option>Frost</option></select></label>
-      <label class="fld">Away with dates <span class="mu"><input type="text" placeholder="23 Dec" style="width:72px" aria-label="Away from"> to <input type="text" placeholder="2 Jan" style="width:72px" aria-label="Away until"></span></label>
-      <div style="font-size:13px"><div style="margin-bottom:6px">Automatic Away when everyone has left</div><label class="row" style="gap:6px;margin-bottom:4px"><input type="checkbox" checked> Parent 1</label><label class="row" style="gap:6px"><input type="checkbox" checked> Parent 2</label></div>
-      <div style="display:flex;flex-direction:column;gap:10px"><label class="fld">Wait before switching <select><option>30 minutes</option><option>10 minutes</option><option>1 hour</option></select></label><label class="row" style="gap:6px;font-size:13px"><input type="checkbox" checked> Notify with a "Cancel Away" button</label></div>
+  </div></div>
+</section>
+
+<section id="modes">
+  <h2>House modes</h2>
+  <p class="cap">Lower half of the Seasons and modes tab. Who counts as home, which zones count, and how Away and Holiday start, what they do to the rooms, and how they end.</p>
+  <div class="frame"><div class="mock">
+    <div class="row"><span class="b">House mode</span><span style="display:flex;gap:4px"><button class="on">Home</button><button>Away</button><button>Holiday</button></span><span class="mu">Automatic · 2 of 2 home</span><label class="mu" style="margin-left:auto">A manual choice lasts <select aria-label="Manual mode lasts"><option>until I clear it</option><option>until someone arrives</option></select></label></div>
+    <div class="sec">Who counts as home · the house is occupied while anyone here is home</div>
+    <div class="ln" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 70px 30px"><span class="b">Parent 1</span><span class="mu">person</span><span class="ch ok">Home</span><button aria-label="Remove Parent 1" style="padding:2px 5px"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="ln" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 70px 30px"><span class="b">Parent 2</span><span class="mu">person</span><span class="ch ok">Home</span><button aria-label="Remove Parent 2" style="padding:2px 5px"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="ln" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 70px 30px"><span class="b">Hallway presence sensor</span><span class="mu">binary_sensor</span><span class="ch neu">Clear</span><button aria-label="Remove hallway presence sensor" style="padding:2px 5px"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="ln last" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 70px 30px"><div><div class="b">Guest mode</div><div class="mu">Keeps the house in Home while on</div></div><span class="mu">input_boolean</span><span class="ch neu">Off</span><button aria-label="Remove guest mode" style="padding:2px 5px"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="row" style="margin-top:8px"><button><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg> Add entity</button><span class="mu">People, device trackers, groups, presence sensors and toggles.</span></div>
+    <div class="sec">Zones</div>
+    <div class="two">
+      <label class="fld">Home zone <select><option>Home</option></select></label>
+      <label class="fld">Also counts as home <select><option>Near home</option><option>None</option></select></label>
+      <span></span><span class="mu">Arriving in this zone ends Away or Holiday early, so rooms warm up first.</span>
+      <label class="fld">If a tracker stops reporting <select><option>Count it as home</option><option>Count it as away</option></select></label>
     </div>
+    <div class="sec">Away</div>
+    <div class="two">
+      <label class="fld">Start when everyone has left for <select><option>30 minutes</option><option>10 minutes</option><option>1 hour</option></select></label>
+      <label class="fld">Rooms go to <select><option>Eco</option><option>Frost</option><option>A fixed temperature</option></select></label>
+      <label class="row" style="gap:6px;font-size:13px"><input type="checkbox"> Never start between <input type="text" value="23:00" style="width:60px" aria-label="Quiet hours start"> and <input type="text" value="06:00" style="width:60px" aria-label="Quiet hours end"></label>
+      <label class="fld">End <select><option>As soon as anyone arrives</option><option>5 minutes after arrival</option></select></label>
+      <label class="row" style="gap:6px;font-size:13px"><input type="checkbox" checked> Notify with a "Cancel Away" button</label>
+    </div>
+    <div class="sec">Holiday</div>
+    <div class="two">
+      <label class="fld">Planned <span class="mu"><input type="text" placeholder="23 Dec 10:00" style="width:104px" aria-label="Holiday from"> to <input type="text" placeholder="2 Jan 16:00" style="width:104px" aria-label="Holiday until"></span></label>
+      <label class="fld">Rooms go to <select><option>Frost</option><option>Eco</option><option>A fixed temperature</option></select></label>
+      <label class="row" style="gap:6px;font-size:13px"><input type="checkbox" checked> Start by itself after Away for <select aria-label="Away duration before Holiday"><option>24 hours</option><option>48 hours</option></select></label>
+      <label class="fld">End <select><option>On the end date or when anyone arrives</option><option>Only when anyone arrives</option><option>Only on the end date</option></select></label>
+      <label class="fld">Calendar <select><option>None</option><option>calendar.family</option></select></label>
+      <label class="fld">Events titled <input type="text" value="Holiday" style="width:110px" aria-label="Calendar event title"></label>
+    </div>
+    <p class="mu" style="margin:14px 0 0">Each room can opt out with "Follows house mode" in its room options.</p>
   </div></div>
 </section>
 
