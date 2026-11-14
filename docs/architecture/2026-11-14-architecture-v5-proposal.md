@@ -119,6 +119,13 @@ per valve, on tick or new observation:
 | D4 | Push the room temperature on change (at most every 5 min) plus a 30-minute heartbeat, instead of every 5 min always. The unconditional push is 288 radio writes per valve per day; the valve's own timeout is about 2 h | 4 of 5 | Yes |
 | D5 | Rollback is an explicit release before deletion; deleting the integration never restores valves by itself | 1 of 5, none against | Yes |
 
+**Decided by the user, 2026-11-14:**
+- D1: yes, for the Z2M transport. Direct MQTT is a property of that transport, not of the design; the transport contract must not assume MQTT, so a ZHA transport can work through entities.
+- D2: open.
+- D3: yes, for the Z2M transport.
+- D4: yes. Push when the room temperature has changed by the threshold (default 0.2 °C, my call), at most once per push interval (default 5 min), and at least every 30 min regardless.
+- D5: not important for v1. The simplest behaviour is taken: explicit release; deletion keeps the ledger and warns.
+
 Left for plan 2, raised here so they are not lost:
 - Never rest a valve in `heat`; overrides become a setpoint written in `auto`.
 - Away as a room target instead of rewritten onboard schedules (each flip is about 70 day writes).
