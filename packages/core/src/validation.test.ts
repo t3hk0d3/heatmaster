@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { arbConfig, validRaw } from "../test/builders.ts";
 import {
   CONFIG_VERSION,
-  DEFAULT_SETTINGS,
   ConfigError,
   EMPTY_CONFIG,
   configToRaw,
@@ -12,6 +11,7 @@ import {
   sensorId,
   validateConfig,
 } from "./index.ts";
+import { DEFAULT_SETTINGS } from "./model.ts";
 import type { Config, ConfigIssue, Room, SensorRef } from "./index.ts";
 
 type Path = readonly (string | number)[];
@@ -760,12 +760,15 @@ describe("validation", () => {
     });
 
     describe("On a room with sensors", () => {
-      it("no sensor has a key, and the round trip leaves the config unchanged", () => {
-        const config = validateConfig(validRaw());
-        const raw = configToRaw(config);
+      it("no sensor has a key", () => {
+        const raw = configToRaw(validateConfig(validRaw()));
         for (const sensor of raw.rooms?.[0]?.sensors ?? [])
           expect(sensor).not.toHaveProperty("key");
-        expect(validateConfig(raw)).toEqual(config);
+      });
+
+      it("the round trip config -> raw -> config leaves the config unchanged", () => {
+        const config = validateConfig(validRaw());
+        expect(validateConfig(configToRaw(config))).toEqual(config);
       });
     });
 

@@ -1,6 +1,5 @@
 export {
   ConfigError,
-  DEFAULT_SETTINGS,
   EMPTY_CONFIG,
   WEEKDAYS,
   effectivePresets,

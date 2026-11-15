@@ -37,10 +37,10 @@ const HOUR_MS = 60 * MINUTE_MS;
 const NOW_MS = BUILDER_NOW.epochMilliseconds;
 const DAY_KEY_LIST: readonly SettingKey[] = Object.values(DAY_KEYS);
 
-const Z_REF = "ha:sensor.bedroom";
-const Z_SENSOR: RawSensor = { ref: Z_REF };
-const Z_SENSOR_ID = Z_REF;
-const Z_MODEL: SensorRef = { ref: Z_REF, weight: 1 };
+const BEDROOM_REF = "ha:sensor.bedroom";
+const BEDROOM_SENSOR: RawSensor = { ref: BEDROOM_REF };
+const BEDROOM_SENSOR_ID = BEDROOM_REF;
+const BEDROOM_MODEL: SensorRef = { ref: BEDROOM_REF, weight: 1 };
 const HA_SENSOR: RawSensor = { ref: "ha:sensor.living" };
 const HA_SENSOR_ID = "ha:sensor.living";
 const HA_MODEL: SensorRef = { ref: "ha:sensor.living", weight: 1 };
@@ -641,20 +641,20 @@ describe("change", () => {
     describe("With a first config whose room has a sensor with a value", () => {
       it('the previewed sensor source is "external"', () => {
         const reading: SensorReading = {
-          sensorId: Z_SENSOR_ID,
+          sensorId: BEDROOM_SENSOR_ID,
           value: 20,
           seenAt: NOW_MS,
           pending: false,
         };
         const world: World = {
           ...first(devicesOf({ [V1]: observedView() })),
-          sensors: new Map([[Z_SENSOR_ID, reading]]),
+          sensors: new Map([[BEDROOM_SENSOR_ID, reading]]),
         };
         const result = plan(
           world,
-          doc([rawRoom("living", [V1], [Z_SENSOR])]),
+          doc([rawRoom("living", [V1], [BEDROOM_SENSOR])]),
           {},
-          sensorsOf({ [Z_SENSOR_ID]: GOOD }),
+          sensorsOf({ [BEDROOM_SENSOR_ID]: GOOD }),
         );
         const source = result.writes.find((w) => "sensor_source" in w.values);
         expect(source?.values.sensor_source).toBe("external");
@@ -779,32 +779,37 @@ describe("change", () => {
 
     describe("With a new sensor that has no entry in sensors / is not a temperature sensor / is on a valve", () => {
       const world = first(devicesOf({ [V1]: observedView() }));
-      const raw = doc([rawRoom("living", [V1], [Z_SENSOR])]);
+      const raw = doc([rawRoom("living", [V1], [BEDROOM_SENSOR])]);
 
       it("throws ChangeRefused sensor_unknown, with the sensor id in data", () => {
         const missing = refusal(() => plan(world, raw));
         expect(missing.code).toBe("sensor_unknown");
-        expect(missing.data).toEqual({ sensor: Z_SENSOR_ID });
+        expect(missing.data).toEqual({ sensor: BEDROOM_SENSOR_ID });
         const gone = refusal(() =>
-          plan(world, raw, {}, sensorsOf({ [Z_SENSOR_ID]: { ...GOOD, exists: false } })),
+          plan(world, raw, {}, sensorsOf({ [BEDROOM_SENSOR_ID]: { ...GOOD, exists: false } })),
         );
         expect(gone.code).toBe("sensor_unknown");
       });
 
       it("throws ChangeRefused sensor_not_temperature, with the sensor id in data", () => {
         const refused = refusal(() =>
-          plan(world, raw, {}, sensorsOf({ [Z_SENSOR_ID]: { ...GOOD, isTemperature: false } })),
+          plan(
+            world,
+            raw,
+            {},
+            sensorsOf({ [BEDROOM_SENSOR_ID]: { ...GOOD, isTemperature: false } }),
+          ),
         );
         expect(refused.code).toBe("sensor_not_temperature");
-        expect(refused.data).toEqual({ sensor: Z_SENSOR_ID });
+        expect(refused.data).toEqual({ sensor: BEDROOM_SENSOR_ID });
       });
 
       it("throws ChangeRefused sensor_on_valve, with the sensor id in data", () => {
         const refused = refusal(() =>
-          plan(world, raw, {}, sensorsOf({ [Z_SENSOR_ID]: { ...GOOD, onValve: true } })),
+          plan(world, raw, {}, sensorsOf({ [BEDROOM_SENSOR_ID]: { ...GOOD, onValve: true } })),
         );
         expect(refused.code).toBe("sensor_on_valve");
-        expect(refused.data).toEqual({ sensor: Z_SENSOR_ID });
+        expect(refused.data).toEqual({ sensor: BEDROOM_SENSOR_ID });
       });
     });
 
@@ -835,10 +840,10 @@ describe("change", () => {
     describe("With a sensor of the current config that has no entry in sensors, and only a schedule edit", () => {
       it("returns a plan", () => {
         const world = current({
-          rooms: [room("living", [V1], [Z_MODEL])],
+          rooms: [room("living", [V1], [BEDROOM_MODEL])],
           ledger: ledgerOf(record(V1)),
         });
-        const raw = doc([rawRoom("living", [V1], [Z_SENSOR])], { eco: 16 });
+        const raw = doc([rawRoom("living", [V1], [BEDROOM_SENSOR])], { eco: 16 });
         expect(plan(world, raw).stored.revision).toBe(2);
       });
     });
@@ -846,11 +851,11 @@ describe("change", () => {
     describe("With a sensor of the current config whose isTemperature is now false, moved to another room", () => {
       it("returns a plan", () => {
         const world = current({
-          rooms: [room("living", [V1], [Z_MODEL]), room("bedroom", [V2])],
+          rooms: [room("living", [V1], [BEDROOM_MODEL]), room("bedroom", [V2])],
           ledger: ledgerOf(record(V1), record(V2)),
         });
-        const raw = doc([rawRoom("living", [V1]), rawRoom("bedroom", [V2], [Z_SENSOR])]);
-        const sensors = sensorsOf({ [Z_SENSOR_ID]: { ...GOOD, isTemperature: false } });
+        const raw = doc([rawRoom("living", [V1]), rawRoom("bedroom", [V2], [BEDROOM_SENSOR])]);
+        const sensors = sensorsOf({ [BEDROOM_SENSOR_ID]: { ...GOOD, isTemperature: false } });
         expect(plan(world, raw, {}, sensors).stored.revision).toBe(2);
       });
     });

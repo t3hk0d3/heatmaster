@@ -32,6 +32,7 @@ import { EMPTY_LEDGER, memberships, withRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, ValveRecord } from "./ledger.ts";
 import { START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
+import { DEFAULT_SETTINGS } from "./model.ts";
 import type { Room, SensorRef, SetPoint } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
@@ -216,7 +217,7 @@ function freshReading(world: World, value: number): SensorReading {
 }
 
 function staleReading(world: World): SensorReading {
-  return reading(19, 3 * HOUR_MS, nowOf(world));
+  return reading(19, DEFAULT_SETTINGS.sensorStaleAfterMs + HOUR_MS, nowOf(world));
 }
 
 const PENDING_READING: SensorReading = {
