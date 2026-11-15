@@ -3,6 +3,7 @@ import type {
   Config,
   PresetName,
   RawConfig,
+  RawSetPoint,
   Room,
   Schedule,
   SensorRef,
@@ -12,7 +13,7 @@ import type {
 
 /** A complete valid document: one schedule, one room with a valve, a z2m sensor and an ha sensor. */
 export function validRaw(): RawConfig {
-  const day = [
+  const day = (): RawSetPoint[] => [
     { time: "00:00", preset: "eco" as const },
     { time: "06:30", preset: "comfort" as const },
     { time: "22:00", temperature: 18 },
@@ -32,11 +33,11 @@ export function validRaw(): RawConfig {
         id: "default",
         name: "Default week",
         default_week: {
-          mon: day,
-          tue: day,
-          wed: day,
-          thu: day,
-          fri: day,
+          mon: day(),
+          tue: day(),
+          wed: day(),
+          thu: day(),
+          fri: day(),
           sat: [{ time: "00:00", preset: "eco" }],
           sun: [{ time: "00:00", preset: "eco" }],
         },

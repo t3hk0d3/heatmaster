@@ -659,6 +659,51 @@ describe("validation", () => {
       });
     });
 
+    describe("On a timezone that is not a named zone, or that differs only in case", () => {
+      it.each(["2020-01-01T00:00+01:00", "2020-01-01T00:00:00Z[Europe/Amsterdam]"])(
+        "throws ConfigError with code timezone_invalid for %j",
+        (zone) => {
+          expectIssue(
+            patched(["settings", "timezone"], zone),
+            "timezone_invalid",
+            "settings.timezone",
+          );
+        },
+      );
+
+      it.each([
+        ["europe/amsterdam", "Europe/Amsterdam"],
+        ["utc", "UTC"],
+      ])("accepts %j and stores %j", (zone, canonical) => {
+        expect(validateConfig(patched(["settings", "timezone"], zone)).settings.timezone).toBe(
+          canonical,
+        );
+      });
+    });
+
+    describe("On a sensor listed twice that also has an unrelated fault", () => {
+      it("throws sensor_duplicate together with the other issue", () => {
+        const ha = { ref: "ha:sensor.living_temperature", weight: 0 };
+        const raw = onlyRoom({ sensors: [{ ref: ha.ref }, ha] });
+        expectIssue(raw, "sensor_duplicate", "rooms[0].sensors[1].ref");
+        expectIssue(raw, "weight_invalid", "rooms[0].sensors[1].weight");
+      });
+    });
+
+    describe("On a container of the wrong type", () => {
+      it.each([
+        [["rooms", 0], "rooms[0]"],
+        [["schedules", 0], "schedules[0]"],
+        [[...MON, 0], "schedules[0].default_week.mon[0]"],
+        [[...ROOM, "valves", 0], "rooms[0].valves[0]"],
+        [[...SENSORS, 0], "rooms[0].sensors[0]"],
+      ] as const)("reports only type_invalid at %j", (path, expected) => {
+        expect(issuesOf(patched(path, 7))).toEqual([
+          expect.objectContaining({ code: "type_invalid", path: expected }),
+        ]);
+      });
+    });
+
     describe('On a language other than "en" or "ru"', () => {
       it.each(["de", "EN", ""])(
         "throws ConfigError with code language_unsupported (%j)",

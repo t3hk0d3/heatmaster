@@ -117,6 +117,9 @@ function typeInvalid(report: Report, path: string, expected: string): void {
   report(path, "type_invalid", `expected ${expected}`);
 }
 
+/** Stand-ins returned for a value that is not an object; they have no keys to complain about. */
+const NOT_AN_OBJECT = new WeakSet<object>();
+
 function asObject(
   report: Report,
   path: string,
@@ -125,7 +128,9 @@ function asObject(
 ): Readonly<Record<string, unknown>> {
   if (!isRecord(value)) {
     typeInvalid(report, path, "an object");
-    return {};
+    const stand: Record<string, unknown> = {};
+    NOT_AN_OBJECT.add(stand);
+    return stand;
   }
   for (const key of Object.keys(value)) {
     if (!allowed.includes(key)) report(at(path, key), "key_unknown", `unknown key "${key}"`);
@@ -140,7 +145,8 @@ function requiredKey(
   key: string,
 ): unknown {
   const value = read(obj, key);
-  if (value === undefined) report(at(path, key), "key_missing", `missing required key "${key}"`);
+  if (value === undefined && !NOT_AN_OBJECT.has(obj))
+    report(at(path, key), "key_missing", `missing required key "${key}"`);
   return value;
 }
 
@@ -225,13 +231,14 @@ function parseWholeMinutes(
   return value;
 }
 
-function timezoneKnown(zone: string): boolean {
-  if (zone === "" || zone.startsWith("+") || zone.startsWith("-")) return false;
+/** The canonical id of a named IANA zone, or undefined for anything else (offsets, ISO strings). */
+function canonicalTimezone(zone: string): string | undefined {
+  if (zone === "" || zone.startsWith("+") || zone.startsWith("-")) return undefined;
   try {
-    Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(zone);
-    return true;
+    const id = Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(zone).timeZoneId;
+    return id.toLowerCase() === zone.toLowerCase() ? id : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -268,8 +275,9 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
   let timezone: string | undefined;
   const zone = read(obj, "timezone");
   if (typeof zone === "string") {
-    if (timezoneKnown(zone)) timezone = zone;
-    else report(at(path, "timezone"), "timezone_invalid", "unknown time zone");
+    timezone = canonicalTimezone(zone);
+    if (timezone === undefined)
+      report(at(path, "timezone"), "timezone_invalid", "unknown time zone");
   } else if (zone !== undefined) typeInvalid(report, at(path, "timezone"), "a text");
 
   let language = DEFAULT_SETTINGS.language;
@@ -311,7 +319,7 @@ function parseSetPoint(report: Report, path: string, value: unknown): SetPoint |
       ? undefined
       : parseTemperature(report, at(path, "temperature"), rawTemperature);
 
-  if ((rawPreset === undefined) === (rawTemperature === undefined)) {
+  if (!NOT_AN_OBJECT.has(obj) && (rawPreset === undefined) === (rawTemperature === undefined)) {
     report(path, "set_point_ambiguous", "a set point has either a preset or a temperature");
   }
   if (time === undefined) return undefined;
@@ -345,6 +353,7 @@ function parseDay(report: Report, path: string, value: unknown): readonly SetPoi
 }
 
 function parseWeek(report: Report, path: string, value: unknown): Week {
+  if (value === undefined) return { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
   const obj = asObject(report, path, value, WEEKDAYS);
   const day = (name: Weekday): readonly SetPoint[] => {
     const item = read(obj, name);
@@ -478,7 +487,7 @@ function parseSensors(report: Report, path: string, value: unknown): readonly Se
     let faults = 0;
     const sensor = parseSensor(
       (p, code, message) => {
-        faults += 1;
+        if (!p.endsWith(".weight")) faults += 1;
         report(p, code, message);
       },
       itemPath,
