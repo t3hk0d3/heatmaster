@@ -81,14 +81,8 @@
         "11": {
           "bindings": [],
           "clusters": {
-            "input": [
-              "ssIasAce",
-              "genTime"
-            ],
-            "output": [
-              "ssIasZone",
-              "ssIasWd"
-            ]
+            "input": ["ssIasAce", "genTime"],
+            "output": ["ssIasZone", "ssIasWd"]
           },
           "configured_reportings": [],
           "scenes": []
@@ -105,9 +99,7 @@
         "13": {
           "bindings": [],
           "clusters": {
-            "input": [
-              "genOta"
-            ],
+            "input": ["genOta"],
             "output": []
           },
           "configured_reportings": [],
@@ -197,11 +189,7 @@
                 "name": "system_mode",
                 "property": "system_mode",
                 "type": "enum",
-                "values": [
-                  "off",
-                  "auto",
-                  "heat"
-                ]
+                "values": ["off", "auto", "heat"]
               },
               {
                 "access": 5,
@@ -210,10 +198,7 @@
                 "name": "running_state",
                 "property": "running_state",
                 "type": "enum",
-                "values": [
-                  "idle",
-                  "heat"
-                ]
+                "values": ["idle", "heat"]
               }
             ],
             "type": "climate"
@@ -264,10 +249,7 @@
             "name": "temporary_mode_select",
             "property": "temporary_mode_select",
             "type": "enum",
-            "values": [
-              "boost",
-              "timer"
-            ]
+            "values": ["boost", "timer"]
           },
           {
             "access": 7,
@@ -311,11 +293,7 @@
             "name": "temperature_sensor_select",
             "property": "temperature_sensor_select",
             "type": "enum",
-            "values": [
-              "local_temperature",
-              "remote_temperature",
-              "remote_source_offline"
-            ]
+            "values": ["local_temperature", "remote_temperature", "remote_source_offline"]
           },
           {
             "access": 7,
@@ -513,10 +491,7 @@
             "name": "thermostat_unit",
             "property": "thermostat_unit",
             "type": "enum",
-            "values": [
-              "celsius",
-              "fahrenheit"
-            ]
+            "values": ["celsius", "fahrenheit"]
           }
         ],
         "source": "native",
@@ -556,10 +531,7 @@
               "manuSpecificAmazonWWAH",
               "customSonoffTrvzb"
             ],
-            "output": [
-              "genTime",
-              "genOta"
-            ]
+            "output": ["genTime", "genOta"]
           },
           "configured_reportings": [
             {
@@ -652,11 +624,7 @@
                 "name": "system_mode",
                 "property": "system_mode",
                 "type": "enum",
-                "values": [
-                  "off",
-                  "auto",
-                  "heat"
-                ]
+                "values": ["off", "auto", "heat"]
               },
               {
                 "access": 5,
@@ -665,10 +633,7 @@
                 "name": "running_state",
                 "property": "running_state",
                 "type": "enum",
-                "values": [
-                  "idle",
-                  "heat"
-                ]
+                "values": ["idle", "heat"]
               }
             ],
             "type": "climate"
@@ -702,12 +667,7 @@
             "name": "screen_direction",
             "property": "screen_direction",
             "type": "enum",
-            "values": [
-              "0",
-              "90",
-              "180",
-              "270"
-            ]
+            "values": ["0", "90", "180", "270"]
           },
           {
             "access": 7,
@@ -751,11 +711,7 @@
             "name": "temperature_sensor_select",
             "property": "temperature_sensor_select",
             "type": "enum",
-            "values": [
-              "local_temperature",
-              "remote_temperature",
-              "remote_source_offline"
-            ]
+            "values": ["local_temperature", "remote_temperature", "remote_source_offline"]
           },
           {
             "access": 7,
@@ -875,11 +831,7 @@
             "name": "temporary_mode_mode",
             "property": "temporary_mode_mode",
             "type": "enum",
-            "values": [
-              "disabled",
-              "timer",
-              "boost"
-            ]
+            "values": ["disabled", "timer", "boost"]
           },
           {
             "access": 7,
@@ -913,10 +865,7 @@
             "name": "low_battery_valve_state",
             "property": "low_battery_valve_state",
             "type": "enum",
-            "values": [
-              "close",
-              "open_30"
-            ]
+            "values": ["close", "open_30"]
           },
           {
             "access": 7,
@@ -926,11 +875,7 @@
             "name": "schedule_active_group",
             "property": "schedule_active_group",
             "type": "enum",
-            "values": [
-              "1",
-              "2",
-              "3"
-            ]
+            "values": ["1", "2", "3"]
           },
           {
             "access": 7,
@@ -940,11 +885,7 @@
             "name": "schedule_group_to_edit",
             "property": "schedule_group_to_edit",
             "type": "enum",
-            "values": [
-              "1",
-              "2",
-              "3"
-            ]
+            "values": ["1", "2", "3"]
           },
           {
             "access": 7,
@@ -1064,9 +1005,7 @@
             "name": "valve_travel_calibration",
             "property": "valve_travel_calibration",
             "type": "enum",
-            "values": [
-              "calibrate"
-            ]
+            "values": ["calibrate"]
           },
           {
             "access": 5,
@@ -1084,10 +1023,7 @@
             "name": "bluetooth_pairing",
             "property": "bluetooth_pairing",
             "type": "enum",
-            "values": [
-              "start",
-              "stop"
-            ]
+            "values": ["start", "stop"]
           },
           {
             "access": 1,
@@ -1096,10 +1032,7 @@
             "name": "bluetooth_pairing_status",
             "property": "bluetooth_pairing_status",
             "type": "enum",
-            "values": [
-              "success",
-              "fail"
-            ]
+            "values": ["success", "fail"]
           },
           {
             "access": 2,
@@ -1111,11 +1044,7 @@
                 "name": "type",
                 "property": "type",
                 "type": "enum",
-                "values": [
-                  "day",
-                  "month",
-                  "half_year"
-                ]
+                "values": ["day", "month", "half_year"]
               },
               {
                 "access": 2,
@@ -1182,10 +1111,7 @@
             "name": "thermostat_unit",
             "property": "thermostat_unit",
             "type": "enum",
-            "values": [
-              "celsius",
-              "fahrenheit"
-            ]
+            "values": ["celsius", "fahrenheit"]
           }
         ],
         "source": "native",
@@ -1233,10 +1159,7 @@
               "customSonoffTrvzbt",
               "manuSpecificAmazonWWAH"
             ],
-            "output": [
-              "genTime",
-              "genOta"
-            ]
+            "output": ["genTime", "genOta"]
           },
           "configured_reportings": [
             {
