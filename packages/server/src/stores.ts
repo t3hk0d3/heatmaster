@@ -101,8 +101,11 @@ async function writeAtomic(file: string, text: string): Promise<void> {
     } finally {
       await directory.close();
     }
-  } catch {
-    // Some platforms cannot flush a directory; the rename has happened.
+  } catch (error) {
+    // Only "this platform cannot flush a directory" is ignored; EIO and the rest surface.
+    if (!["EINVAL", "EISDIR", "EPERM", "ENOTSUP", "EBADF"].includes(errnoCode(error) ?? "")) {
+      throw error;
+    }
   }
 }
 
@@ -246,6 +249,8 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
     );
   let locked = true;
   let holdsRecords = false;
+  // False until a load or an import has looked at the ledger file.
+  let fileKnown = false;
 
   async function readCopy(generation: number): Promise<Ledger | undefined> {
     const read = await readJson(copyName(generation));
@@ -265,18 +270,31 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
     return undefined;
   }
 
+  /** Whether any copy file exists, readable or not. */
+  async function anyCopyFile(): Promise<boolean> {
+    for (let generation = 0; generation < COPY_GENERATIONS; generation += 1) {
+      if ((await readJson(copyName(generation))).kind !== "missing") return true;
+    }
+    return false;
+  }
+
   async function saveLedger(ledger: Ledger): Promise<void> {
     await writeAtomic(file, render({ version: LEDGER_FILE_VERSION, data: ledgerToRaw(ledger) }));
     holdsRecords = ledger.records.size > 0;
     locked = false;
+    fileKnown = true;
   }
 
   return {
     async load(expected) {
+      fileKnown = true;
       const read = await readJson(file);
+      holdsRecords = false;
       if (read.kind === "missing") {
         const copy = await newestCopy();
-        if (!expected && (copy?.records.size ?? 0) === 0) {
+        // Copy files that exist but cannot be read may hide records: that locks the store.
+        const empty = copy === undefined ? !(await anyCopyFile()) : copy.records.size === 0;
+        if (!expected && empty) {
           locked = false;
           holdsRecords = false;
           return EMPTY_LEDGER;
@@ -329,11 +347,23 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
     },
 
     async importCopy(acceptEmpty = false) {
-      if (!locked && holdsRecords) throw new HeatmasterError("ledger_readable");
+      if (!fileKnown) {
+        // Never loaded: look at the file itself and refuse as after a normal load.
+        const read = await readJson(file);
+        if (read.kind === "ok") {
+          try {
+            const current = ledgerFromData(migrateLedgerFile(read.file).data);
+            holdsRecords = (current?.records.size ?? 0) > 0;
+          } catch {
+            holdsRecords = false;
+          }
+        }
+      }
+      if (holdsRecords) throw new HeatmasterError("ledger_readable");
       const copy = (await newestCopy()) ?? (acceptEmpty ? EMPTY_LEDGER : undefined);
       if (copy === undefined) throw new HeatmasterError("no_originals_copy");
-      // A locked store means the file is unreadable or missing; an unreadable one is kept.
-      if (locked) await setAside(file, "ledger", clock);
+      // Whatever file is there is kept; a missing one is skipped.
+      await setAside(file, "ledger", clock);
       await saveLedger(copy);
       return copy;
     },

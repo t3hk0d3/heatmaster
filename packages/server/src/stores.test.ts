@@ -15,7 +15,6 @@ import type { Ledger } from "@heatmaster/core";
 import { rejectionOf } from "../test/rejection.ts";
 import { createManualClock } from "../test/manual-clock.ts";
 import {
-  SAMPLE_VALVE,
   ledgerWith,
   record,
   releasedOnly,
@@ -360,6 +359,16 @@ describe("LedgerStore", () => {
       });
     });
 
+    describe("With no file, expected false, and copy files that exist but none is readable", () => {
+      it("returns undefined and the store is locked", async () => {
+        const w = world();
+        put(w.copy("originals.json"), "junk");
+        put(w.copy("originals.2.json"), { version: 2, data: {} });
+        expect(await w.ledger.load(false)).toBeUndefined();
+        expect(await rejectionOf(w.ledger.save(EMPTY_LEDGER))).toBeInstanceOf(StoreLocked);
+      });
+    });
+
     describe("With no file and expected true", () => {
       it("returns undefined and the store is locked", async () => {
         const w = world();
@@ -652,6 +661,30 @@ describe("LedgerStore", () => {
         expect((await w.ledger.importCopy()).records.size).toBe(1);
         expect(await createLedgerStore(w.dirs(), w.clock, "1").load(false)).toEqual(ledgerWith(1));
       });
+
+      it("the old ledger file exists under ledger.unreadable.<stamp>.json", async () => {
+        const w = world();
+        const old = { records: new Map(), released: releasedOnly().released };
+        const text = JSON.stringify(ledgerFile(old));
+        put(w.file("ledger.json"), text);
+        put(w.copy("originals.json"), copyFile(ledgerWith(1)));
+        await w.ledger.load(false);
+        await w.ledger.importCopy();
+        expect(readFileSync(w.file(`ledger.unreadable.${STAMP}.json`), "utf8")).toBe(text);
+      });
+    });
+
+    describe("Before any load, with a ledger file that holds records", () => {
+      it("rejects with ledger_readable and changes nothing", async () => {
+        const w = world();
+        const text = JSON.stringify(ledgerFile(sampleLedger()));
+        put(w.file("ledger.json"), text);
+        put(w.copy("originals.json"), copyFile(ledgerWith(1)));
+        const error = await rejectionOf(w.ledger.importCopy());
+        expect((error as HeatmasterError).code).toBe("ledger_readable");
+        expect(names(w.dataDir)).toEqual(["ledger.json"]);
+        expect(readFileSync(w.file("ledger.json"), "utf8")).toBe(text);
+      });
     });
 
     describe("With no ledger file, expected false, and an originals.json that holds one record (the store is locked)", () => {
@@ -660,8 +693,9 @@ describe("LedgerStore", () => {
         put(w.copy("originals.json"), copyFile(ledgerWith(1)));
         expect(await w.ledger.load(false)).toBeUndefined();
         expect(await w.ledger.importCopy()).toEqual(ledgerWith(1));
+        expect(await createLedgerStore(w.dirs(), w.clock, "1").load(true)).toEqual(ledgerWith(1));
         await w.ledger.save(ledgerWith(2));
-        expect(SAMPLE_VALVE).toBeTypeOf("string");
+        expect(await createLedgerStore(w.dirs(), w.clock, "1").load(true)).toEqual(ledgerWith(2));
       });
     });
   });

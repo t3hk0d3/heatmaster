@@ -138,6 +138,8 @@ export type SimDriver = Readonly<{
   loseLedger: (how: "lost" | "corrupt") => void;
   /** What `importCopy` does: the recorded copy becomes the ledger. */
   importCopy: () => void;
+  /** Copy files exist but none can be read: they may hide records, so a missing ledger locks. */
+  corruptCopy: () => void;
   linkDown: (name: string) => void;
   linkUp: (name: string) => void;
   /** Zigbee2MQTT restarts: the link is down for the next step, then the events and the replay. */
@@ -195,6 +197,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     ledger: setup.ledger === undefined ? { state: "lost" } : { state: "ok", ledger: setup.ledger },
   };
   let copy: Ledger | undefined = setup.ledger;
+  let copyUnreadable = false;
   let configState: ConfigState = "ok";
   let stored: StoredConfig | undefined;
   let ledger: Ledger | undefined;
@@ -220,7 +223,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       const inRoom = configFile.stored.config.rooms.some((room) => room.valves.length > 0);
       if (inRoom || configFile.stored.releasing.size > 0) return undefined;
     }
-    if ((copy?.records.size ?? 0) > 0) return undefined;
+    if (copyUnreadable || (copy?.records.size ?? 0) > 0) return undefined;
     return EMPTY_LEDGER;
   };
 
@@ -474,6 +477,9 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     },
     loseLedger(how) {
       disk.ledger = { state: how };
+    },
+    corruptCopy() {
+      copyUnreadable = true;
     },
     importCopy() {
       if (copy === undefined) throw new Error("no originals copy was recorded");

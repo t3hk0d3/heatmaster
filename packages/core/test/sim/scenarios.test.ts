@@ -1106,6 +1106,15 @@ describe("scenarios", () => {
         expect(bare("lost").ledger()?.records.size).toBe(0);
       });
 
+      it("is unreadable when the file is missing and copy files exist but none can be read", () => {
+        const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }], recorded: false });
+        sim.loseConfig("lost");
+        sim.loseLedger("lost");
+        sim.corruptCopy();
+        sim.restart();
+        expect(sim.ledger()).toBeUndefined();
+      });
+
       it("is unreadable when the file is corrupt, whatever else holds", () => {
         expect(bare("corrupt").ledger()).toBeUndefined();
       });
