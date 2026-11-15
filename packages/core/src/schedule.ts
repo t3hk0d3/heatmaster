@@ -1,8 +1,7 @@
 import { WEEKDAYS } from "./model.ts";
+import { roundHalfUp } from "./rounding.ts";
 import type { Presets, SetPoint, Week, Weekday } from "./model.ts";
 
-/** A value this far below a half counts as the half (see the styleguide, Rounding). */
-const HALF_TOLERANCE = 0.000000001;
 /** How many days after today `activePoint` looks through for a change. */
 const LOOKAHEAD_DAYS = 7;
 
@@ -31,11 +30,6 @@ export function resolveWeek(week: Week, presets: Presets): ResolvedWeek {
   return days;
 }
 
-function roundToStep(value: number, step: number): number {
-  const stepped = Math.floor(value / step + 0.5 + HALF_TOLERANCE) * step;
-  return Math.round(stepped * 1_000_000) / 1_000_000 + 0;
-}
-
 /** One valve's view of a week: rounded half up to `tempStep`, then held inside the range. */
 export function fitWeek(
   week: ResolvedWeek,
@@ -45,7 +39,7 @@ export function fitWeek(
 ): FittedWeek {
   let clamped = false;
   const fit = (temperature: number): number => {
-    const rounded = roundToStep(temperature, tempStep);
+    const rounded = roundHalfUp(temperature, tempStep);
     if (rounded < minTemp) {
       clamped = true;
       return minTemp;
@@ -112,13 +106,17 @@ export function activePoint(week: ResolvedWeek, now: Temporal.ZonedDateTime): Ac
   const nowMs = now.epochMilliseconds;
   for (let offset = 0; offset <= LOOKAHEAD_DAYS; offset++) {
     const date = today.add({ days: offset });
-    for (const point of week[weekdayOf(date)]) {
-      if (point.temperature === temperature) continue;
+    const entries = week[weekdayOf(date)].map((point) => ({
+      point,
+      at: instantOf(date, point.time, now.timeZoneId),
+    }));
+    for (const { point, at } of entries) {
       if (offset === 0 && Temporal.PlainTime.compare(point.time, clock) <= 0) continue;
-      const at = instantOf(date, point.time, now.timeZoneId);
-      if (at !== undefined && at > nowMs) {
-        return { temperature, nextChangeAt: at, nextTemperature: point.temperature };
-      }
+      if (at === undefined || at <= nowMs) continue;
+      // Points of one date that resolve to the same instant: the last one is in force there.
+      const last = entries.findLast((e) => e.at === at)?.point ?? point;
+      if (last.temperature === temperature) continue;
+      return { temperature, nextChangeAt: at, nextTemperature: last.temperature };
     }
   }
   return { temperature, nextChangeAt: undefined, nextTemperature: undefined };

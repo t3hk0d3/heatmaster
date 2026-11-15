@@ -101,6 +101,15 @@ describe("schedule", () => {
     });
   });
 
+  describe("fitWeek rounding", () => {
+    describe("With 19.2499999995 and a step of 0.1", () => {
+      it("it becomes 19.3, as within 1e-9 below a half counts as the half", () => {
+        const fitted = fitWeek(weekOf(points("00:00/19.2499999995")), 5, 30, 0.1);
+        expect(fitted.days.mon[0]?.temperature).toBe(19.3);
+      });
+    });
+  });
+
   describe("normalizeDay", () => {
     describe("With points 00:00/16, 07:00/19, 10:00/16, 10:00/16, 17:00/19", () => {
       it("returns 00:00/16, 07:00/19, 10:00/16, 17:00/19", () => {
@@ -216,6 +225,22 @@ describe("schedule", () => {
         expect(result.nextChangeAt).toBe(ms("2027-03-28T01:00:00Z"));
       });
     });
+    describe("On 2027-03-28 in Europe/Amsterdam at 01:30 with set points at 02:30/20 and 02:45/16 on a 16 day", () => {
+      it("both resolve to 03:00, where the temperature is 16 again, so the next change is the following Sunday", () => {
+        const w = weekOf(points("00:00/16"), { sun: points("00:00/16 02:30/20 02:45/16") });
+        const result = activePoint(w, at("2027-03-28T01:30"));
+        expect(result.nextChangeAt).toBe(at("2027-04-04T02:30").epochMilliseconds);
+        expect(result.nextTemperature).toBe(20);
+      });
+    });
+    describe("On 2027-03-28 in Europe/Amsterdam at 01:30 with set points at 02:30/16 and 02:45/20 on a 16 day", () => {
+      it("the last of the two decides: nextChangeAt is 01:00Z and nextTemperature is 20", () => {
+        const w = weekOf(points("00:00/16"), { sun: points("00:00/16 02:30/16 02:45/20") });
+        const result = activePoint(w, at("2027-03-28T01:30"));
+        expect(result.nextChangeAt).toBe(ms("2027-03-28T01:00:00Z"));
+        expect(result.nextTemperature).toBe(20);
+      });
+    });
     describe("On 2027-03-28 in Europe/Amsterdam at 03:00 with a set point at 02:30", () => {
       it("temperature is the 02:30 set point's", () => {
         const w = weekOf(points("00:00/16 02:30/20"));
@@ -271,13 +296,18 @@ describe("schedule", () => {
       const arbNow = fc
         .tuple(
           fc.constantFrom("2027-03-28", "2027-10-31"),
-          fc.integer({ min: 0, max: 24 * 60 * 60 - 1 }),
+          fc.double({ min: 0, max: 1, noNaN: true, maxExcluded: true }),
         )
-        .map(([date, s]) =>
-          Temporal.Instant.from(`${date}T00:00:00+01:00`)
-            .add({ seconds: s - (date === "2027-03-28" ? 0 : 3600) })
-            .toZonedDateTimeISO(AMS),
+        .map(([date, fraction]) => {
+          const start = Temporal.PlainDate.from(date).toZonedDateTime(AMS);
+          return start.add({ seconds: Math.floor(fraction * start.hoursInDay * 3600) });
+        });
+      it("the generator covers the 23 h and the 25 h day", () => {
+        const hours = ["2027-03-28", "2027-10-31"].map(
+          (d) => Temporal.PlainDate.from(d).toZonedDateTime(AMS).hoursInDay,
         );
+        expect(hours).toEqual([23, 25]);
+      });
       fcTest.prop([arbWeek, arbNow])("does not throw", (w, now) => {
         expect(() => activePoint(w, now)).not.toThrow();
       });

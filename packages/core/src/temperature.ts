@@ -1,12 +1,11 @@
 import { sensorId } from "./model.ts";
+import { roundHalfUp } from "./rounding.ts";
 import type { SensorRef } from "./model.ts";
 
 /** The lowest room temperature, in °C, that counts as a real reading. */
 const MIN_VALID_C = -10;
 /** The highest room temperature, in °C, that counts as a real reading. */
 const MAX_VALID_C = 45;
-/** A value this far below a half counts as the half (see the styleguide, Rounding). */
-const HALF_TOLERANCE = 0.000000001;
 
 /**
  * What is known about one sensor. `value` is in °C; `seenAt` is when the sensor was last known
@@ -47,11 +46,6 @@ function judge(reading: SensorReading | undefined, nowMs: number, staleAfterMs: 
   return "used";
 }
 
-/** Rounds half up to 0.1. */
-function roundTenth(value: number): number {
-  return Math.floor(value * 10 + 0.5 + HALF_TOLERANCE) / 10 + 0;
-}
-
 export function aggregate(
   sensors: readonly SensorRef[],
   readings: ReadonlyMap<string, SensorReading>,
@@ -72,7 +66,9 @@ export function aggregate(
     }
   }
   const value =
-    lists.used.length === 0 || totalWeight <= 0 ? undefined : roundTenth(weighted / totalWeight);
+    lists.used.length === 0 || totalWeight <= 0
+      ? undefined
+      : roundHalfUp(weighted / totalWeight, 0.1);
   return { value, ...lists };
 }
 

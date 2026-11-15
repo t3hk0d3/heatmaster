@@ -35,3 +35,4 @@ export type {
   ResolvedPoint,
   ResolvedWeek,
 } from "./schedule.ts";
+export { roundHalfUp } from "./rounding.ts";
