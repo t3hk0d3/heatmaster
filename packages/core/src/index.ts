@@ -25,3 +25,5 @@ export type {
   RawSettings,
   RawWeek,
 } from "./validation.ts";
+export { aggregate, freshness } from "./temperature.ts";
+export type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";
