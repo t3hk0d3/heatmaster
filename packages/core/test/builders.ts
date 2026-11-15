@@ -4,6 +4,7 @@ import type {
   PresetName,
   RawConfig,
   RawSetPoint,
+  ResolvedDay,
   Room,
   Schedule,
   SensorRef,
@@ -184,3 +185,14 @@ export const arbConfig: fc.Arbitrary<Config> = fc
         }),
     }),
   );
+
+/** Reads `"00:00/16 07:00/19"` as a resolved day. */
+export function points(text: string): ResolvedDay {
+  return text
+    .trim()
+    .split(/\s+/)
+    .map((item) => {
+      const [time = "", temperature = ""] = item.split("/");
+      return { time: Temporal.PlainTime.from(time), temperature: Number(temperature) };
+    });
+}

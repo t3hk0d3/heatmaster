@@ -27,3 +27,11 @@ export type {
 } from "./validation.ts";
 export { aggregate, freshness } from "./temperature.ts";
 export type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";
+export { activePoint, daysEqual, fitWeek, normalizeDay, resolveWeek } from "./schedule.ts";
+export type {
+  ActivePoint,
+  FittedWeek,
+  ResolvedDay,
+  ResolvedPoint,
+  ResolvedWeek,
+} from "./schedule.ts";
