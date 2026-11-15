@@ -270,12 +270,17 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
     return undefined;
   }
 
-  /** Whether any copy file exists, readable or not. */
-  async function anyCopyFile(): Promise<boolean> {
+  /**
+   * True when there is no copy file, or the newest copy file is readable and holds no record. A
+   * newest copy that exists but cannot be read may hide records, so it is not empty.
+   */
+  async function newestCopyEmpty(): Promise<boolean> {
     for (let generation = 0; generation < COPY_GENERATIONS; generation += 1) {
-      if ((await readJson(copyName(generation))).kind !== "missing") return true;
+      const read = await readJson(copyName(generation));
+      if (read.kind === "missing") continue;
+      return (await readCopy(generation))?.records.size === 0;
     }
-    return false;
+    return true;
   }
 
   async function saveLedger(ledger: Ledger): Promise<void> {
@@ -291,9 +296,7 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
       const read = await readJson(file);
       holdsRecords = false;
       if (read.kind === "missing") {
-        const copy = await newestCopy();
-        // Copy files that exist but cannot be read may hide records: that locks the store.
-        const empty = copy === undefined ? !(await anyCopyFile()) : copy.records.size === 0;
+        const empty = await newestCopyEmpty();
         if (!expected && empty) {
           locked = false;
           holdsRecords = false;

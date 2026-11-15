@@ -339,6 +339,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
         return;
       case "writeOriginalsCopy":
         copy = effect.ledger;
+        copyUnreadable = false;
         return;
       case "publish":
         bridge.write(effect.valveId, bindingOf(effect.valveId).encode(effect.values), nowMs);

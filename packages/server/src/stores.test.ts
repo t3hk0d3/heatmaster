@@ -369,6 +369,16 @@ describe("LedgerStore", () => {
       });
     });
 
+    describe("With no file, expected false, the newest copy unreadable and an older copy holding no record", () => {
+      it("returns undefined and the store is locked", async () => {
+        const w = world();
+        put(w.copy("originals.json"), "junk");
+        put(w.copy("originals.1.json"), copyFile(EMPTY_LEDGER));
+        expect(await w.ledger.load(false)).toBeUndefined();
+        expect(await rejectionOf(w.ledger.save(EMPTY_LEDGER))).toBeInstanceOf(StoreLocked);
+      });
+    });
+
     describe("With no file and expected true", () => {
       it("returns undefined and the store is locked", async () => {
         const w = world();
