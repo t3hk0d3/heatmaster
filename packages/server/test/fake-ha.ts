@@ -55,6 +55,13 @@ export type FakeHa = Readonly<{
   dropConnections(): void;
   refuseConnections(on: boolean): void;
   setToken(token: string): void;
+  /** The event type of every active subscription (an all-events one shows as ""). */
+  subscriptions(): readonly string[];
+  /**
+   * While on, REST requests are recorded at once but answered only when it goes off, with the
+   * state as it was when the request arrived.
+   */
+  holdRest(on: boolean): void;
   /** How many websocket connections are open now. */
   openSockets(): number;
   /** How many websocket connections passed the handshake so far. */
@@ -94,6 +101,8 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
   const tokens: string[] = [];
   const upgraded: string[] = [];
   const failures = new Set<string>();
+  const held: (() => void)[] = [];
+  let holding = false;
   const sockets = new Set<WebSocket>();
   let refusing = false;
   let acceptedCount = 0;
@@ -123,7 +132,12 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
       fail(404);
       return;
     }
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(state));
+    const body = JSON.stringify(state);
+    const answer = (): void => {
+      response.writeHead(200, { "content-type": "application/json" }).end(body);
+    };
+    if (holding) held.push(answer);
+    else answer();
   });
 
   const wss = new WebSocketServer({ noServer: true });
@@ -326,6 +340,12 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
     },
     setToken(next) {
       token = next;
+    },
+    subscriptions: () => subscriptions.map((sub) => sub.eventType ?? ""),
+    holdRest(on) {
+      holding = on;
+      if (on) return;
+      for (const answer of held.splice(0)) answer();
     },
     openSockets: () => sockets.size,
     accepted: () => acceptedCount,

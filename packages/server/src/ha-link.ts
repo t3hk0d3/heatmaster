@@ -229,7 +229,8 @@ export function createHaLink(
   let devices: ReadonlyMap<string, DeviceEntry> = new Map();
   let areas: ReadonlyMap<string, string> = new Map();
   let byDevice: ReadonlyMap<string, readonly string[]> = new Map();
-  let states: ReadonlyMap<string, StateRecord> = new Map();
+  // Private and changed in place: one websocket event must not copy the whole house.
+  let states = new Map<string, StateRecord>();
   let watched: ReadonlySet<string> = new Set();
   const kept = new Map<string, Kept>();
   let view: ReadonlyMap<string, HaSensor> = new Map();
@@ -240,7 +241,9 @@ export function createHaLink(
   let cancelRetry: (() => void) | undefined;
   let cancelPoll: (() => void) | undefined;
   let polling = false;
-  const subscribed = new Set<string>();
+  // A subscription is recorded when it is asked for, not when it is answered: the library renews
+  // one that was in flight when the connection dropped, so asking again would double it.
+  const subscriptions = new Map<string, Promise<unknown>>();
   const pendingReloads = new Set<RegistryKind>();
 
   function emit(event: HaEvent): void {
@@ -360,12 +363,19 @@ export function createHaLink(
       [...ids].map(async (id) => [id, await fetchOne(id)] as const),
     );
     if (stopped || state !== "up") return;
-    const next = new Map(states);
     for (const [id, answer] of answers) {
-      if (answer === null) next.delete(id);
-      else if (answer !== undefined) next.set(id, answer);
+      if (answer === null) {
+        states.delete(id);
+        continue;
+      }
+      if (answer === undefined) continue;
+      // An event that arrived while the request was in flight is newer than this answer.
+      const known = states.get(id)?.reportedAt;
+      if (known !== undefined && answer.reportedAt !== undefined && answer.reportedAt < known) {
+        continue;
+      }
+      states.set(id, answer);
     }
-    states = next;
     if (refresh()) changed();
   }
 
@@ -391,14 +401,12 @@ export function createHaLink(
     if (!isRecord(event) || !isRecord(event.data)) return;
     const entityId = text(event.data.entity_id);
     if (entityId === undefined) return;
-    const next = new Map(states);
-    if (event.data.new_state === null) next.delete(entityId);
+    if (event.data.new_state === null) states.delete(entityId);
     else {
       const parsed = parseState(event.data.new_state);
       if (parsed === undefined) return;
-      next.set(entityId, parsed.record);
+      states.set(entityId, parsed.record);
     }
-    states = next;
     if (refresh()) changed();
   }
 
@@ -478,26 +486,36 @@ export function createHaLink(
 
   async function subscribeAll(conn: Connection): Promise<void> {
     for (const [type, what] of EVENT_TYPES) {
-      if (subscribed.has(type)) continue;
-      await conn.subscribeEvents(
-        what === "state"
-          ? onStateChanged
-          : () => {
-              onRegistryEvent(what);
-            },
-        type,
-      );
-      subscribed.add(type);
+      let pending = subscriptions.get(type);
+      if (pending === undefined) {
+        pending = conn.subscribeEvents(
+          what === "state"
+            ? onStateChanged
+            : () => {
+                onRegistryEvent(what);
+              },
+          type,
+        );
+        subscriptions.set(type, pending);
+        // An error result means nothing was subscribed: the next loading asks again.
+        pending.catch(() => subscriptions.delete(type));
+      }
+      await pending;
     }
   }
 
   async function load(conn: Connection, id: number): Promise<void> {
     try {
       await subscribeAll(conn);
+      if (stale(id)) return;
       const applyConfig = await fetchRegistry(conn, "config");
+      if (stale(id)) return;
       const applyEntities = await fetchRegistry(conn, "entities");
+      if (stale(id)) return;
       const applyDevices = await fetchRegistry(conn, "devices");
+      if (stale(id)) return;
       const applyAreas = await fetchRegistry(conn, "areas");
+      if (stale(id)) return;
       const raw = list(
         await conn.sendMessagePromise<unknown>({ type: "get_states" }),
         "get_states",
@@ -606,9 +624,15 @@ export function createHaLink(
       listener = next;
       void connectLoop();
     },
+    /**
+     * Closes the connection and cancels the Clock's timers. The library keeps at most one of its own
+     * reconnect timers (5 s) or a connect time-out (10 s) alive; the process's shutdown must end
+     * with `process.exit` and not wait for them.
+     */
     async stop() {
       if (stopped) return;
       stopped = true;
+      setLinkState("down");
       loadId += 1;
       cancelRetry?.();
       cancelRetry = undefined;

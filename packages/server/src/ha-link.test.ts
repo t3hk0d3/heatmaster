@@ -11,7 +11,8 @@ import {
   type HaLink,
 } from "./ha-link.ts";
 
-const WAIT = { timeout: 8000, interval: 5 };
+// Below vitest's own 5 s test timeout, so a failed wait shows as an assertion, not a time-out.
+const WAIT = { timeout: 4000, interval: 5 };
 const SLOW = 20000;
 const T = Date.UTC(2026, 10, 15, 12, 0, 0);
 const C = { unit_of_measurement: "°C", device_class: "temperature", friendly_name: "Bathroom" };
@@ -272,6 +273,33 @@ describe("ha-link", () => {
         });
         expect(w.changedCount()).toBe(1);
       });
+    });
+
+    describe("When the connection drops while the subscriptions are being made", () => {
+      it(
+        "every event type is subscribed once after the reload",
+        async () => {
+          const w = await world({ start: false });
+          w.ha.failNext("close:subscribe_events");
+          startOn(w);
+          await until(() => {
+            expect(w.ha.accepted()).toBe(1);
+            expect(w.ha.openSockets()).toBe(0);
+          });
+          w.ha.refuseConnections(false);
+          await until(() => {
+            expect(w.link.state()).toBe("up");
+          });
+          expect([...w.ha.subscriptions()].sort()).toEqual([
+            "area_registry_updated",
+            "core_config_updated",
+            "device_registry_updated",
+            "entity_registry_updated",
+            "state_changed",
+          ]);
+        },
+        SLOW,
+      );
     });
 
     describe("When the token is refused on the reconnect", () => {
@@ -634,6 +662,26 @@ describe("ha-link", () => {
       });
     });
 
+    describe("With a state_changed event that arrives while a poll is in flight", () => {
+      it("the older state in the poll's answer does not replace it", async () => {
+        const w = await world();
+        w.ha.holdRest(true);
+        await poll(w, 3);
+        w.ha.setState(TEMP, "21", C, T + 5000);
+        await until(() => {
+          expect(celsiusOf(w)).toBe(21);
+        });
+        w.ha.holdRest(false);
+        // A second poll starts only after the first one has been processed; its answers are held,
+        // so only the first poll's old answers can have changed anything by then.
+        w.ha.holdRest(true);
+        await poll(w, 6);
+        expect(celsiusOf(w)).toBe(21);
+        expect(w.link.sensor(TEMP)?.lastReportedAt).toBe(T + 5000);
+        w.ha.holdRest(false);
+      });
+    });
+
     describe("With nothing different at a poll", () => {
       it("changed is not sent", async () => {
         const w = await world();
@@ -742,12 +790,12 @@ describe("ha-link", () => {
     describe("With nothing watched", () => {
       it("no poll is sent", async () => {
         const w = await world({ watch: [] });
-        w.clock.advance(HA_POLL_MS);
-        // Watching afterwards asks for one device only: the poll above asked for nothing.
-        w.link.watch(new Set([TEMP]));
-        await until(() => {
-          expect(w.ha.requests()).toHaveLength(3);
+        w.clock.advance(HA_POLL_MS * 2);
+        // A request of our own, after the polls would have started, shows what the server saw.
+        await fetch(`${w.ha.url}/api/states/${TEMP}`, {
+          headers: { Authorization: "Bearer test-token" },
         });
+        expect(w.ha.requests()).toEqual([`GET /api/states/${TEMP}`]);
       });
     });
 
@@ -1070,14 +1118,43 @@ describe("ha-link", () => {
 
       it("no event is sent afterwards", async () => {
         const w = await world();
+        // A second link on the same server shows when the server has delivered the changes.
+        const witness = createHaLink({ url: w.ha.url, token: "test-token" }, createManualClock(T), {
+          warn: () => undefined,
+        });
+        cleanups.push(() => witness.stop());
+        witness.watch(new Set([TEMP]));
+        witness.start(() => undefined);
+        await until(() => {
+          expect(witness.up()).toBe(true);
+        });
         await w.link.stop();
         const before = w.events.length;
-        w.ha.setState(TEMP, "25", C, T + 1000);
         w.ha.setConfig({ time_zone: "Europe/Berlin", language: "en" });
-        w.clock.advance(HA_POLL_MS * 2);
-        // Another websocket client shows the server did receive those changes while we were quiet.
+        w.ha.setState(TEMP, "25", C, T + 1000);
+        await until(() => {
+          expect(witness.sensor(TEMP)?.celsius).toBe(25);
+          expect(witness.house()?.timeZone).toBe("Europe/Berlin");
+        });
         expect(w.events).toHaveLength(before);
-        expect(w.ha.requests()).toEqual([]);
+      });
+
+      it("no poll request is sent afterwards", async () => {
+        const w = await world();
+        await w.link.stop();
+        w.clock.advance(HA_POLL_MS * 2);
+        // A request of our own, after the polls would have started, shows what the server saw.
+        await fetch(`${w.ha.url}/api/states/${TEMP}`, {
+          headers: { Authorization: "Bearer test-token" },
+        });
+        expect(w.ha.requests()).toEqual([`GET /api/states/${TEMP}`]);
+      });
+
+      it("state is not up and up() is false", async () => {
+        const w = await world();
+        await w.link.stop();
+        expect(w.link.state()).not.toBe("up");
+        expect(w.link.up()).toBe(false);
       });
     });
   });
