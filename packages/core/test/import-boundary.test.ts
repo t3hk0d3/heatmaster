@@ -67,18 +67,19 @@ describe("core package", () => {
 
     describe("With a file in packages/core/src that uses Date.now(), Temporal.Now, setTimeout or Math.random()", () => {
       it("ESLint reports an error", async () => {
-        const uses = [
-          "Date.now()",
-          "Temporal.Now.instant()",
-          "setTimeout(() => undefined, 1)",
-          "setInterval(() => undefined, 1)",
-          "Math.random()",
-          "process.env",
-          "console.log(1)",
+        const uses: [string, string][] = [
+          ["Date.now()", "no-restricted-globals"],
+          ["Temporal.Now.instant()", "no-restricted-properties"],
+          ["setTimeout(() => undefined, 1)", "no-restricted-globals"],
+          ["setInterval(() => undefined, 1)", "no-restricted-globals"],
+          ["Math.random()", "no-restricted-properties"],
+          ["process.env", "no-restricted-globals"],
+          ["console.log(1)", "no-restricted-globals"],
         ];
-        for (const use of uses) {
+        for (const [use, rule] of uses) {
           const messages = await lint("packages/core/src/x.ts", `export const x = ${use};\n`);
-          expect(messages.length, use).toBeGreaterThan(0);
+          expect(messages, use).toContain(rule);
+          expect(messages, use).not.toContain("Parsing error");
         }
       });
     });

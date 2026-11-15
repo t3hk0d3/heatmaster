@@ -25,6 +25,19 @@ fc.configureGlobal(
     : { numRuns: profile.numRuns, seed: profile.seed },
 );
 
+const TEMPORAL_CLASSES = [
+  Temporal.PlainTime,
+  Temporal.PlainDate,
+  Temporal.PlainDateTime,
+  Temporal.ZonedDateTime,
+  Temporal.Instant,
+  Temporal.Duration,
+];
+
+function isTemporal(value: unknown): boolean {
+  return TEMPORAL_CLASSES.some((type) => value instanceof type);
+}
+
 // Temporal values have no own properties, so without this `toEqual` calls any two of them equal.
 function sameTemporal(a: unknown, b: unknown): boolean | undefined {
   if (a instanceof Temporal.PlainTime && b instanceof Temporal.PlainTime) return a.equals(b);
@@ -44,6 +57,7 @@ function sameTemporal(a: unknown, b: unknown): boolean | undefined {
       return a.toString() === b.toString();
     }
   }
+  if (isTemporal(a) && isTemporal(b)) return false;
   return undefined;
 }
 

@@ -31,6 +31,14 @@ describe("Node runtime", () => {
       });
     });
 
+    describe("With Temporal values of different classes", () => {
+      it("they are not equal", () => {
+        expect(Temporal.PlainTime.from("07:00")).not.toEqual(
+          Temporal.ZonedDateTime.from("2027-03-28T07:00:00[Europe/Amsterdam]"),
+        );
+      });
+    });
+
     describe("With two objects that hold different ZonedDateTime values in a nested field", () => {
       it("they are not equal", () => {
         const at = (iso: string): { inner: { at: Temporal.ZonedDateTime } } => ({

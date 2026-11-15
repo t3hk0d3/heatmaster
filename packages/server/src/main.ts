@@ -4,8 +4,8 @@ import { API_HOST, loadOptions, type Options } from "./options.ts";
 
 export type Running = Readonly<{ stop(): Promise<void> }>;
 
-export async function start(options: Options): Promise<Running> {
-  const app = Fastify({ logger: true });
+export async function start(options: Options, logger = true): Promise<Running> {
+  const app = Fastify({ logger });
   app.get("/api/health", () => ({ status: "ok", version: pkg.version }));
   try {
     await app.listen({ host: API_HOST, port: options.port });

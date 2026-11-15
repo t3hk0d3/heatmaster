@@ -105,7 +105,7 @@ describe("main", () => {
     describe("With a free port", () => {
       it("resolves, and GET /api/health on 127.0.0.1 at that port answers 200 with status ok and the server package's version", async () => {
         const port = await freePort();
-        const running = await start({ port });
+        const running = await start({ port }, false);
         try {
           const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
           expect(response.status).toBe(200);
@@ -117,7 +117,7 @@ describe("main", () => {
 
       it("the server's address is 127.0.0.1", async () => {
         const port = await freePort();
-        const running = await start({ port });
+        const running = await start({ port }, false);
         try {
           expect(await accepts(port, "127.0.0.1")).toBe(true);
           // Another loopback address reaches only a listener that is not bound to 127.0.0.1 alone.
@@ -132,7 +132,7 @@ describe("main", () => {
       it("rejects, and nothing is left listening", async () => {
         const taken = await listener();
         try {
-          await expect(start({ port: taken.port })).rejects.toThrow();
+          await expect(start({ port: taken.port }, false)).rejects.toThrow();
         } finally {
           await taken.close();
         }
@@ -145,7 +145,7 @@ describe("main", () => {
     describe("After start", () => {
       it("resolves, and the port no longer accepts connections", async () => {
         const port = await freePort();
-        const running = await start({ port });
+        const running = await start({ port }, false);
         await running.stop();
         expect(await accepts(port)).toBe(false);
       });
@@ -153,7 +153,7 @@ describe("main", () => {
 
     describe("Called a second time", () => {
       it("resolves and does nothing", async () => {
-        const running = await start({ port: await freePort() });
+        const running = await start({ port: await freePort() }, false);
         await running.stop();
         await expect(running.stop()).resolves.toBeUndefined();
       });
@@ -182,9 +182,13 @@ describe("main", () => {
         it("ends with exit code 0", async () => {
           const port = await freePort();
           const { child, lines, exited } = runMain(port);
-          await logLine(lines, `127.0.0.1:${String(port)}`, exited);
-          child.kill(signal);
-          expect(await exited).toBe(0);
+          try {
+            await logLine(lines, `127.0.0.1:${String(port)}`, exited);
+            child.kill(signal);
+            expect(await exited).toBe(0);
+          } finally {
+            child.kill("SIGKILL");
+          }
         });
       });
     }
