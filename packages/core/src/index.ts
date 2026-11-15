@@ -1,10 +1,4 @@
-export {
-  ConfigError,
-  EMPTY_CONFIG,
-  WEEKDAYS,
-  effectivePresets,
-  sensorId,
-} from "./model.ts";
+export { ConfigError, EMPTY_CONFIG, WEEKDAYS, effectivePresets, sensorId } from "./model.ts";
 export type {
   Config,
   ConfigIssue,
