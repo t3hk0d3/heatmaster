@@ -1,1 +1,27 @@
-export {};
+export { ConfigError, EMPTY_CONFIG, WEEKDAYS, effectivePresets, sensorId } from "./model.ts";
+export type {
+  Config,
+  ConfigIssue,
+  PresetName,
+  Presets,
+  Room,
+  RoomPresets,
+  Schedule,
+  SensorRef,
+  Settings,
+  SetPoint,
+  ValveRef,
+  Week,
+  Weekday,
+} from "./model.ts";
+export { CONFIG_VERSION, configToRaw, migrateRaw, validateConfig } from "./validation.ts";
+export type {
+  RawConfig,
+  RawPresets,
+  RawRoom,
+  RawSchedule,
+  RawSensor,
+  RawSetPoint,
+  RawSettings,
+  RawWeek,
+} from "./validation.ts";
