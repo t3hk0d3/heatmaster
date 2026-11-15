@@ -82,3 +82,42 @@ export type {
   StoredConfig,
   ValveRecord,
 } from "./ledger.ts";
+export {
+  EMPTY_MEMORY,
+  START_TOKENS,
+  clearMarks,
+  mark,
+  markByAge,
+  markedReady,
+  needsAsk,
+  newValveMemory,
+  noteHeard,
+} from "./memory.ts";
+export type { GroupMemory, Mark, Memory, RoomMemory, ValveMemory, WriteRecord } from "./memory.ts";
+export {
+  BACKOFF_MS,
+  BUCKET,
+  NOT_HOLDING_AFTER,
+  REFILL_MS,
+  SPACING_MS,
+  WINDOW_MS,
+  charge,
+  chargeAsk,
+  mayAsk,
+  maySpend,
+  mayWrite,
+  noteDesired,
+  notHolding,
+  spend,
+} from "./pacing.ts";
+export {
+  FEED_LOST_AFTER_MS,
+  HEARTBEAT_MS,
+  RETURN_HOLD_MS,
+  THRESHOLD,
+  pushDue,
+  pushed,
+  stopped,
+  trackRoom,
+  wantedSource,
+} from "./feed.ts";

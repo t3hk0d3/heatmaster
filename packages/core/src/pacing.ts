@@ -1,0 +1,125 @@
+import { since, type GroupMemory, type ValveMemory, type WriteRecord } from "./memory.ts";
+import type { Group, ValveSpec } from "./settings.ts";
+
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/** Least time between two requests to one valve: writes, the setpoint write and refreshes. */
+export const SPACING_MS = 2 * 1000;
+/** Wait before the n-th repeat (n = 1, 2, 3, 4 and on). */
+export const BACKOFF_MS: readonly number[] = [2 * MINUTE_MS, 10 * MINUTE_MS, HOUR_MS, 6 * HOUR_MS];
+/** Writes of one desired value count for this long. */
+export const WINDOW_MS = 24 * HOUR_MS;
+/** Most tokens a valve holds. */
+export const BUCKET = 6;
+/** One token comes back after this long. */
+export const REFILL_MS = 30 * MINUTE_MS;
+/** Unmarked writes of one value in the window after which the setting is not holding. */
+export const NOT_HOLDING_AFTER = 3;
+
+/**
+ * Tokens at `nowMs` in whole milliseconds of refill (one token = `REFILL_MS`), so that a sum of
+ * refills that reaches a whole token is not lost to rounding.
+ */
+function tokenMs(vm: ValveMemory, nowMs: number): number {
+  return Math.min(
+    BUCKET * REFILL_MS,
+    Math.round(vm.tokens * REFILL_MS) + since(vm.tokensAt, nowMs),
+  );
+}
+
+function hasToken(vm: ValveMemory, nowMs: number): boolean {
+  return tokenMs(vm, nowMs) >= REFILL_MS;
+}
+
+/** Takes one token and stamps the request. */
+function take(vm: ValveMemory, nowMs: number): ValveMemory {
+  return {
+    ...vm,
+    tokens: (tokenMs(vm, nowMs) - REFILL_MS) / REFILL_MS,
+    tokensAt: nowMs,
+    lastWriteAt: nowMs,
+  };
+}
+
+function spaced(vm: ValveMemory, nowMs: number): boolean {
+  return vm.lastWriteAt === undefined || since(vm.lastWriteAt, nowMs) >= SPACING_MS;
+}
+
+function step(n: number): number {
+  return BACKOFF_MS[Math.min(n, BACKOFF_MS.length) - 1] ?? 0;
+}
+
+/** Whether a request may follow earlier ones at the times `times`, by the backoff. */
+function backedOff(times: readonly number[], nowMs: number): boolean {
+  if (times.length === 0) return true;
+  return since(Math.max(...times), nowMs) >= step(times.length);
+}
+
+function recent(gm: GroupMemory, nowMs: number): readonly WriteRecord[] {
+  return gm.writes.filter((w) => since(w.at, nowMs) <= WINDOW_MS);
+}
+
+function withGroup(vm: ValveMemory, group: Group, gm: GroupMemory): ValveMemory {
+  return { ...vm, groups: { ...vm.groups, [group]: gm } };
+}
+
+/** When the key differs from the stored one: stores it and empties the group's writes. */
+export function noteDesired(vm: ValveMemory, group: Group, desiredKey: string): ValveMemory {
+  const gm = vm.groups[group];
+  if (gm === undefined || gm.desiredKey === desiredKey) return vm;
+  return withGroup(vm, group, { ...gm, desiredKey, writes: [] });
+}
+
+export function mayWrite(vm: ValveMemory, group: Group, nowMs: number): boolean {
+  const gm = vm.groups[group];
+  const times = gm === undefined ? [] : recent(gm, nowMs).map((w) => w.at);
+  return spaced(vm, nowMs) && hasToken(vm, nowMs) && backedOff(times, nowMs);
+}
+
+export function charge(vm: ValveMemory, group: Group, nowMs: number, marked: boolean): ValveMemory {
+  const taken = take(vm, nowMs);
+  const gm = vm.groups[group];
+  if (gm === undefined) return taken;
+  const m = gm.mark;
+  return withGroup(taken, group, {
+    ...gm,
+    writes: [...gm.writes, { at: nowMs, marked }],
+    mark: marked && m !== undefined ? { ...m, writtenAt: nowMs } : m,
+  });
+}
+
+/** Groups with `NOT_HOLDING_AFTER` or more unmarked writes in the window. */
+export function notHolding(vm: ValveMemory, nowMs: number): readonly Group[] {
+  const groups: Group[] = [];
+  for (const [group, gm] of Object.entries(vm.groups) as [Group, GroupMemory | undefined][]) {
+    if (gm === undefined) continue;
+    const unmarked = recent(gm, nowMs).filter((w) => !w.marked).length;
+    if (unmarked >= NOT_HOLDING_AFTER) groups.push(group);
+  }
+  return groups;
+}
+
+/** For the one write that belongs to no group (the setpoint after a schedule change). */
+export function maySpend(vm: ValveMemory, nowMs: number): boolean {
+  return spaced(vm, nowMs) && hasToken(vm, nowMs);
+}
+
+export function spend(vm: ValveMemory, nowMs: number): ValveMemory {
+  return take(vm, nowMs);
+}
+
+export function mayAsk(vm: ValveMemory, nowMs: number): boolean {
+  return spaced(vm, nowMs) && hasToken(vm, nowMs) && backedOff(vm.asks, nowMs);
+}
+
+/** For a refresh: also stamps `askedAt` on the mark of every marked readable group. */
+export function chargeAsk(vm: ValveMemory, spec: ValveSpec, nowMs: number): ValveMemory {
+  let next: ValveMemory = { ...take(vm, nowMs), asks: [...vm.asks, nowMs] };
+  for (const gs of spec.groups) {
+    const gm = next.groups[gs.group];
+    if (!gs.readable || gm?.mark === undefined) continue;
+    next = withGroup(next, gs.group, { ...gm, mark: { ...gm.mark, askedAt: nowMs } });
+  }
+  return next;
+}
