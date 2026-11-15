@@ -269,6 +269,8 @@ interface FaultState {
   haDown: boolean;
   /** The rig's step, so that the observers also see the quiescence. */
   step: ((dtMs: number) => void) | undefined;
+  /** The user asks again for a change that a crash cut. */
+  retry: (() => void) | undefined;
 }
 
 const faultStates = new WeakMap<SimDriver, FaultState>();
@@ -396,9 +398,11 @@ export function createRig(start: Initial): Rig {
     linkDown: false,
     haDown: false,
     step: undefined,
+    retry: undefined,
   };
   faultStates.set(sim, state);
   const joins: Join[] = [];
+  let cut = false;
   const observers: ((info: StepInfo) => void)[] = [];
 
   for (const s of SLOTS) {
@@ -419,8 +423,14 @@ export function createRig(start: Initial): Rig {
     sim.deliver();
     const cache = SLOTS.map((s) => decoded(sim, s, "cache"));
     const truth = SLOTS.map((s) => decoded(sim, s, "truth"));
-    const result = sim.planChange(configToRaw(modelConfig(placement, schedules, hold, intervalMs)));
+    const asked = modelConfig(placement, schedules, hold, intervalMs);
+    const result = sim.planChange(configToRaw(asked));
     if (!result.ok) return;
+    // A crash that cut the change leaves the saved config behind what was asked.
+    const saved = sim.config().stored?.config;
+    cut =
+      saved === undefined ||
+      JSON.stringify(configToRaw(saved)) !== JSON.stringify(configToRaw(asked));
     for (const taken of result.plan.joining) {
       const s: Slot = taken.valveId === VALVE_IDS[0] ? 0 : 1;
       joins.push({
@@ -499,6 +509,11 @@ export function createRig(start: Initial): Rig {
   };
 
   state.step = step;
+  state.retry = () => {
+    if (!cut) return;
+    cut = false;
+    submit();
+  };
 
   const advance = (ms: number, stepMs = STEP_MS): void => {
     const end = sim.elapsed() + ms;
@@ -525,6 +540,7 @@ export function createRig(start: Initial): Rig {
   const apply = (fault: Fault): void => {
     switch (fault.k) {
       case "wait":
+        state.retry?.();
         advance(fault.seconds * 1000);
         return;
       case "fate":
@@ -686,6 +702,7 @@ export function quiesce(sim: SimDriver): void {
     state.lateAt = [undefined, undefined];
     sim.crashAfterEffects(undefined);
   }
+  state?.retry?.();
   const world = sim.world();
   let longest = 0;
   for (const [id, device] of world.devices) {

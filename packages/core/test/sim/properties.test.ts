@@ -385,6 +385,8 @@ function converge(rig: Rig, found: (id: Id, text: string) => void): void {
     const model = MODELS[slot];
     const kind = kinds.get(valveId);
     if (kind === "releasing") found("convergence.releasing", `${valveId} is still releasing`);
+    if (kind === "not_adopted")
+      found("convergence.values", `${valveId} is in a room but not adopted`);
     if (kind !== "managed") continue;
     const room = config.rooms.find((r) => r.valves.some((v) => v.valveId === valveId));
     if (room === undefined) continue;
@@ -602,6 +604,41 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         ...times.map((t) => times.filter((u) => u <= t && u > t - DAY_WINDOW_MS).length),
       );
     };
+
+    describe("With a valve removed from its room, a person changing its source, and the link down for an hour", () => {
+      const plan: FaultPlan = {
+        initial: { ...initial, intervalMin: 1 },
+        steps: [
+          ...waits(4),
+          { k: "place", valve: 0, room: null },
+          { k: "wait", seconds: 120 },
+          { k: "person", valve: 0, change: { what: "setpoint", celsius: 5 } },
+          { k: "person", valve: 0, change: { what: "select", select: "remote_temperature" } },
+          { k: "link", name: "z2m", up: false },
+          { k: "wait", seconds: 3600 },
+        ],
+      };
+      it("the release does not finish from stale state, and every property holds", () => {
+        nothingBroken(execute(plan).report);
+      });
+    });
+
+    describe("With a crash after the first effect of a join, which the user then asks for again", () => {
+      const plan: FaultPlan = {
+        initial,
+        steps: [
+          ...waits(4),
+          { k: "place", valve: 0, room: null },
+          ...waits(4),
+          { k: "crash", after: 1 },
+          { k: "place", valve: 0, room: "a" },
+          { k: "wait", seconds: 600 },
+        ],
+      };
+      it("the valve ends up adopted and in sync, and every property holds", () => {
+        nothingBroken(execute(plan).report);
+      });
+    });
 
     describe("With a TRV-ZBT that sleeps for two days after both valves were placed", () => {
       const plan: FaultPlan = {
