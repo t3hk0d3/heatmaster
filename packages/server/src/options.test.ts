@@ -13,6 +13,22 @@ describe("options", () => {
       });
     });
 
+    describe("With neither DATA_DIR nor PUBLIC_DIR", () => {
+      it("dataDir is /data and publicDir is /config", () => {
+        const options = loadOptions({ MQTT_URL });
+        expect(options.dataDir).toBe("/data");
+        expect(options.publicDir).toBe("/config");
+      });
+    });
+
+    describe("With both set", () => {
+      it("returns each value", () => {
+        const options = loadOptions({ MQTT_URL, DATA_DIR: "/tmp/d", PUBLIC_DIR: "/tmp/p" });
+        expect(options.dataDir).toBe("/tmp/d");
+        expect(options.publicDir).toBe("/tmp/p");
+      });
+    });
+
     describe('With HEATMASTER_PORT "8123"', () => {
       it("port is 8123", () => {
         expect(loadOptions({ MQTT_URL, HEATMASTER_PORT: "8123" }).port).toBe(8123);

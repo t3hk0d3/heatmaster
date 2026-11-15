@@ -17,6 +17,8 @@ const VERSION = (
 /** Options for in-process starts. Nothing connects to the broker yet. */
 function optionsFor(port: number): Options {
   return {
+    dataDir: temporaryFolder(),
+    publicDir: temporaryFolder(),
     port,
     mqtt: {
       url: "mqtt://127.0.0.1:1",

@@ -6,6 +6,8 @@ import { DEFAULT_BASE_TOPIC, type Z2mOptions } from "./z2m.ts";
 
 export const API_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 3000;
+export const DEFAULT_DATA_DIR = "/data";
+export const DEFAULT_PUBLIC_DIR = "/config";
 
 export type Options = Readonly<{
   port: number;
@@ -13,6 +15,10 @@ export type Options = Readonly<{
   z2m: Z2mOptions;
   /** Undefined means "no Home Assistant link". */
   ha: HaOptions;
+  /** The folder of the config and ledger files. */
+  dataDir: string;
+  /** The public config folder that holds the readable copy of the originals. */
+  publicDir: string;
 }>;
 
 /** A variable that is set to an empty text counts as not set. */
@@ -57,5 +63,7 @@ export function loadOptions(env: Readonly<Record<string, string | undefined>>): 
     },
     z2m: { baseTopic: read(env, "Z2M_BASE_TOPIC") ?? DEFAULT_BASE_TOPIC },
     ha: parseHa(env),
+    dataDir: read(env, "DATA_DIR") ?? DEFAULT_DATA_DIR,
+    publicDir: read(env, "PUBLIC_DIR") ?? DEFAULT_PUBLIC_DIR,
   };
 }

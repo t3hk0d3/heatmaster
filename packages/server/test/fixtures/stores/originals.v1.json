@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "written_at": "2023-11-14T22:13:20.000Z",
+  "heatmaster": "0.1.0",
+  "data": {
+    "records": {
+      "z2m:0x00124b0012345678": {
+        "profile": "sonoff_trv_zbt",
+        "adopted_at": "2023-11-14T22:13:20.000Z",
+        "originals": {
+          "active_group": 1,
+          "sensor_source": "internal"
+        }
+      },
+      "z2m:0x00124b0000000002": {
+        "profile": "sonoff_trvzb",
+        "adopted_at": "2023-11-14T22:13:20.000Z",
+        "originals": {
+          "sensor_source": null
+        }
+      }
+    },
+    "released": [
+      {
+        "valve_id": "z2m:0x00124b00aaaaaaaa",
+        "profile": "sonoff_trvzb",
+        "adopted_at": "2023-11-14T22:13:20.000Z",
+        "originals": {
+          "sensor_source": "external"
+        },
+        "ended_at": "2023-11-14T22:15:00.000Z",
+        "forgotten": false
+      }
+    ]
+  }
+}
