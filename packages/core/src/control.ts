@@ -25,6 +25,7 @@ import { members, valueKey } from "./settings.ts";
 import type {
   Group,
   Readings,
+  SensorSource,
   SettingKey,
   SettingValue,
   SettingValues,
@@ -158,6 +159,37 @@ export function transportUsable(world: World, view: DeviceView, valveId: string)
   return linkUp(world, transportOf(valveId)) && !transportFaulted(world, view, valveId);
 }
 
+/** No write is recorded for the group's current desired value (`noteDesired` empties them). */
+function unwritten(vm: ValveMemory, group: Group): boolean {
+  return (vm.groups[group]?.writes.length ?? 0) === 0;
+}
+
+function writeOnly(spec: ValveSpec, group: Group): boolean {
+  return spec.groups.some((gs) => gs.group === group && gs.evidence === "none");
+}
+
+/**
+ * The schedule has no mark and, when it is write-only, a write is recorded for its current
+ * desired value. `vm` must already have noted that value.
+ */
+function scheduleTrusted(vm: ValveMemory, spec: ValveSpec): boolean {
+  return (
+    vm.groups.schedule?.mark === undefined &&
+    (!writeOnly(spec, "schedule") || !unwritten(vm, "schedule"))
+  );
+}
+
+/**
+ * Where the schedule is write-only, nothing shows that it took except a message heard after its
+ * last write. Elsewhere the observed days already said so.
+ */
+function scheduleHeard(vm: ValveMemory, spec: ValveSpec, state: DeviceState): boolean {
+  if (!writeOnly(spec, "schedule")) return true;
+  const writes = vm.groups.schedule?.writes ?? [];
+  if (writes.length === 0 || state.heardAt === undefined) return false;
+  return state.heardAt > Math.max(...writes.map((w) => w.at));
+}
+
 /** Groups in the spec's order; see the task's candidate rule. Pacing is not considered. */
 export function candidates(
   spec: ValveSpec,
@@ -171,7 +203,13 @@ export function candidates(
   for (const gs of spec.groups) {
     const keys = members(gs.group).filter((key) => desired[key] !== undefined);
     if (keys.length === 0) continue;
-    const diff = keys.filter((key) => differs.has(key));
+    // A write-only group's observed keys are never compared: it differs until a write is recorded.
+    const diff =
+      gs.evidence === "none"
+        ? unwritten(vm, gs.group)
+          ? keys
+          : []
+        : keys.filter((key) => differs.has(key));
     const marked = !gs.readable && vm.groups[gs.group]?.mark !== undefined;
     const ready = marked && (anyMarkReady || markedReady(vm, spec, gs.group, state.heardAt));
     if (diff.length === 0 && !ready) continue;
@@ -274,6 +312,32 @@ function hasDesired(desired: Desired, group: Group): boolean {
   return members(group).some((key) => desired[key] !== undefined);
 }
 
+/** `noteDesired` for every group of the spec that has a desired key. */
+function noteAll(vm: ValveMemory, spec: ValveSpec, desired: Desired): ValveMemory {
+  let noted = vm;
+  for (const gs of spec.groups) {
+    const key = desiredKeyOf(desired, gs.group);
+    if (key !== undefined) noted = noteDesired(noted, gs.group, key);
+  }
+  return noted;
+}
+
+/**
+ * `managedDesired` with `scheduleTrusted` taken from `vm` once the days are noted, so a changed
+ * week counts as unwritten. Returns the desired values and the memory with all of them noted.
+ */
+function managedFor(
+  spec: ValveSpec,
+  week: ResolvedWeek,
+  state: DeviceState | undefined,
+  source: SensorSource | undefined,
+  vm: ValveMemory,
+): [Desired, ValveMemory] {
+  const days = noteAll(vm, spec, managedDesired(spec, week, state, source, false));
+  const desired = managedDesired(spec, week, state, source, scheduleTrusted(days, spec));
+  return [desired, noteAll(days, spec, desired)];
+}
+
 function withFeedLost(vm: ValveMemory, state: DeviceState | undefined, nowMs: number): ValveMemory {
   const lost = vm.feedAt !== undefined && state?.readings.feedLost === true;
   return { ...vm, feedLostSince: lost ? (vm.feedLostSince ?? nowMs) : undefined };
@@ -346,14 +410,10 @@ function runValve(
   let desired: Desired = {};
   if (kind === "managed" && plan !== undefined) {
     const source = spec.externalSensor ? wantedSource(plan.fresh, plan.rm, vm, nowMs) : undefined;
-    const trusted = vm.groups.schedule?.mark === undefined;
-    desired = managedDesired(spec, plan.week, state, source, trusted);
+    [desired, vm] = managedFor(spec, plan.week, state, source, vm);
   } else if (kind === "releasing" && record !== undefined) {
     desired = releaseDesired(spec, record);
-  }
-  for (const gs of spec.groups) {
-    const key = desiredKeyOf(desired, gs.group);
-    if (key !== undefined) vm = noteDesired(vm, gs.group, key);
+    vm = noteAll(vm, spec, desired);
   }
   const cands = candidates(spec, desired, state, vm);
   const markedDesired = spec.groups.some(
@@ -410,6 +470,7 @@ function runValve(
     target !== undefined &&
     !cands.some((s) => s.group === "schedule") &&
     vm.groups.schedule?.mark === undefined &&
+    scheduleHeard(vm, spec, state) &&
     mode === "auto" &&
     action === undefined &&
     maySpend(vm, nowMs)
@@ -694,16 +755,17 @@ export function preview(world: World): readonly PlannedWrite[] {
           : plan.fresh === "stale" || plan.fresh === "no_sensors"
             ? "internal"
             : "external";
-        const trusted = vm.groups.schedule?.mark === undefined;
-        desired = managedDesired(spec, plan.week, state, source, trusted);
+        [desired, vm] = managedFor(spec, plan.week, state, source, vm);
       } else if (record !== undefined) {
         desired = releaseDesired(spec, record);
+        vm = noteAll(vm, spec, desired);
       }
       const first = candidates(spec, desired, state, vm, true)[0];
       if (first === undefined) break;
       writes.push({ valveId, values: first.values, current: currentOf(state, first.values) });
       state = { ...state, values: { ...state.values, ...first.values } };
-      vm = withoutMark(vm, first.group);
+      // The copy records the write, so a write-only group counts as written.
+      vm = withoutMark(charge(vm, first.group, nowMs, first.marked), first.group);
     }
   }
   return writes;

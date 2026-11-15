@@ -36,7 +36,7 @@ import { DEFAULT_SETTINGS } from "./model.ts";
 import type { Room, SensorRef, SetPoint } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
-import { BUCKET, REFILL_MS, charge, chargeAsk } from "./pacing.ts";
+import { BUCKET, REFILL_MS, charge, chargeAsk, noteDesired } from "./pacing.ts";
 import type { ResolvedDay } from "./schedule.ts";
 import { DAY_KEYS, EMPTY_READINGS, groupOf } from "./settings.ts";
 import type {
@@ -119,14 +119,6 @@ function withState(world: World, state: DeviceState | undefined, valveId = V): W
 function withValues(world: World, values: SettingValues, valveId = V): World {
   const state = stateOf(world, valveId);
   return withState(world, { ...state, values: { ...state.values, ...values } }, valveId);
-}
-
-function withoutValues(world: World, keys: readonly SettingKey[], valveId = V): World {
-  const state = stateOf(world, valveId);
-  const values = Object.fromEntries(
-    Object.entries(state.values).filter(([key]) => !keys.includes(key as SettingKey)),
-  );
-  return withState(world, { ...state, values }, valveId);
 }
 
 function withReadings(world: World, readings: Partial<Readings>, valveId = V): World {
@@ -310,6 +302,24 @@ function unreadable(spec: ValveSpec): ValveSpec {
 }
 
 const SETPOINT_SPEC: ValveSpec = { ...makeSpec("trvzb"), activation: "setpoint" };
+/** A TRV-ZBT that writes the setpoint after a schedule change; its schedule is write-only. */
+const ZBT_SETPOINT_SPEC: ValveSpec = { ...makeSpec("trv_zbt"), activation: "setpoint" };
+
+/** The world with the room's schedule set to `day` on every weekday. */
+function withWeekDay(world: World, day: ResolvedDay): World {
+  const stored = storedOf(world);
+  const week = weekOf(day.map((p) => ({ ...p, preset: undefined })));
+  const config = {
+    ...stored.config,
+    schedules: [{ id: BUILDER_SCHEDULE, name: "Other", defaultWeek: week }],
+  };
+  return { ...world, stored: { ...stored, config } };
+}
+
+/** A schedule group memory with no write recorded for the desired value the tick will note. */
+function neverWritten(vm: ValveMemory): ValveMemory {
+  return noteDesired(vm, "schedule", "never written");
+}
 
 /** A managed TRVZB showing `EQUAL`, settled: no marks. */
 function equalWorld(): World {
@@ -708,6 +718,23 @@ describe("control", () => {
         ]);
       });
     });
+    describe("With a schedule group whose evidence is none, no write recorded for its desired value, and the days observed equal", () => {
+      it("schedule is listed with differed true, marked false and all seven days", () => {
+        const zbt = makeSpec("trv_zbt");
+        const vm = neverWritten(unmarkedVm(zbt));
+        const result = candidates(zbt, want(EQUAL_ZBT), heardAt(C0, EQUAL_ZBT), vm);
+        expect(result).toEqual([
+          { group: "schedule", values: sevenDays(BUILDER_DAY), differed: true, marked: false },
+        ]);
+      });
+    });
+    describe("With a schedule group whose evidence is none, a write recorded, and the days observed differing", () => {
+      it("schedule is not listed", () => {
+        const zbt = makeSpec("trv_zbt");
+        const state = heardAt(C0, { ...EQUAL_ZBT, ...sevenDays(OTHER_DAY) });
+        expect(candidates(zbt, want(EQUAL_ZBT), state, unmarkedVm(zbt))).toEqual([]);
+      });
+    });
   });
 
   describe("isObservable", () => {
@@ -1067,20 +1094,47 @@ describe("control", () => {
         expect(tick(world).memory.valves.has(V)).toBe(false);
       });
     });
-    describe("With a TRV-ZBT whose days are not observed, and no marks", () => {
+    describe("With a TRV-ZBT whose schedule has never been written, and no marks", () => {
       it("a publish of the seven days and no active_group", () => {
-        const base = settled(
-          makeManaged({ model: "trv_zbt", state: makeState({ values: EQUAL_ZBT }) }),
-        );
-        const world = withoutValues(base, DAY_KEY_LIST);
+        const values = { ...EQUAL_ZBT, active_group: 1 };
+        const base = settled(makeManaged({ model: "trv_zbt", state: makeState({ values }) }));
+        const world = updateVm(base, neverWritten);
+        expect(vmOf(world).groups.schedule?.mark).toBeUndefined();
         expect(publishes(valveEffects(tick(world)))).toEqual([sevenDays(BUILDER_DAY)]);
       });
     });
-    describe("With a TRV-ZBT whose days are observed equal, active group 1, and no marks", () => {
+    describe("With a TRV-ZBT whose schedule was written and heard since, active group 1, and no marks", () => {
       it("a publish of active_group 3", () => {
         const values = { ...EQUAL_ZBT, active_group: 1 };
-        const world = settled(makeManaged({ model: "trv_zbt", state: makeState({ values }) }));
+        const base = settled(makeManaged({ model: "trv_zbt", state: makeState({ values }) }));
+        const first = tick(updateVm(base, neverWritten));
+        expect(publishes(valveEffects(first))).toEqual([sevenDays(BUILDER_DAY)]);
+        const heard = hear(
+          { ...base, memory: first.memory },
+          sevenDays(OTHER_DAY),
+          nowOf(base) + SECOND_MS,
+        );
+        const world = later(heard, 3 * SECOND_MS);
         expect(publishes(valveEffects(tick(world)))).toEqual([{ active_group: 3 }]);
+      });
+    });
+    describe("With a TRV-ZBT in sync and the room's week then changed", () => {
+      it("a publish of the seven days of the new week", () => {
+        const base = settled(
+          makeManaged({ model: "trv_zbt", state: makeState({ values: EQUAL_ZBT }) }),
+        );
+        expect(valveEffects(tick(base))).toEqual([]);
+        const world = withWeekDay(base, OTHER_DAY);
+        expect(publishes(valveEffects(tick(world)))).toEqual([sevenDays(OTHER_DAY)]);
+      });
+    });
+    describe("With a TRV-ZBT whose state holds day keys that differ from the desired week", () => {
+      it("no publish of days: the observed days are not compared", () => {
+        const base = settled(
+          makeManaged({ model: "trv_zbt", state: makeState({ values: EQUAL_ZBT }) }),
+        );
+        const world = withValues(base, sevenDays(OTHER_DAY));
+        expect(publishes(valveEffects(tick(world)))).toEqual([]);
       });
     });
     describe("With a TRV-ZBT whose schedule is marked and in backoff and whose active group is 1", () => {
@@ -1801,6 +1855,31 @@ describe("control", () => {
         expect(valveEffects(tick(stale))).toEqual([]);
       });
     });
+    describe('With activation "setpoint" on a write-only schedule (evidence "none"), after a publish of the new week, mode auto', () => {
+      const base = settled(
+        withSpec(
+          makeManaged({
+            model: "trv_zbt",
+            state: makeState({ values: EQUAL_ZBT, readings: { mode: "auto" } }),
+          }),
+          ZBT_SETPOINT_SPEC,
+        ),
+      );
+      const changed = withWeekDay(base, OTHER_DAY);
+      const first = tick(changed);
+      const unheard = later({ ...changed, memory: first.memory }, 3 * SECOND_MS);
+      it("no publishSetpoint before a heard message follows the write", () => {
+        expect(publishes(valveEffects(first))).toEqual([sevenDays(OTHER_DAY)]);
+        expect(vmOf(first).nudgeDue).toBe(true);
+        expect(valveEffects(tick(unheard))).toEqual([]);
+      });
+      it("one publishSetpoint with the active set point's temperature once a message is heard after the write", () => {
+        const heard = hear(unheard, {}, nowOf(changed) + SECOND_MS);
+        expect(valveEffects(tick(heard))).toEqual([
+          { kind: "publishSetpoint", valveId: V, celsius: 21 },
+        ]);
+      });
+    });
     describe("With a releasing valve", () => {
       it("never a publishSetpoint and nudgeDue is false", () => {
         const world = activationWorld(SETPOINT_SPEC);
@@ -2147,6 +2226,17 @@ describe("control", () => {
           { valveId: V, values: sevenDays(BUILDER_DAY), current: {} },
           { valveId: V, values: { active_group: 3 }, current: {} },
           { valveId: V, values: { sensor_source: "internal" }, current: {} },
+        ]);
+      });
+    });
+    describe("With a TRV-ZBT in sync and the room's week then changed", () => {
+      it("lists the seven days of the new week, with the observed days in current", () => {
+        const base = settled(
+          makeManaged({ model: "trv_zbt", state: makeState({ values: EQUAL_ZBT }) }),
+        );
+        expect(preview(base)).toEqual([]);
+        expect(preview(withWeekDay(base, OTHER_DAY))).toEqual([
+          { valveId: V, values: sevenDays(OTHER_DAY), current: sevenDays(BUILDER_DAY) },
         ]);
       });
     });

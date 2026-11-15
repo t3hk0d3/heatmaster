@@ -91,12 +91,14 @@ export function describeValue(key: SettingKey, value: SettingValue | null | unde
   return value;
 }
 
-export type Evidence = "acked" | "echoed";
+export type Evidence = "acked" | "echoed" | "none";
 export type Activation = "none" | "setpoint";
 
 /**
  * - `evidence`: `acked` shows a new value only after the valve took the write; `echoed` shows what
- *   was sent. The core's rules do not read it.
+ *   was sent; `none` is write-only: nothing the transport shows can be trusted, and the next heard
+ *   message after a write is the sign that it took. The core reads `none` only in the tick's
+ *   candidates, schedule trust and setpoint write.
  * - `maxAgeMs`: how long a cached value is trusted before the group is marked again; `undefined`
  *   means never by age.
  * - `capture` false: the group's original is not captured and not restored.

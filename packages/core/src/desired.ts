@@ -24,9 +24,9 @@ function hasGroup(spec: ValveSpec, group: Group): boolean {
 }
 
 /**
- * What a managed valve should hold. `active_group` waits until every day is observed equal and
- * the schedule group carries no mark (`scheduleTrusted`), because an observed value alone is only
- * the cache.
+ * What a managed valve should hold. `active_group` waits for `scheduleTrusted`, the caller's
+ * word that the week was sent and is not in doubt, and for a state to exist. The observed days are
+ * not read, because the TRV-ZBT's days are write-only.
  */
 export function managedDesired(
   spec: ValveSpec,
@@ -41,14 +41,9 @@ export function managedDesired(
     for (const weekday of WEEKDAYS)
       desired[DAY_KEYS[weekday]] = { value: days[weekday], reason: "schedule" };
   }
-  if (spec.scheduleGroup !== undefined && scheduleTrusted && hasGroup(spec, "active_group")) {
-    const allEqual = WEEKDAYS.every((weekday) => {
-      const key = DAY_KEYS[weekday];
-      const observed = state?.values[key];
-      return observed !== undefined && valuesEqual(key, observed, days[weekday]);
-    });
-    if (allEqual) desired.active_group = { value: spec.scheduleGroup, reason: "group_ready" };
-  }
+  const ready = scheduleTrusted && state !== undefined;
+  if (spec.scheduleGroup !== undefined && ready && hasGroup(spec, "active_group"))
+    desired.active_group = { value: spec.scheduleGroup, reason: "group_ready" };
   if (source !== undefined && hasGroup(spec, "sensor_source")) {
     desired.sensor_source = {
       value: source,

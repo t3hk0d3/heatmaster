@@ -51,7 +51,7 @@ const TRV_ZBT: ValveSpec = {
   maxTemp: 30,
   scheduleGroup: 3,
   groups: [
-    group("schedule"),
+    group("schedule", { evidence: "none", readable: false }),
     group("active_group", { capture: true }),
     group("sensor_source", { capture: true }),
   ],
@@ -124,33 +124,21 @@ describe("desired", () => {
       });
     });
 
-    describe("With a TRV-ZBT spec and days not yet observed", () => {
-      it("active_group is absent", () => {
-        const desired = managedDesired(TRV_ZBT, WEEK, stateWith({}), undefined, true);
-        expect(desired.active_group).toBeUndefined();
-      });
-    });
-
-    describe("With a TRV-ZBT spec and six of the seven days observed equal", () => {
-      it("active_group is absent", () => {
-        const values = { ...daysOf(WEEK), day_sun: points("00:00/17") };
-        const desired = managedDesired(TRV_ZBT, WEEK, stateWith(values), undefined, true);
-        expect(desired.active_group).toBeUndefined();
-      });
-    });
-
-    describe("With a TRV-ZBT spec and all seven days observed equal, some with extra repeats", () => {
+    describe("With a TRV-ZBT spec and scheduleTrusted true, whatever days the state holds", () => {
       it("active_group is 3 with reason group_ready", () => {
-        const values = {
-          ...daysOf(WEEK),
-          day_mon: points("00:00/18 05:00/18 06:30/21 22:00/18 23:00/18"),
-        };
-        const desired = managedDesired(TRV_ZBT, WEEK, stateWith(values), undefined, true);
-        expect(desired.active_group).toEqual({ value: 3, reason: "group_ready" });
+        const states = [
+          stateWith({}),
+          stateWith({ ...daysOf(WEEK), day_sun: points("00:00/17") }),
+          stateWith(daysOf(WEEK)),
+        ];
+        for (const state of states) {
+          const desired = managedDesired(TRV_ZBT, WEEK, state, undefined, true);
+          expect(desired.active_group).toEqual({ value: 3, reason: "group_ready" });
+        }
       });
     });
 
-    describe("With a TRV-ZBT spec, all seven days observed equal and scheduleTrusted false", () => {
+    describe("With a TRV-ZBT spec and scheduleTrusted false", () => {
       it("active_group is absent", () => {
         const desired = managedDesired(TRV_ZBT, WEEK, stateWith(daysOf(WEEK)), undefined, false);
         expect(desired.active_group).toBeUndefined();

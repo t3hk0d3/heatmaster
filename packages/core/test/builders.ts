@@ -270,7 +270,7 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
     slotCount: 12,
     scheduleGroup: 3,
     groups: [
-      groupSpec("schedule", "echoed", false, false),
+      groupSpec("schedule", "none", false, false),
       groupSpec("active_group", "acked", true, true),
       groupSpec("sensor_source", "acked", true, true),
     ],
