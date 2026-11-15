@@ -416,8 +416,6 @@ function atMs(world: World, nowMs: number): Temporal.ZonedDateTime {
   return Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(world.now.timeZoneId);
 }
 
-let settleToken = 0;
-
 /**
  * Runs `tick` and answers every refresh, write and setpoint write with a heard message that holds
  * what was written, a second after the tick, until no managed valve's memory holds a mark. Returns
@@ -444,12 +442,11 @@ export function settled(world: World): World {
     let inbox: Inbox = { states, memory: result.memory };
     const messageAt = nowMs + 1000;
     for (const [deviceId, values] of answers) {
-      settleToken += 1;
       const event: Event = {
         kind: "device_message",
         deviceId,
         decoded: { values, readings: EMPTY_READINGS },
-        lifeToken: `settle${String(settleToken)}`,
+        lifeToken: `settle-${String(round)}-${String(messageAt)}`,
       };
       inbox = applyEvent(inbox, event, specs, messageAt);
     }

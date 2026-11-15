@@ -240,8 +240,6 @@ type Context = Readonly<{
   nowMs: number;
   held: boolean;
   config: Config | undefined;
-  plans: ReadonlyMap<string, RoomPlan>;
-  roomOf: ReadonlyMap<string, string>;
 }>;
 
 type ValveRun = Readonly<{
@@ -403,6 +401,7 @@ function runValve(
   if (
     canAct &&
     kind === "managed" &&
+    spec.activation === "setpoint" &&
     vm.nudgeDue &&
     target !== undefined &&
     !cands.some((s) => s.group === "schedule") &&
@@ -516,7 +515,7 @@ export function tick(world: World): TickResult {
   for (const room of config?.rooms ?? []) {
     for (const ref of room.valves) roomOf.set(ref.valveId, room.id);
   }
-  const ctx: Context = { world, nowMs, held, config, plans, roomOf };
+  const ctx: Context = { world, nowMs, held, config };
 
   const valves = new Map<string, ValveMemory>();
   const statuses = new Map<string, ValveStatus>();
@@ -677,7 +676,12 @@ export function preview(world: World): readonly PlannedWrite[] {
     const record = world.ledger?.records.get(valveId);
     if (kind === "managed" ? plan === undefined : record === undefined) continue;
     let state = view.state ?? newState(nowMs);
-    let vm = world.memory.valves.get(valveId) ?? newValveMemory(spec, nowMs);
+    // Groups asserted too long ago are marked, as in tick.
+    let vm = markByAge(
+      world.memory.valves.get(valveId) ?? newValveMemory(spec, nowMs),
+      spec,
+      nowMs,
+    );
     for (let round = 0; round < PREVIEW_ROUNDS; round++) {
       let desired: Desired = {};
       if (plan !== undefined) {

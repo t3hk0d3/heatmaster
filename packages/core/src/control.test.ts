@@ -1474,11 +1474,8 @@ describe("control", () => {
     });
     describe("With a spec whose externalSensor is false", () => {
       it("no pushTemperature and the sensor source is never written", () => {
-        const spec: ValveSpec = {
-          ...makeSpec("trvzb"),
-          externalSensor: false,
-          groups: makeSpec("trvzb").groups.filter((g) => g.group !== "sensor_source"),
-        };
+        // The spec keeps its sensor_source group, so only externalSensor stops the writes.
+        const spec: ValveSpec = { ...makeSpec("trvzb"), externalSensor: false };
         const base = makeManaged({
           sensors: [SENSOR],
           state: makeState({ values: { ...EQUAL, sensor_source: "external" }, heardAgoMs: 0 }),
@@ -1797,6 +1794,16 @@ describe("control", () => {
     describe("With nudgeDue, the schedule marked and observed equal, the valve not heard since the marking, and a refresh sent 1 min ago", () => {
       it("no publishSetpoint and no refresh", () => {
         expect(valveEffects(tick(nudgedAndMarked()))).toEqual([]);
+      });
+    });
+    describe('With nudgeDue set and a spec whose activation is "none"', () => {
+      it("no publishSetpoint", () => {
+        const [world, first] = afterDayWrite(activationWorld(SETPOINT_SPEC));
+        expect(vmOf(first).nudgeDue).toBe(true);
+        expect(kindsOf(valveEffects(tick(world)))).toEqual(["publishSetpoint"]);
+        const stale = withSpec(world, makeSpec("trvzb"));
+        expect(vmOf(stale).nudgeDue).toBe(true);
+        expect(valveEffects(tick(stale))).toEqual([]);
       });
     });
     describe("With a releasing valve", () => {
@@ -2219,6 +2226,25 @@ describe("control", () => {
             values: { sensor_source: "internal" },
             current: { sensor_source: "external" },
           },
+        ]);
+      });
+    });
+    describe("With a valve whose schedule was asserted more than 24 h ago", () => {
+      it("lists the seven days like tick does", () => {
+        const base = equalWorld();
+        let world = base;
+        // Heard every hour, so the valve never turns silent.
+        for (let hour = 1; hour <= 25; hour++) {
+          world = hear(world, {}, nowOf(base) + hour * HOUR_MS - MINUTE_MS);
+        }
+        world = later(world, 25 * HOUR_MS);
+        expect(vmOf(world).groups.schedule?.mark).toBeUndefined();
+        const result = tick(world);
+        const heardAgain = hear({ ...world, memory: result.memory }, {}, nowOf(world) + SECOND_MS);
+        const written = tick(later(heardAgain, 3 * SECOND_MS));
+        expect(publishes(valveEffects(written))).toEqual([sevenDays(BUILDER_DAY)]);
+        expect(preview(world)).toEqual([
+          { valveId: V, values: sevenDays(BUILDER_DAY), current: sevenDays(BUILDER_DAY) },
         ]);
       });
     });
