@@ -690,6 +690,15 @@ describe("validation", () => {
       });
     });
 
+    describe("On a sensor listed twice that also has an unknown key", () => {
+      it("throws key_unknown and sensor_duplicate", () => {
+        const ha = { ref: "ha:sensor.living_temperature" };
+        const raw = onlyRoom({ sensors: [ha, { ...ha, unexpected: 1 }] });
+        expectIssue(raw, "key_unknown", "rooms[0].sensors[1].unexpected");
+        expectIssue(raw, "sensor_duplicate", "rooms[0].sensors[1].ref");
+      });
+    });
+
     describe("On a container of the wrong type", () => {
       it.each([
         [["rooms", 0], "rooms[0]"],

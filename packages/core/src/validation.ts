@@ -487,7 +487,7 @@ function parseSensors(report: Report, path: string, value: unknown): readonly Se
     let faults = 0;
     const sensor = parseSensor(
       (p, code, message) => {
-        if (!p.endsWith(".weight")) faults += 1;
+        if (p === itemPath || p.endsWith(".ref") || p.endsWith(".key")) faults += 1;
         report(p, code, message);
       },
       itemPath,
