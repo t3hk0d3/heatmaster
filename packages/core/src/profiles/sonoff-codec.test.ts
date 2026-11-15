@@ -1,7 +1,7 @@
 import { fc, test as fcTest } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import { daysEqual } from "../schedule.ts";
-import { decodeDay, encodeDay } from "./sonoff-codec.ts";
+import { checkGroup, decodeDay, encodeDay, selectOption } from "./sonoff-codec.ts";
 import type { ResolvedPoint } from "../schedule.ts";
 
 function point(hhmm: string, temperature: number): ResolvedPoint {
@@ -143,6 +143,33 @@ describe("sonoff-codec", () => {
           }
         },
       );
+    });
+  });
+
+  describe("checkGroup", () => {
+    describe("With 3", () => {
+      it("returns 3", () => {
+        expect(checkGroup(3)).toBe(3);
+      });
+    });
+    describe('With the text "3"', () => {
+      it("throws RangeError naming the value", () => {
+        expect(() => checkGroup("3")).toThrow(RangeError);
+        expect(() => checkGroup("3")).toThrow(/"3"/);
+      });
+    });
+    describe("With 2.5 or 4", () => {
+      it("throws RangeError naming the value", () => {
+        expect(() => checkGroup(2.5)).toThrow(/2\.5/);
+        expect(() => checkGroup(4)).toThrow(/4/);
+      });
+    });
+  });
+  describe("selectOption", () => {
+    describe("With an unknown source", () => {
+      it("throws RangeError naming the value", () => {
+        expect(() => selectOption("bogus")).toThrow(/"bogus"/);
+      });
     });
   });
 });

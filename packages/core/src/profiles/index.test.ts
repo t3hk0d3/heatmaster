@@ -130,6 +130,20 @@ describe("profiles index", () => {
         }).toThrow(/no binding/);
       });
     });
+    describe("With a group listed twice", () => {
+      it("throws a repeated-group error", () => {
+        expect(() => {
+          validateProfile(withSpec({ groups: [...spec.groups, ...spec.groups.slice(0, 1)] }));
+        }).toThrow(/a group is repeated/);
+      });
+    });
+    describe("With active_group listed but no schedule group", () => {
+      it("throws that active_group needs schedule", () => {
+        expect(() => {
+          validateProfile(withSpec({ groups: spec.groups.filter((g) => g.group !== "schedule") }));
+        }).toThrow(/active_group needs schedule$/);
+      });
+    });
     describe("With sensor_source and no external sensor", () => {
       it("throws", () => {
         expect(() => {

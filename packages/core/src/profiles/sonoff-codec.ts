@@ -80,14 +80,16 @@ const SOURCE_TO_SELECT: Readonly<Record<SensorSource, string>> = {
 
 /** The select option of a sensor source. Throws `RangeError` for anything else. */
 export function selectOption(source: unknown): string {
-  if (source !== "internal" && source !== "external") throw new RangeError("unknown sensor source");
+  if (source !== "internal" && source !== "external")
+    throw new RangeError(`unknown sensor source: ${JSON.stringify(source)}`);
   return SOURCE_TO_SELECT[source];
 }
 
 /** A group number to write: an integer 1-3. Throws `RangeError` for anything else. */
 export function checkGroup(value: unknown): number {
   const n = parseGroup(value);
-  if (typeof value !== "number" || n === undefined) throw new RangeError("unknown schedule group");
+  if (typeof value !== "number" || n === undefined)
+    throw new RangeError(`unknown schedule group: ${JSON.stringify(value)}`);
   return n;
 }
 
