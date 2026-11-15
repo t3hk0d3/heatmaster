@@ -121,3 +121,39 @@ export {
   trackRoom,
   wantedSource,
 } from "./feed.ts";
+export { differing, fitted, managedDesired, releaseDesired } from "./desired.ts";
+export type { Desired, DesiredValue, Reason } from "./desired.ts";
+export {
+  SYSTEM_ID,
+  problemConfigUnreadable,
+  problemFeedLost,
+  problemId,
+  problemLedgerUnreadable,
+  problemLinkDown,
+  problemReleaseStalled,
+  problemRoomNoTemperature,
+  problemScheduleClamped,
+  problemSensorLivenessUnobservable,
+  problemSensorOutOfRange,
+  problemSensorStale,
+  problemSettingNotHolding,
+  problemStoreWriteFailed,
+  problemTransportUnusable,
+  problemValveNotAdopted,
+  problemValveNotAuto,
+  problemValveOrphan,
+  problemValveSilent,
+  problemValveUnsupported,
+  roomStatus,
+  valveSync,
+} from "./status.ts";
+export type {
+  Problem,
+  ProblemKind,
+  RoomStatus,
+  Severity,
+  Subject,
+  SubjectKind,
+  SyncState,
+  ValveStatus,
+} from "./status.ts";
