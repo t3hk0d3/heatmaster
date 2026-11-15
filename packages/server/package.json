@@ -8,6 +8,11 @@
   },
   "dependencies": {
     "@heatmaster/core": "workspace:*",
-    "fastify": "5.12.8"
+    "fastify": "5.12.8",
+    "mqtt": "5.16.1"
+  },
+  "devDependencies": {
+    "aedes": "1.2.0",
+    "mqtt-packet": "9.0.2"
   }
 }

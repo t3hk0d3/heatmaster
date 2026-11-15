@@ -1,10 +1,11 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { describe, expect, it } from "vitest";
-import { API_HOST } from "./options.ts";
+import { afterEach, describe, expect, it } from "vitest";
+import { API_HOST, type Options } from "./options.ts";
 import { start } from "./main.ts";
 
 const SERVER_DIR = path.resolve(import.meta.dirname, "..");
@@ -12,6 +13,20 @@ const MAIN = path.join(SERVER_DIR, "src/main.ts");
 const VERSION = (
   JSON.parse(readFileSync(path.join(SERVER_DIR, "package.json"), "utf8")) as { version: string }
 ).version;
+
+/** Options for in-process starts. Nothing connects to the broker yet. */
+function optionsFor(port: number): Options {
+  return {
+    port,
+    mqtt: {
+      url: "mqtt://127.0.0.1:1",
+      username: undefined,
+      password: undefined,
+      clientId: undefined,
+    },
+    z2m: { baseTopic: "zigbee2mqtt" },
+  };
+}
 
 /** Opens a listener of its own on a free port. */
 async function listener(): Promise<{ port: number; close(): Promise<void> }> {
@@ -49,14 +64,33 @@ function accepts(port: number, host = API_HOST): Promise<boolean> {
   });
 }
 
-function runMain(port: number): {
+const folders: string[] = [];
+afterEach(() => {
+  for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
+});
+
+function temporaryFolder(): string {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "heatmaster-main-"));
+  folders.push(folder);
+  return folder;
+}
+
+/** Starts the process with an MQTT address where nothing listens and temporary folders. */
+async function runMain(port: number): Promise<{
   child: ChildProcess;
   lines: string[];
   exited: Promise<number | null>;
-} {
+}> {
+  const mqttPort = await freePort();
   const child = spawn(process.execPath, [MAIN], {
     cwd: SERVER_DIR,
-    env: { ...process.env, HEATMASTER_PORT: String(port) },
+    env: {
+      ...process.env,
+      HEATMASTER_PORT: String(port),
+      MQTT_URL: `mqtt://127.0.0.1:${String(mqttPort)}`,
+      DATA_DIR: temporaryFolder(),
+      PUBLIC_DIR: temporaryFolder(),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const lines: string[] = [];
@@ -105,7 +139,7 @@ describe("main", () => {
     describe("With a free port", () => {
       it("resolves, and GET /api/health on 127.0.0.1 at that port answers 200 with status ok and the server package's version", async () => {
         const port = await freePort();
-        const running = await start({ port }, false);
+        const running = await start(optionsFor(port), false);
         try {
           const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
           expect(response.status).toBe(200);
@@ -117,7 +151,7 @@ describe("main", () => {
 
       it("the server's address is 127.0.0.1", async () => {
         const port = await freePort();
-        const running = await start({ port }, false);
+        const running = await start(optionsFor(port), false);
         try {
           expect(await accepts(port, "127.0.0.1")).toBe(true);
           // Another loopback address reaches only a listener that is not bound to 127.0.0.1 alone.
@@ -132,7 +166,7 @@ describe("main", () => {
       it("rejects, and nothing is left listening", async () => {
         const taken = await listener();
         try {
-          await expect(start({ port: taken.port }, false)).rejects.toThrow();
+          await expect(start(optionsFor(taken.port), false)).rejects.toThrow();
         } finally {
           await taken.close();
         }
@@ -145,7 +179,7 @@ describe("main", () => {
     describe("After start", () => {
       it("resolves, and the port no longer accepts connections", async () => {
         const port = await freePort();
-        const running = await start({ port }, false);
+        const running = await start(optionsFor(port), false);
         await running.stop();
         expect(await accepts(port)).toBe(false);
       });
@@ -153,7 +187,7 @@ describe("main", () => {
 
     describe("Called a second time", () => {
       it("resolves and does nothing", async () => {
-        const running = await start({ port: await freePort() }, false);
+        const running = await start(optionsFor(await freePort()), false);
         await running.stop();
         await expect(running.stop()).resolves.toBeUndefined();
       });
@@ -164,7 +198,7 @@ describe("main", () => {
     describe("On start", () => {
       it("writes one log line that holds the address it listens on", async () => {
         const port = await freePort();
-        const { child, lines, exited } = runMain(port);
+        const { child, lines, exited } = await runMain(port);
         try {
           await logLine(lines, `127.0.0.1:${String(port)}`, exited);
           expect(lines.filter((line) => line.includes(`127.0.0.1:${String(port)}`))).toHaveLength(
@@ -181,7 +215,7 @@ describe("main", () => {
       describe(`On ${signal}`, () => {
         it("ends with exit code 0", async () => {
           const port = await freePort();
-          const { child, lines, exited } = runMain(port);
+          const { child, lines, exited } = await runMain(port);
           try {
             await logLine(lines, `127.0.0.1:${String(port)}`, exited);
             child.kill(signal);
@@ -198,7 +232,7 @@ describe("main", () => {
       it("ends with exit code 1 after logging the error", async () => {
         const taken = await listener();
         try {
-          const { lines, exited } = runMain(taken.port);
+          const { lines, exited } = await runMain(taken.port);
           expect(await exited).toBe(1);
           expect(lines.join("\n")).toMatch(/EADDRINUSE/);
         } finally {
