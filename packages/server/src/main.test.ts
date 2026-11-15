@@ -188,6 +188,7 @@ describe("main", () => {
             expect(await exited).toBe(0);
           } finally {
             child.kill("SIGKILL");
+            await exited;
           }
         });
       });

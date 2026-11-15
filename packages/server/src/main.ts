@@ -20,9 +20,10 @@ export async function start(options: Options, logger = true): Promise<Running> {
 }
 
 async function run(): Promise<void> {
-  let running: Running;
+  // Handlers come first, so a signal that arrives while the server is starting is not lost.
+  let startup: Promise<Running>;
   try {
-    running = await start(loadOptions(process.env));
+    startup = start(loadOptions(process.env));
   } catch (error) {
     console.error(error);
     process.exit(1);
@@ -31,18 +32,26 @@ async function run(): Promise<void> {
   const shutdown = (): void => {
     if (stopping) return;
     stopping = true;
-    running.stop().then(
-      () => {
-        process.exit(0);
-      },
-      (error: unknown) => {
-        console.error(error);
-        process.exit(1);
-      },
-    );
+    startup
+      .then((running) => running.stop())
+      .then(
+        () => {
+          process.exit(0);
+        },
+        () => {
+          // A failed start is reported (and ends the process with 1) below.
+          process.exit(1);
+        },
+      );
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  try {
+    await startup;
+  } catch (error) {
+    console.error(error);
+    process.exit(1);
+  }
 }
 
 if (import.meta.main) {
