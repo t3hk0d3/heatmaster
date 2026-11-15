@@ -1,0 +1,47 @@
+{
+  "note": "bridge/info, whitelisted fields only (no mqtt, serial, network, frontend, device list)",
+  "recorded_at": "2026-11-15T18:54:01.532Z",
+  "topic": "zigbee2mqtt/bridge/info",
+  "payload": {
+    "version": "2.14.3",
+    "commit": "unknown",
+    "log_level": "info",
+    "permit_join": false,
+    "restart_required": false,
+    "zigbee_herdsman": {
+      "version": "11.2.0"
+    },
+    "zigbee_herdsman_converters": {
+      "version": "26.125.0"
+    },
+    "coordinator": {
+      "type": "ZStack3x0",
+      "ieee_address": "0x0000000000000002"
+    },
+    "config": {
+      "advanced": {
+        "cache_state": true,
+        "cache_state_persistent": true,
+        "cache_state_send_on_startup": true,
+        "last_seen": "ISO_8601_local",
+        "legacy_api": false,
+        "output": "json",
+        "elapsed": false,
+        "timestamp_format": "YYYY-MM-DD HH:mm:ss",
+        "log_level": "info"
+      },
+      "availability": {
+        "active": {
+          "backoff": true,
+          "max_jitter": 30000,
+          "pause_on_backoff_gt": 0,
+          "timeout": 10
+        },
+        "enabled": true,
+        "passive": {
+          "timeout": 1500
+        }
+      }
+    }
+  }
+}

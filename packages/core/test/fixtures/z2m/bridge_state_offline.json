@@ -1,0 +1,8 @@
+{
+  "note": "bridge/state offline (Z2M stopping)",
+  "recorded_at": "2026-11-15T18:53:26.226Z",
+  "topic": "zigbee2mqtt/bridge/state",
+  "payload": {
+    "state": "offline"
+  }
+}

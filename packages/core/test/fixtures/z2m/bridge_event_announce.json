@@ -1,0 +1,12 @@
+{
+  "note": "bridge/event device_announce (recorded from another device; name and address replaced by the test TRVZB)",
+  "recorded_at": "2026-11-15T12:13:04.486Z",
+  "topic": "zigbee2mqtt/bridge/event",
+  "payload": {
+    "data": {
+      "friendly_name": "test/trvzb",
+      "ieee_address": "0x0000000000000003"
+    },
+    "type": "device_announce"
+  }
+}

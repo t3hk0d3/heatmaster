@@ -1,0 +1,1288 @@
+{
+  "note": "bridge/devices, coordinator and the two test valves only; network addresses zeroed",
+  "recorded_at": "2026-11-15T18:54:01.541Z",
+  "topic": "zigbee2mqtt/bridge/devices",
+  "payload": [
+    {
+      "disabled": false,
+      "endpoints": {
+        "1": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "2": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "3": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "4": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "5": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "6": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "8": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "10": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "11": {
+          "bindings": [],
+          "clusters": {
+            "input": [
+              "ssIasAce",
+              "genTime"
+            ],
+            "output": [
+              "ssIasZone",
+              "ssIasWd"
+            ]
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "12": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "13": {
+          "bindings": [],
+          "clusters": {
+            "input": [
+              "genOta"
+            ],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "47": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "110": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        },
+        "242": {
+          "bindings": [],
+          "clusters": {
+            "input": [],
+            "output": []
+          },
+          "configured_reportings": [],
+          "scenes": []
+        }
+      },
+      "friendly_name": "Coordinator",
+      "ieee_address": "0x0000000000000002",
+      "interview_completed": true,
+      "interview_state": "SUCCESSFUL",
+      "interviewing": false,
+      "network_address": 0,
+      "supported": true,
+      "type": "Coordinator"
+    },
+    {
+      "date_code": "20251229",
+      "definition": {
+        "description": "Zigbee thermostatic radiator valve",
+        "exposes": [
+          {
+            "features": [
+              {
+                "access": 7,
+                "description": "Temperature setpoint",
+                "label": "Occupied heating setpoint",
+                "name": "occupied_heating_setpoint",
+                "property": "occupied_heating_setpoint",
+                "type": "numeric",
+                "unit": "°C",
+                "value_max": 35,
+                "value_min": 4,
+                "value_step": 0.5
+              },
+              {
+                "access": 5,
+                "description": "Current temperature measured on the device",
+                "label": "Local temperature",
+                "name": "local_temperature",
+                "property": "local_temperature",
+                "type": "numeric",
+                "unit": "°C"
+              },
+              {
+                "access": 7,
+                "description": "Offset to add/subtract to the local temperature",
+                "label": "Local temperature calibration",
+                "name": "local_temperature_calibration",
+                "property": "local_temperature_calibration",
+                "type": "numeric",
+                "unit": "°C",
+                "value_max": 12.7,
+                "value_min": -12.7,
+                "value_step": 0.2
+              },
+              {
+                "access": 7,
+                "description": "Mode of the thermostat",
+                "label": "System mode",
+                "name": "system_mode",
+                "property": "system_mode",
+                "type": "enum",
+                "values": [
+                  "off",
+                  "auto",
+                  "heat"
+                ]
+              },
+              {
+                "access": 5,
+                "description": "The current running state",
+                "label": "Running state",
+                "name": "running_state",
+                "property": "running_state",
+                "type": "enum",
+                "values": [
+                  "idle",
+                  "heat"
+                ]
+              }
+            ],
+            "type": "climate"
+          },
+          {
+            "access": 1,
+            "category": "diagnostic",
+            "description": "Remaining battery in %, can take up to 24 hours before reported",
+            "label": "Battery",
+            "name": "battery",
+            "property": "battery",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "In timer mode, the temperature can be set to 4-35 ℃.",
+            "label": "Timer mode target temp",
+            "name": "timer_mode_target_temp",
+            "property": "timer_mode_target_temp",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 35,
+            "value_min": 4,
+            "value_step": 0.5
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Boost Mode: Sets maximum TRV temperature for up to 180 minutes.Timer Mode: Customizes temperature and duration, up to 24 hours.",
+            "label": "Temporary mode duration",
+            "name": "temporary_mode_duration",
+            "property": "temporary_mode_duration",
+            "type": "numeric",
+            "unit": "minutes",
+            "value_max": 1440,
+            "value_min": 0,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Boost mode: Activates maximum TRV temperature for a user-defined duration, enabling rapid heating. Timer Mode: Allows customization of temperature and duration for precise heating control.After the set duration, the system will return to its previous normal mode and temperature.",
+            "label": "Temporary mode ",
+            "name": "temporary_mode_select",
+            "property": "temporary_mode_select",
+            "type": "enum",
+            "values": [
+              "boost",
+              "timer"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Enables/disables physical input on the device",
+            "label": "Child lock",
+            "name": "child_lock",
+            "property": "child_lock",
+            "type": "binary",
+            "value_off": "UNLOCK",
+            "value_on": "LOCK"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Automatically turns off the radiator when local temperature drops by more than 1.5°C in 4.5 minutes.",
+            "label": "Open window",
+            "name": "open_window",
+            "property": "open_window",
+            "type": "binary",
+            "value_off": "OFF",
+            "value_on": "ON"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Minimum temperature at which to automatically turn on the radiator, if system mode is off, to prevent pipes freezing.",
+            "label": "Frost protection temperature",
+            "name": "frost_protection_temperature",
+            "property": "frost_protection_temperature",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 35,
+            "value_min": 4,
+            "value_step": 0.5
+          },
+          {
+            "access": 7,
+            "description": "Select the temperature source used for control.local_temperature: Uses the built-in sensor.remote_temperature: Uses the external temperature sensor.remote_source_offline: The external sensor is offline, so the device automatically uses the built-in sensor.When the external sensor reconnects, the device reports 0x03 and switches back to the external temperature sensor.",
+            "label": "Temperature sensor",
+            "name": "temperature_sensor_select",
+            "property": "temperature_sensor_select",
+            "type": "enum",
+            "values": [
+              "local_temperature",
+              "remote_temperature",
+              "remote_source_offline"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The value of an external temperature sensor. Note: synchronisation of this value with the external temperature sensor needs to happen outside of Zigbee2MQTT.",
+            "label": "External temperature",
+            "name": "external_temperature_input",
+            "property": "external_temperature_input",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 99.9,
+            "value_min": 0,
+            "value_step": 0.1
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Number of steps used for calibration (no-load steps)",
+            "label": "Idle steps",
+            "name": "idle_steps",
+            "property": "idle_steps",
+            "type": "numeric"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Number of steps it takes to close the valve",
+            "label": "Closing steps",
+            "name": "closing_steps",
+            "property": "closing_steps",
+            "type": "numeric"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Valve opening limit voltage",
+            "label": "Valve opening limit voltage",
+            "name": "valve_opening_limit_voltage",
+            "property": "valve_opening_limit_voltage",
+            "type": "numeric",
+            "unit": "mV"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Valve closing limit voltage",
+            "label": "Valve closing limit voltage",
+            "name": "valve_closing_limit_voltage",
+            "property": "valve_closing_limit_voltage",
+            "type": "numeric",
+            "unit": "mV"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Valve motor running voltage",
+            "label": "Valve motor running voltage",
+            "name": "valve_motor_running_voltage",
+            "property": "valve_motor_running_voltage",
+            "type": "numeric",
+            "unit": "mV"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Valve open position (percentage) control. If the opening degree is set to 100%, the valve is fully open when it is opened. If the opening degree is set to 0%, the valve is fully closed when it is opened, and the default value is 100%. Note: only version v1.1.4 or higher is supported.",
+            "label": "Valve opening degree",
+            "name": "valve_opening_degree",
+            "property": "valve_opening_degree",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Valve closed position (percentage) control. If the closing degree is set to 100%, the valve is fully closed when it is closed. If the closing degree is set to 0%, the valve is fully opened when it is closed, and the default value is 100%. Note: Only version v1.1.4 or higher is supported.",
+            "label": "Valve closing degree",
+            "name": "valve_closing_degree",
+            "property": "valve_closing_degree",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Temperature control accuracy. The range is -0.2 ~ -1°C, with an interval of 0.2, and the default is -1. If the temperature control accuracy is selected as -1°C (default value) and the target temperature is 26 degrees, then TRVZB will close the valve when the room temperature reaches 26 degrees and open the valve at 25 degrees. If -0.4°C is chosen as the temperature control accuracy, then the valve will close when the room temperature reaches 26 degrees and open at 25.6 degrees.Note: Only version v1.3.0 or higher is supported.",
+            "label": "Temperature accuracy",
+            "name": "temperature_accuracy",
+            "property": "temperature_accuracy",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": -0.2,
+            "value_min": -1,
+            "value_step": 0.2
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule sunday",
+            "name": "weekly_schedule_sunday",
+            "property": "weekly_schedule_sunday",
+            "type": "text"
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule monday",
+            "name": "weekly_schedule_monday",
+            "property": "weekly_schedule_monday",
+            "type": "text"
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule tuesday",
+            "name": "weekly_schedule_tuesday",
+            "property": "weekly_schedule_tuesday",
+            "type": "text"
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule wednesday",
+            "name": "weekly_schedule_wednesday",
+            "property": "weekly_schedule_wednesday",
+            "type": "text"
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule thursday",
+            "name": "weekly_schedule_thursday",
+            "property": "weekly_schedule_thursday",
+            "type": "text"
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule friday",
+            "name": "weekly_schedule_friday",
+            "property": "weekly_schedule_friday",
+            "type": "text"
+          },
+          {
+            "access": 3,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 6 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 4-35°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule saturday",
+            "name": "weekly_schedule_saturday",
+            "property": "weekly_schedule_saturday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "description": "Enable adaptive valve control using a PID algorithm. When enabled, \"Valve Opening Percentage\" and \"Temperature Accuracy\" are unavailable.",
+            "label": "Smart temperature control",
+            "name": "smart_temperature_control",
+            "property": "smart_temperature_control",
+            "type": "binary",
+            "value_off": false,
+            "value_on": true
+          },
+          {
+            "access": 1,
+            "category": "diagnostic",
+            "description": "Link quality (signal strength)",
+            "label": "Linkquality",
+            "name": "linkquality",
+            "property": "linkquality",
+            "type": "numeric",
+            "unit": "lqi",
+            "value_max": 255,
+            "value_min": 0
+          }
+        ],
+        "icon": "device_icons/1fb2eb3b25ea2c839afa979257bc1626.png",
+        "model": "TRVZB",
+        "options": [
+          {
+            "access": 2,
+            "description": "Controls the temperature unit of the thermostat (default celsius).",
+            "label": "Thermostat unit",
+            "name": "thermostat_unit",
+            "property": "thermostat_unit",
+            "type": "enum",
+            "values": [
+              "celsius",
+              "fahrenheit"
+            ]
+          }
+        ],
+        "source": "native",
+        "supports_ota": true,
+        "vendor": "SONOFF",
+        "version": "0.0.0"
+      },
+      "disabled": false,
+      "endpoints": {
+        "1": {
+          "bindings": [
+            {
+              "cluster": "genPollCtrl",
+              "target": {
+                "endpoint": 1,
+                "ieee_address": "0x0000000000000002",
+                "type": "endpoint"
+              }
+            },
+            {
+              "cluster": "hvacThermostat",
+              "target": {
+                "endpoint": 1,
+                "ieee_address": "0x0000000000000002",
+                "type": "endpoint"
+              }
+            }
+          ],
+          "clusters": {
+            "input": [
+              "genBasic",
+              "genPowerCfg",
+              "genIdentify",
+              "genOnOff",
+              "genPollCtrl",
+              "hvacThermostat",
+              "manuSpecificAmazonWWAH",
+              "customSonoffTrvzb"
+            ],
+            "output": [
+              "genTime",
+              "genOta"
+            ]
+          },
+          "configured_reportings": [
+            {
+              "attribute": "runningState",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 60
+            },
+            {
+              "attribute": "localTemp",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 0,
+              "reportable_change": 10
+            },
+            {
+              "attribute": "occupiedHeatingSetpoint",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 0,
+              "reportable_change": 10
+            },
+            {
+              "attribute": "systemMode",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 10,
+              "reportable_change": null
+            }
+          ],
+          "scenes": []
+        }
+      },
+      "friendly_name": "test/trvzb",
+      "ieee_address": "0x0000000000000003",
+      "interview_completed": true,
+      "interview_state": "SUCCESSFUL",
+      "interviewing": false,
+      "manufacturer": "SONOFF",
+      "model_id": "TRVZB",
+      "network_address": 0,
+      "power_source": "Battery",
+      "software_build_id": "1.4.4",
+      "supported": true,
+      "type": "EndDevice"
+    },
+    {
+      "definition": {
+        "description": "Zigbee thermostatic radiator valve",
+        "exposes": [
+          {
+            "features": [
+              {
+                "access": 7,
+                "description": "Temperature setpoint",
+                "label": "Occupied heating setpoint",
+                "name": "occupied_heating_setpoint",
+                "property": "occupied_heating_setpoint",
+                "type": "numeric",
+                "unit": "°C",
+                "value_max": 30,
+                "value_min": 5,
+                "value_step": 0.5
+              },
+              {
+                "access": 5,
+                "description": "Current temperature measured on the device",
+                "label": "Local temperature",
+                "name": "local_temperature",
+                "property": "local_temperature",
+                "type": "numeric",
+                "unit": "°C"
+              },
+              {
+                "access": 7,
+                "description": "Offset to add/subtract to the local temperature",
+                "label": "Local temperature calibration",
+                "name": "local_temperature_calibration",
+                "property": "local_temperature_calibration",
+                "type": "numeric",
+                "unit": "°C",
+                "value_max": 10,
+                "value_min": -10,
+                "value_step": 0.2
+              },
+              {
+                "access": 7,
+                "description": "Mode of the thermostat",
+                "label": "System mode",
+                "name": "system_mode",
+                "property": "system_mode",
+                "type": "enum",
+                "values": [
+                  "off",
+                  "auto",
+                  "heat"
+                ]
+              },
+              {
+                "access": 5,
+                "description": "The current running state",
+                "label": "Running state",
+                "name": "running_state",
+                "property": "running_state",
+                "type": "enum",
+                "values": [
+                  "idle",
+                  "heat"
+                ]
+              }
+            ],
+            "type": "climate"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Remaining battery in %",
+            "label": "Battery",
+            "name": "battery",
+            "property": "battery",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Reports the current device fault condition.",
+            "label": "Fault status",
+            "name": "fault_status",
+            "property": "fault_status",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Screen direction in degrees",
+            "label": "Screen direction",
+            "name": "screen_direction",
+            "property": "screen_direction",
+            "type": "enum",
+            "values": [
+              "0",
+              "90",
+              "180",
+              "270"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Enables/disables physical input on the device",
+            "label": "Child lock",
+            "name": "child_lock",
+            "property": "child_lock",
+            "type": "binary",
+            "value_off": "UNLOCK",
+            "value_on": "LOCK"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Automatically turns off the radiator when local temperature drops by more than 1.5°C in 5 minutes.",
+            "label": "Open window",
+            "name": "open_window",
+            "property": "open_window",
+            "type": "binary",
+            "value_off": "OFF",
+            "value_on": "ON"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Minimum temperature at which to automatically turn on the radiator to prevent freezing.",
+            "label": "Frost protection temperature",
+            "name": "frost_protection_temperature",
+            "property": "frost_protection_temperature",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 15,
+            "value_min": 5,
+            "value_step": 0.5
+          },
+          {
+            "access": 7,
+            "description": "Select the temperature source used for control.local_temperature: Uses the built-in sensor.remote_temperature: Uses the external temperature sensor.remote_source_offline: The external sensor is offline, so the device automatically uses the built-in sensor.When the external sensor reconnects, the device reports 0x03 and switches back to the external temperature sensor.",
+            "label": "Temperature sensor",
+            "name": "temperature_sensor_select",
+            "property": "temperature_sensor_select",
+            "type": "enum",
+            "values": [
+              "local_temperature",
+              "remote_temperature",
+              "remote_source_offline"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The value of an external temperature sensor. Note: synchronisation of this value with the external temperature sensor needs to happen outside of Zigbee2MQTT.",
+            "label": "External temperature",
+            "name": "external_temperature_input",
+            "property": "external_temperature_input",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 99.9,
+            "value_min": 0,
+            "value_step": 0.1
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Number of steps used for calibration (no-load steps)",
+            "label": "Idle steps",
+            "name": "idle_steps",
+            "property": "idle_steps",
+            "type": "numeric"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Number of steps it takes to close the valve",
+            "label": "Closing steps",
+            "name": "closing_steps",
+            "property": "closing_steps",
+            "type": "numeric"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Valve opening limit voltage",
+            "label": "Valve opening limit voltage",
+            "name": "valve_opening_limit_voltage",
+            "property": "valve_opening_limit_voltage",
+            "type": "numeric",
+            "unit": "mV"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Valve closing limit voltage",
+            "label": "Valve closing limit voltage",
+            "name": "valve_closing_limit_voltage",
+            "property": "valve_closing_limit_voltage",
+            "type": "numeric",
+            "unit": "mV"
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Valve motor running voltage",
+            "label": "Valve motor running voltage",
+            "name": "valve_motor_running_voltage",
+            "property": "valve_motor_running_voltage",
+            "type": "numeric",
+            "unit": "mV"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Valve opening percentage during heating.",
+            "label": "Heating valve position",
+            "name": "heating_valve_position",
+            "property": "heating_valve_position",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Valve opening percentage when not heating.Recommended: set the heating valve position higher than the idle valve position.",
+            "label": "Idle valve position",
+            "name": "idle_valve_position",
+            "property": "idle_valve_position",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Temperature control accuracy. The range is -0.2 ~ -1°C, with an interval of 0.2, and the default is -1. If the temperature control accuracy is selected as -1°C (default value) and the target temperature is 26 degrees, then TRV-ZBT will close the valve when the room temperature reaches 26 degrees and open the valve at 25 degrees. If -0.4°C is chosen as the temperature control accuracy, then the valve will close when the room temperature reaches 26 degrees and open at 25.6 degrees. ",
+            "label": "Temperature accuracy",
+            "name": "temperature_accuracy",
+            "property": "temperature_accuracy",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": -0.2,
+            "value_min": -1,
+            "value_step": 0.2
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Enable adaptive valve control using a PID algorithm. When enabled, \"Valve Opening Percentage\" and \"Temperature Accuracy\" are unavailable.",
+            "label": "Smart temperature control",
+            "name": "smart_temperature_control",
+            "property": "smart_temperature_control",
+            "type": "binary",
+            "value_off": "OFF",
+            "value_on": "ON"
+          },
+          {
+            "access": 7,
+            "description": "Temporary mode: Boost heats at 30°C; Timer uses a custom temperature and duration.",
+            "label": "Temporary mode mode",
+            "name": "temporary_mode_mode",
+            "property": "temporary_mode_mode",
+            "type": "enum",
+            "values": [
+              "disabled",
+              "timer",
+              "boost"
+            ]
+          },
+          {
+            "access": 7,
+            "description": "Boost Mode: Sets maximum TRV temperature for up to 180 minutes. Timer Mode: Customizes temperature and duration, up to 24 hours.",
+            "label": "Temporary mode duration",
+            "name": "temporary_mode_duration",
+            "property": "temporary_mode_duration",
+            "type": "numeric",
+            "unit": "minutes",
+            "value_max": 1440,
+            "value_min": 1,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "description": "Target temperature used in timer mode.",
+            "label": "Temporary mode target temperature",
+            "name": "temporary_mode_target_temperature",
+            "property": "temporary_mode_target_temperature",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 30,
+            "value_min": 5,
+            "value_step": 0.5
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Fixed valve opening percentage used when the battery is too low to operate.",
+            "label": "Low battery valve state",
+            "name": "low_battery_valve_state",
+            "property": "low_battery_valve_state",
+            "type": "enum",
+            "values": [
+              "close",
+              "open_30"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The schedule group currently used in Auto mode.",
+            "label": "Schedule active group",
+            "name": "schedule_active_group",
+            "property": "schedule_active_group",
+            "type": "enum",
+            "values": [
+              "1",
+              "2",
+              "3"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Select the schedule group to view or edit its weekly schedule settings.",
+            "label": "Schedule group to edit",
+            "name": "schedule_group_to_edit",
+            "property": "schedule_group_to_edit",
+            "type": "enum",
+            "values": [
+              "1",
+              "2",
+              "3"
+            ]
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule sunday",
+            "name": "weekly_schedule_sunday",
+            "property": "weekly_schedule_sunday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule monday",
+            "name": "weekly_schedule_monday",
+            "property": "weekly_schedule_monday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule tuesday",
+            "name": "weekly_schedule_tuesday",
+            "property": "weekly_schedule_tuesday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule wednesday",
+            "name": "weekly_schedule_wednesday",
+            "property": "weekly_schedule_wednesday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule thursday",
+            "name": "weekly_schedule_thursday",
+            "property": "weekly_schedule_thursday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule friday",
+            "name": "weekly_schedule_friday",
+            "property": "weekly_schedule_friday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "The preset heating schedule to use when the system mode is set to \"auto\" (indicated with ⏲ on the TRV). Up to 12 transitions can be defined per day, where a transition is expressed in the format 'HH:mm/temperature', each separated by a space. The first transition for each day must start at 00:00 and the valid temperature range is 5-30°C (in 0.5°C steps). The temperature will be set at the time of the first transition until the time of the next transition, e.g. '04:00/20 10:00/25' will result in the temperature being set to 20°C at 04:00 until 10:00, when it will change to 25°C.",
+            "label": "Weekly schedule saturday",
+            "name": "weekly_schedule_saturday",
+            "property": "weekly_schedule_saturday",
+            "type": "text"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Enables or disables target temperature linkage with the thermostat.",
+            "label": "Thermostat Linkage",
+            "name": "remote_temperature_linkage",
+            "property": "remote_temperature_linkage",
+            "type": "binary",
+            "value_off": "OFF",
+            "value_on": "ON"
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Target temperature received from the thermostat while linkage is enabled.",
+            "label": "Thermostat Linkage Target Temperature",
+            "name": "remote_setpoint_temperature",
+            "property": "remote_setpoint_temperature",
+            "type": "numeric",
+            "unit": "°C",
+            "value_max": 30,
+            "value_min": 5,
+            "value_step": 0.5
+          },
+          {
+            "access": 1,
+            "description": "Indicates whether open window detection was triggered.",
+            "label": "Open window detected",
+            "name": "open_window_detected",
+            "property": "open_window_detected",
+            "type": "binary",
+            "value_off": false,
+            "value_on": true
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Heating percentage over the last hour",
+            "label": "Heat percentage hour",
+            "name": "heat_percentage_hour",
+            "property": "heat_percentage_hour",
+            "type": "numeric",
+            "unit": "%",
+            "value_max": 100,
+            "value_min": 0,
+            "value_step": 1
+          },
+          {
+            "access": 7,
+            "category": "config",
+            "description": "Calibrates the valve travel range to ensure accurate opening and closing control.",
+            "label": "Valve travel calibration",
+            "name": "valve_travel_calibration",
+            "property": "valve_travel_calibration",
+            "type": "enum",
+            "values": [
+              "calibrate"
+            ]
+          },
+          {
+            "access": 5,
+            "category": "diagnostic",
+            "description": "Motor travel calibration status",
+            "label": "Motor travel calibration status",
+            "name": "motor_travel_calibration_status",
+            "property": "motor_travel_calibration_status",
+            "type": "text"
+          },
+          {
+            "access": 2,
+            "description": "Start or stop TRV-ZBT Bluetooth pairing mode.",
+            "label": "Bluetooth pairing",
+            "name": "bluetooth_pairing",
+            "property": "bluetooth_pairing",
+            "type": "enum",
+            "values": [
+              "start",
+              "stop"
+            ]
+          },
+          {
+            "access": 1,
+            "description": "Result of the Bluetooth pairing command.",
+            "label": "Bluetooth pairing status",
+            "name": "bluetooth_pairing_status",
+            "property": "bluetooth_pairing_status",
+            "type": "enum",
+            "values": [
+              "success",
+              "fail"
+            ]
+          },
+          {
+            "access": 2,
+            "description": "Read TRV-ZBT temperature control history.",
+            "features": [
+              {
+                "access": 2,
+                "label": "Type",
+                "name": "type",
+                "property": "type",
+                "type": "enum",
+                "values": [
+                  "day",
+                  "month",
+                  "half_year"
+                ]
+              },
+              {
+                "access": 2,
+                "features": [
+                  {
+                    "access": 2,
+                    "description": "Start time in ISO format with timezone.",
+                    "label": "Start",
+                    "name": "start",
+                    "property": "start",
+                    "type": "text"
+                  },
+                  {
+                    "access": 2,
+                    "description": "End time in ISO format with timezone.",
+                    "label": "End",
+                    "name": "end",
+                    "property": "end",
+                    "type": "text"
+                  }
+                ],
+                "label": "Time range",
+                "name": "time_range",
+                "property": "time_range",
+                "type": "composite"
+              }
+            ],
+            "label": "Read temperature control history",
+            "name": "read_temperature_control_history",
+            "property": "read_temperature_control_history",
+            "type": "composite"
+          },
+          {
+            "access": 1,
+            "category": "diagnostic",
+            "description": "Last decoded TRV-ZBT temperature control history response.",
+            "homeassistant": {
+              "enabledByDefault": false
+            },
+            "label": "Temperature control history",
+            "name": "temperature_control_history",
+            "property": "temperature_control_history",
+            "type": "text"
+          },
+          {
+            "access": 1,
+            "category": "diagnostic",
+            "description": "Link quality (signal strength)",
+            "label": "Linkquality",
+            "name": "linkquality",
+            "property": "linkquality",
+            "type": "numeric",
+            "unit": "lqi",
+            "value_max": 255,
+            "value_min": 0
+          }
+        ],
+        "model": "TRV-ZBT",
+        "options": [
+          {
+            "access": 2,
+            "description": "Controls the temperature unit of the thermostat (default celsius).",
+            "label": "Thermostat unit",
+            "name": "thermostat_unit",
+            "property": "thermostat_unit",
+            "type": "enum",
+            "values": [
+              "celsius",
+              "fahrenheit"
+            ]
+          }
+        ],
+        "source": "native",
+        "supports_ota": true,
+        "vendor": "SONOFF",
+        "version": "0.0.1"
+      },
+      "disabled": false,
+      "endpoints": {
+        "1": {
+          "bindings": [
+            {
+              "cluster": "genPollCtrl",
+              "target": {
+                "endpoint": 1,
+                "ieee_address": "0x0000000000000002",
+                "type": "endpoint"
+              }
+            },
+            {
+              "cluster": "hvacThermostat",
+              "target": {
+                "endpoint": 1,
+                "ieee_address": "0x0000000000000002",
+                "type": "endpoint"
+              }
+            },
+            {
+              "cluster": "genPowerCfg",
+              "target": {
+                "endpoint": 1,
+                "ieee_address": "0x0000000000000002",
+                "type": "endpoint"
+              }
+            }
+          ],
+          "clusters": {
+            "input": [
+              "genBasic",
+              "genPowerCfg",
+              "genIdentify",
+              "genOnOff",
+              "genPollCtrl",
+              "hvacThermostat",
+              "customSonoffTrvzbt",
+              "manuSpecificAmazonWWAH"
+            ],
+            "output": [
+              "genTime",
+              "genOta"
+            ]
+          },
+          "configured_reportings": [
+            {
+              "attribute": "localTemp",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 0,
+              "reportable_change": 50
+            },
+            {
+              "attribute": "occupiedHeatingSetpoint",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 0,
+              "reportable_change": 10
+            },
+            {
+              "attribute": "systemMode",
+              "cluster": "hvacThermostat",
+              "maximum_report_interval": 3600,
+              "minimum_report_interval": 10,
+              "reportable_change": null
+            },
+            {
+              "attribute": "batteryPercentageRemaining",
+              "cluster": "genPowerCfg",
+              "maximum_report_interval": 65000,
+              "minimum_report_interval": 3600,
+              "reportable_change": 10
+            }
+          ],
+          "scenes": []
+        }
+      },
+      "friendly_name": "test/trv_zbt",
+      "ieee_address": "0x0000000000000004",
+      "interview_completed": true,
+      "interview_state": "SUCCESSFUL",
+      "interviewing": false,
+      "manufacturer": "SONOFF",
+      "model_id": "TRV-ZBT",
+      "network_address": 0,
+      "power_source": "Battery",
+      "software_build_id": "1.1.3",
+      "supported": true,
+      "type": "EndDevice"
+    }
+  ]
+}

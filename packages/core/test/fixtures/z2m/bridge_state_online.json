@@ -1,0 +1,8 @@
+{
+  "note": "bridge/state online (Z2M started)",
+  "recorded_at": "2026-11-15T18:54:01.436Z",
+  "topic": "zigbee2mqtt/bridge/state",
+  "payload": {
+    "state": "online"
+  }
+}

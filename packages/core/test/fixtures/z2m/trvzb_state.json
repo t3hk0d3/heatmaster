@@ -1,0 +1,43 @@
+{
+  "note": "TRVZB device message, fresh valve report after restore",
+  "recorded_at": "2026-11-15T19:01:14.787Z",
+  "topic": "zigbee2mqtt/test/trvzb",
+  "payload": {
+    "battery": 92,
+    "child_lock": "LOCK",
+    "closing_steps": 252,
+    "external_temperature_input": 19.3,
+    "frost_protection_temperature": 7,
+    "idle_steps": 101,
+    "last_seen": "2026-11-15T20:01:14+01:00",
+    "linkquality": 180,
+    "local_temperature": 19.3,
+    "local_temperature_calibration": 0,
+    "occupied_heating_setpoint": 17,
+    "open_window": "OFF",
+    "running_state": "idle",
+    "smart_temperature_control": false,
+    "system_mode": "heat",
+    "temperature_accuracy": -1,
+    "temperature_sensor_select": "remote_temperature",
+    "update": {
+      "installed_version": 5124,
+      "latest_release_notes": null,
+      "latest_source": "https://raw.githubusercontent.com/Koenkk/zigbee-OTA/master/images/Sonoff/trvzb_v1.4.4.ota",
+      "latest_version": 5124,
+      "state": "idle"
+    },
+    "valve_closing_degree": 100,
+    "valve_closing_limit_voltage": 2805,
+    "valve_motor_running_voltage": 1330,
+    "valve_opening_degree": 100,
+    "valve_opening_limit_voltage": 1682,
+    "weekly_schedule_friday": "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16",
+    "weekly_schedule_monday": "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16",
+    "weekly_schedule_saturday": "00:00/16 07:00/19 10:00/19 10:00/19 10:00/19 23:00/16",
+    "weekly_schedule_sunday": "00:00/16 07:00/19 10:00/19 10:00/19 10:00/19 23:00/16",
+    "weekly_schedule_thursday": "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16",
+    "weekly_schedule_tuesday": "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16",
+    "weekly_schedule_wednesday": "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16"
+  }
+}
