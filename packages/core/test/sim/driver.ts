@@ -90,6 +90,8 @@ interface SimSensor {
   value: number;
   alive: boolean;
   seenAt: number;
+  /** Home Assistant is not there: Heatmaster cannot judge the sensor and has no value for it. */
+  pending: boolean;
 }
 
 export type SimDriver = Readonly<{
@@ -103,6 +105,10 @@ export type SimDriver = Readonly<{
   /** Steps of `stepMs` until `elapsed()` reaches `untilElapsedMs`. */
   runTo: (untilElapsedMs: number, stepMs?: number) => void;
   world: () => World;
+  /** The world the last tick read: the state that decided its effects. */
+  tickWorld: () => World | undefined;
+  /** Hands over what the bridge sent so far, as the runtime would have done on arrival. */
+  deliver: () => void;
   lastResult: () => TickResult | undefined;
   inbox: () => Inbox;
   memory: () => Memory;
@@ -118,11 +124,14 @@ export type SimDriver = Readonly<{
   // Faults and hooks.
   /** Runs `fault` at the start of the next step, after the clock moved. */
   atNextStep: (fault: () => void) => void;
-  setSensor: (ref: string, change: Readonly<{ value?: number; alive?: boolean }>) => void;
+  setSensor: (
+    ref: string,
+    change: Readonly<{ value?: number; alive?: boolean; pending?: boolean }>,
+  ) => void;
   /** The application stops and starts: memory and device states are dropped, the disk is read. */
   restart: () => void;
   /** Stays armed until a step has at least n effects; runs the first n, then restarts. */
-  crashAfterEffects: (n: number) => void;
+  crashAfterEffects: (n: number | undefined) => void;
   /** Runs `during` while Heatmaster is not there: what is sent meanwhile is lost; then it starts. */
   whileDown: (during: () => void) => void;
   loseConfig: (how: "lost" | "corrupt") => void;
@@ -170,7 +179,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   }
   const sensors = new Map<string, SimSensor>();
   for (const s of setup.sensors) {
-    sensors.set(s.ref, { value: s.value, alive: s.alive ?? true, seenAt: startMs });
+    sensors.set(s.ref, { value: s.value, alive: s.alive ?? true, seenAt: startMs, pending: false });
   }
 
   let nowMs = startMs;
@@ -196,6 +205,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   let restartingBridge = false;
   let crashAfter: number | undefined;
   let last: TickResult | undefined;
+  let lastWorld: World | undefined;
   const log: LoggedEffect[] = [];
   const appearances: { at: number; valveId: string }[] = [];
 
@@ -232,6 +242,10 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   const sensorReadings = (): ReadonlyMap<string, SensorReading> => {
     const readings = new Map<string, SensorReading>();
     for (const [ref, s] of sensors) {
+      if (s.pending) {
+        readings.set(ref, { sensorId: ref, value: undefined, seenAt: undefined, pending: true });
+        continue;
+      }
       const seenAt = s.alive ? nowMs : s.seenAt;
       readings.set(ref, { sensorId: ref, value: s.value, seenAt, pending: false });
     }
@@ -262,8 +276,17 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     };
   };
 
+  /** Notes each valve whose memory the inbox did not hold: the budget counts those. */
+  const noteAppearances = (before: Memory, after: Memory): void => {
+    for (const id of after.valves.keys()) {
+      if (!before.valves.has(id)) appearances.push({ at: nowMs, valveId: id });
+    }
+  };
+
   const apply = (event: Event): void => {
+    const before = inbox.memory;
     inbox = applyEvent(inbox, event, specs, nowMs);
+    noteAppearances(before, inbox.memory);
   };
 
   const eventOf = (item: BridgeItem): Event => {
@@ -341,6 +364,19 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     }
   };
 
+  /** Events that were waiting, then what the bridge sent; a link that is down loses its messages. */
+  const deliver = (): void => {
+    const items = bridge
+      .drain()
+      .filter(
+        (item) =>
+          links[TRANSPORT] !== false || (item.kind !== "message" && item.kind !== "rejoined"),
+      );
+    const events = [...pendingEvents, ...items.map(eventOf)];
+    pendingEvents = [];
+    for (const event of events) apply(event);
+  };
+
   const step = (dtMs: number): TickResult => {
     nowMs += dtMs;
     for (const s of sensors.values()) if (s.alive) s.seenAt = nowMs;
@@ -348,15 +384,13 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     faults = [];
     for (const fault of due) fault();
     bridge.advance(nowMs);
-    const events = [...pendingEvents, ...bridge.drain().map(eventOf)];
-    pendingEvents = [];
-    for (const event of events) apply(event);
+    deliver();
 
-    const result = tick(buildWorld(restartingBridge ? { [TRANSPORT]: false } : undefined));
+    const tickedWorld = buildWorld(restartingBridge ? { [TRANSPORT]: false } : undefined);
+    const result = tick(tickedWorld);
+    lastWorld = tickedWorld;
     last = result;
-    for (const id of result.memory.valves.keys()) {
-      if (!inbox.memory.valves.has(id)) appearances.push({ at: nowMs, valveId: id });
-    }
+    noteAppearances(inbox.memory, result.memory);
     inbox = { ...inbox, memory: result.memory };
 
     // A crash stays armed until a step has at least that many effects.
@@ -402,6 +436,8 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       while (nowMs - startMs + stepMs <= untilElapsedMs) step(stepMs);
     },
     world: () => buildWorld(),
+    tickWorld: () => lastWorld,
+    deliver,
     lastResult: () => last,
     inbox: () => inbox,
     memory: () => inbox.memory,
@@ -419,6 +455,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       if (sensor === undefined) throw new Error(`no simulated sensor ${ref}`);
       if (change.value !== undefined) sensor.value = change.value;
       if (change.alive !== undefined) sensor.alive = change.alive;
+      if (change.pending !== undefined) sensor.pending = change.pending;
     },
     restart: startApplication,
     crashAfterEffects(n) {

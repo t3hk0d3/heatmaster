@@ -1257,4 +1257,111 @@ describe("scenarios", () => {
       });
     });
   });
+
+  describe("hooks of the fault plans", () => {
+    function one(model: ValveModel = "trvzb"): Built & Readonly<{ id: string }> {
+      const built = build({ rooms: [{ id: "r1", valves: [[A, model]] }] });
+      return { ...built, id: valveIdOf(A) };
+    }
+
+    describe("flushLate", () => {
+      it("lands the requests that were running late", () => {
+        const { sim, id } = one();
+        const valve = sim.valve(id);
+        valve.setPolicy(() => "late");
+        sim.bridge.write(id, { temperature_sensor_select: "local_temperature" }, sim.now());
+        expect(valve.received().writes).toBe(0);
+        valve.flushLate(sim.now());
+        expect(valve.received().writes).toBe(1);
+        expect(valve.truth().select).toBe("local_temperature");
+      });
+      it("keeps them for the wake-up when the valve sleeps", () => {
+        const { sim, id } = one();
+        const valve = sim.valve(id);
+        valve.setPolicy(() => "late");
+        sim.bridge.write(id, { temperature_sensor_select: "local_temperature" }, sim.now());
+        valve.sleep();
+        valve.flushLate(sim.now());
+        expect(valve.received().writes).toBe(0);
+        expect(valve.queued()).toBe(1);
+      });
+    });
+
+    describe("a link that is down", () => {
+      it("loses the messages that were sent meanwhile", () => {
+        const { sim, id } = one();
+        sim.runTo(MINUTE_MS);
+        const before = sim.inbox().states.get(id)?.messageAt;
+        sim.linkDown("z2m");
+        sim.valve(id).person({ setpoint: 22 }, sim.now());
+        sim.step(STEP_MS);
+        expect(sim.inbox().states.get(id)?.messageAt).toBe(before);
+        expect(sim.inbox().states.get(id)?.readings.setpoint).not.toBe(22);
+      });
+      it("is followed by a link_up that forgets the token and marks the valve", () => {
+        const { sim, id } = one();
+        sim.runTo(MINUTE_MS);
+        sim.linkDown("z2m");
+        sim.step(STEP_MS);
+        sim.linkUp("z2m");
+        sim.step(STEP_MS);
+        expect(sim.inbox().states.get(id)?.heardAt).toBeUndefined();
+        expect(sim.memory().valves.get(id)?.groups.sensor_source?.mark).toBeDefined();
+      });
+    });
+
+    describe("a sensor that is pending", () => {
+      it("has no value and is not judged", () => {
+        const { sim } = one();
+        sim.setSensor(sensorRef("r1"), { pending: true });
+        expect(sim.world().sensors.get(sensorRef("r1"))).toEqual({
+          sensorId: sensorRef("r1"),
+          value: undefined,
+          seenAt: undefined,
+          pending: true,
+        });
+        sim.setSensor(sensorRef("r1"), { pending: false });
+        expect(sim.world().sensors.get(sensorRef("r1"))?.value).toBe(20);
+      });
+    });
+
+    describe("memoryAppearances", () => {
+      it("counts a memory that an event created, once", () => {
+        const { sim, id } = one();
+        sim.step(STEP_MS);
+        expect(sim.memoryAppearances().filter((a) => a.valveId === id)).toHaveLength(1);
+        sim.restart();
+        sim.rejoin(id);
+        sim.step(STEP_MS);
+        expect(sim.memoryAppearances().filter((a) => a.valveId === id)).toHaveLength(2);
+      });
+    });
+
+    describe("tickWorld and deliver", () => {
+      it("tickWorld is the world the last tick read, at its time", () => {
+        const { sim } = one();
+        sim.step(STEP_MS);
+        expect(sim.tickWorld()?.now.epochMilliseconds).toBe(sim.now());
+      });
+      it("deliver hands over what the bridge sent, without a step", () => {
+        const { sim, id } = one();
+        sim.step(STEP_MS);
+        sim.valve(id).person({ setpoint: 22 }, sim.now());
+        expect(sim.inbox().states.get(id)?.readings.setpoint).not.toBe(22);
+        sim.deliver();
+        expect(sim.inbox().states.get(id)?.readings.setpoint).toBe(22);
+      });
+    });
+
+    describe("crashAfterEffects", () => {
+      it("is disarmed by undefined", () => {
+        const { sim } = one();
+        sim.crashAfterEffects(1);
+        sim.crashAfterEffects(undefined);
+        sim.runTo(MINUTE_MS);
+        expect(sim.memory().valves.size).toBe(1);
+        expect(sim.inbox().states.size).toBe(1);
+      });
+    });
+  });
 });

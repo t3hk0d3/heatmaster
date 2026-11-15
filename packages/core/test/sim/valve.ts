@@ -73,6 +73,8 @@ export type SimValve = Readonly<{
   received: () => Readonly<{ writes: number; reads: number }>;
   receive: (request: ValveRequest, nowMs: number) => void;
   wake: (nowMs: number) => void;
+  /** Lets the requests that were running late land now; an asleep valve keeps them for its wake-up. */
+  flushLate: (nowMs: number) => void;
   sleep: () => void;
   /** Own reports and the fall-back after a long silence. */
   advance: (nowMs: number) => void;
@@ -245,6 +247,15 @@ export function createSimValve(options: SimValveOptions): SimValve {
         return;
       }
       for (const request of waiting) apply(request, nowMs);
+      landLate(nowMs);
+    },
+    flushLate(nowMs) {
+      if (late.length === 0) return;
+      if (!awake) {
+        queue.push(...late);
+        late = [];
+        return;
+      }
       landLate(nowMs);
     },
     sleep() {
