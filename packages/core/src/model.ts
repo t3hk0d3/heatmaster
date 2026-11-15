@@ -28,11 +28,8 @@ export type RoomPresets = Readonly<{
   boost: number | undefined;
 }>;
 
-/**
- * `ref` names the device or the entity. `key` is the payload key of a `z2m:` sensor and
- * `undefined` for an `ha:` sensor.
- */
-export type SensorRef = Readonly<{ ref: string; key: string | undefined; weight: number }>;
+/** `ref` is `ha:<entity id>`: room sensors are read through Home Assistant only. */
+export type SensorRef = Readonly<{ ref: string; weight: number }>;
 
 /** A transport-qualified id, `z2m:<IEEE address>`. */
 export type ValveRef = Readonly<{ valveId: string }>;
@@ -86,7 +83,7 @@ export const DEFAULT_PRESETS: Presets = { comfort: 20, eco: 17, frost: 7, boost:
 
 export const DEFAULT_SETTINGS: Settings = {
   externalWriteIntervalMs: 5 * 60 * 1000,
-  sensorStaleAfterMs: 60 * 60 * 1000,
+  sensorStaleAfterMs: 120 * 60 * 1000,
   holdWrites: true,
   timezone: undefined,
   language: "en",
@@ -100,9 +97,9 @@ export const EMPTY_CONFIG: Config = {
   rooms: [],
 };
 
-/** The id that identifies a sensor everywhere: the ref for `ha:`, `<ref>/<key>` for `z2m:`. */
+/** The id that identifies a sensor everywhere: its ref. */
 export function sensorId(sensor: SensorRef): string {
-  return sensor.key === undefined ? sensor.ref : `${sensor.ref}/${sensor.key}`;
+  return sensor.ref;
 }
 
 /** The room's own presets over the house presets. */

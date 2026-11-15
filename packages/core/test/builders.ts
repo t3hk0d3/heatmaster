@@ -33,7 +33,7 @@ import type {
   World,
 } from "../src/index.ts";
 
-/** A complete valid document: one schedule, one room with a valve, a z2m sensor and an ha sensor. */
+/** A complete valid document: one schedule, one room with a valve and two ha sensors. */
 export function validRaw(): RawConfig {
   const day = (): RawSetPoint[] => [
     { time: "00:00", preset: "eco" as const },
@@ -73,7 +73,7 @@ export function validRaw(): RawConfig {
         schedule_id: "default",
         valves: [{ id: "z2m:0x00124b0012345678" }],
         sensors: [
-          { ref: "z2m:0x00124b0087654321", key: "temperature" },
+          { ref: "ha:sensor.bedroom_temperature" },
           { ref: "ha:sensor.living_temperature", weight: 2 },
         ],
         presets: { comfort: 22 },
@@ -121,18 +121,10 @@ const week: fc.Arbitrary<Week> = fc.array(day, { minLength: 7, maxLength: 7 }).m
   return { mon, tue, wed, thu, fri, sat, sun } as Week;
 });
 
-const sensor: fc.Arbitrary<SensorRef> = fc.oneof(
-  fc.record({
-    ref: fc.integer({ min: 0, max: 5 }).map((n) => `z2m:${address(n + 1000)}`),
-    key: fc.constantFrom("temperature", "humidity", "local_temperature"),
-    weight: fc.integer({ min: 1, max: 20 }).map((n) => n / 2),
-  }),
-  fc.record({
-    ref: fc.integer({ min: 0, max: 5 }).map((n) => `ha:sensor.s${String(n)}`),
-    key: fc.constant(undefined),
-    weight: fc.integer({ min: 1, max: 20 }).map((n) => n / 2),
-  }),
-);
+const sensor: fc.Arbitrary<SensorRef> = fc.record({
+  ref: fc.integer({ min: 0, max: 5 }).map((n) => `ha:sensor.s${String(n)}`),
+  weight: fc.integer({ min: 1, max: 20 }).map((n) => n / 2),
+});
 
 const roomPresets = fc.record({
   comfort: fc.option(halfDegree, { nil: undefined }),
@@ -181,7 +173,7 @@ export const arbConfig: fc.Arbitrary<Config> = fc
               valveCount: fc.integer({ min: 1, max: 3 }),
               sensors: fc.uniqueArray(sensor, {
                 maxLength: 4,
-                selector: (s) => `${s.ref}/${s.key ?? ""}`,
+                selector: (s) => s.ref,
               }),
               presets: roomPresets,
             }),

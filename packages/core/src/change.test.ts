@@ -37,14 +37,13 @@ const HOUR_MS = 60 * MINUTE_MS;
 const NOW_MS = BUILDER_NOW.epochMilliseconds;
 const DAY_KEY_LIST: readonly SettingKey[] = Object.values(DAY_KEYS);
 
-const Z_ADDRESS = "0x00124b00000000f1";
-const Z_REF = `z2m:${Z_ADDRESS}`;
-const Z_SENSOR: RawSensor = { ref: Z_REF, key: "temperature" };
-const Z_SENSOR_ID = `${Z_REF}/temperature`;
-const Z_MODEL: SensorRef = { ref: Z_REF, key: "temperature", weight: 1 };
+const Z_REF = "ha:sensor.bedroom";
+const Z_SENSOR: RawSensor = { ref: Z_REF };
+const Z_SENSOR_ID = Z_REF;
+const Z_MODEL: SensorRef = { ref: Z_REF, weight: 1 };
 const HA_SENSOR: RawSensor = { ref: "ha:sensor.living" };
 const HA_SENSOR_ID = "ha:sensor.living";
-const HA_MODEL: SensorRef = { ref: "ha:sensor.living", key: undefined, weight: 1 };
+const HA_MODEL: SensorRef = { ref: "ha:sensor.living", weight: 1 };
 
 type Model = "trvzb" | "trv_zbt";
 
@@ -198,9 +197,8 @@ function plan(
   raw: unknown,
   overrides: Partial<ChangeOptions> = {},
   sensors: ReadonlyMap<string, SensorInfo> = sensorsOf(),
-  valveAddresses: ReadonlySet<string> = new Set(),
 ): ChangePlan {
-  return planChange(world, raw, options(overrides), sensors, valveAddresses);
+  return planChange(world, raw, options(overrides), sensors);
 }
 
 function refusal(run: () => unknown): ChangeRefused {
@@ -810,17 +808,6 @@ describe("change", () => {
       });
     });
 
-    describe('With a new "z2m:" sensor whose address is in valveAddresses', () => {
-      it("throws ChangeRefused sensor_on_valve", () => {
-        const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = doc([rawRoom("living", [V1], [Z_SENSOR])]);
-        const sensors = sensorsOf({ [Z_SENSOR_ID]: GOOD });
-        expect(codeOf(() => plan(world, raw, {}, sensors, new Set([Z_ADDRESS])))).toBe(
-          "sensor_on_valve",
-        );
-      });
-    });
-
     describe('With a new "ha:" sensor and haLinked false', () => {
       it("throws ChangeRefused ha_link_missing, also when sensors has no entry for it", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
@@ -831,15 +818,6 @@ describe("change", () => {
         expect(known.code).toBe("ha_link_missing");
         expect(known.data).toEqual({ sensor: HA_SENSOR_ID });
         expect(codeOf(() => plan(world, raw, { haLinked: false }))).toBe("ha_link_missing");
-      });
-    });
-
-    describe('With a new "z2m:" sensor and haLinked false', () => {
-      it("returns a plan", () => {
-        const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = doc([rawRoom("living", [V1], [Z_SENSOR])]);
-        const result = plan(world, raw, { haLinked: false }, sensorsOf({ [Z_SENSOR_ID]: GOOD }));
-        expect(result.stored.revision).toBe(1);
       });
     });
 
@@ -874,20 +852,6 @@ describe("change", () => {
         const raw = doc([rawRoom("living", [V1]), rawRoom("bedroom", [V2], [Z_SENSOR])]);
         const sensors = sensorsOf({ [Z_SENSOR_ID]: { ...GOOD, isTemperature: false } });
         expect(plan(world, raw, {}, sensors).stored.revision).toBe(2);
-      });
-    });
-
-    describe("With a z2m ref of the current config used with a second key", () => {
-      it("the sensor with the second key is new and is checked", () => {
-        const world = current({
-          rooms: [room("living", [V1], [Z_MODEL])],
-          ledger: ledgerOf(record(V1)),
-        });
-        const second: RawSensor = { ref: Z_REF, key: "local_temperature" };
-        const raw = doc([rawRoom("living", [V1], [Z_SENSOR, second])]);
-        const refused = refusal(() => plan(world, raw, {}, sensorsOf({ [Z_SENSOR_ID]: GOOD })));
-        expect(refused.code).toBe("sensor_unknown");
-        expect(refused.data).toEqual({ sensor: `${Z_REF}/local_temperature` });
       });
     });
 

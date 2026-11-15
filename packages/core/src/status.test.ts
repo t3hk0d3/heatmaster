@@ -36,7 +36,7 @@ import type { Room } from "./model.ts";
 import type { Freshness, RoomTemperature } from "./temperature.ts";
 
 const V1 = "z2m:0x00124b0012345678";
-const SENSOR = "z2m:0x00124b0012345678/temperature";
+const SENSOR = "ha:sensor.living";
 const AMS = "Europe/Amsterdam";
 /** A Monday at 08:00 in Amsterdam. */
 const NOW = Temporal.PlainDateTime.from("2026-11-16T08:00").toZonedDateTime(AMS);
@@ -308,7 +308,7 @@ describe("status", () => {
         expect(problemScheduleClamped(V1, 4.5, 30).data).toEqual({ min: "4.5", max: "30" });
       });
     });
-    describe('With a sensor problem for "z2m:0x00124b0012345678/temperature"', () => {
+    describe('With a sensor problem for "ha:sensor.living"', () => {
       it("the subject is sensor with that sensor id as its id", () => {
         for (const problem of [
           problemSensorStale(SENSOR),

@@ -41,7 +41,7 @@ export type RawWeek = Readonly<Record<Weekday, readonly RawSetPoint[]>>;
 
 export type RawSchedule = Readonly<{ id: string; name: string; default_week: RawWeek }>;
 
-export type RawSensor = Readonly<{ ref: string; key?: string; weight?: number }>;
+export type RawSensor = Readonly<{ ref: string; weight?: number }>;
 
 export type RawRoom = Readonly<{
   id: string;
@@ -63,7 +63,6 @@ export type RawConfig = Readonly<{
 
 const ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const VALVE_ID_PATTERN = /^[a-z][a-z0-9]*:[0-9a-z_.:-]{1,64}$/;
-const Z2M_ADDRESS_PATTERN = /^0x[0-9a-f]{16}$/;
 const HA_ENTITY_PATTERN = /^sensor\.[a-z0-9_]+$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const CONTROL_PATTERN = /\p{Cc}/u;
@@ -75,11 +74,9 @@ const MAX_SCHEDULES = 64;
 const MAX_VALVES = 8;
 const MAX_SENSORS = 16;
 const MAX_NAME_LENGTH = 64;
-const MAX_KEY_LENGTH = 64;
 const MAX_SENSOR_WEIGHT = 10;
 const MAX_DAY_SET_POINTS = 6;
 const MS_PER_MINUTE = 60 * 1000;
-const DEFAULT_KEY = "temperature";
 const MIDNIGHT = Temporal.PlainTime.from("00:00");
 
 type Report = (path: string, code: string, message: string) => void;
@@ -444,27 +441,14 @@ function parseValves(
 }
 
 function parseSensor(report: Report, path: string, value: unknown): SensorRef {
-  const obj = asObject(report, path, value, ["ref", "key", "weight"]);
+  const obj = asObject(report, path, value, ["ref", "weight"]);
   const refPath = at(path, "ref");
-  const keyPath = at(path, "key");
   const rawRef = requiredKey(report, path, obj, "ref");
-  const rawKey = read(obj, "key");
   let ref = "";
-  let key: string | undefined;
   if (typeof rawRef === "string") {
     ref = rawRef;
-    if (rawRef.startsWith("z2m:") && Z2M_ADDRESS_PATTERN.test(rawRef.slice(4))) {
-      if (rawKey === undefined) key = DEFAULT_KEY;
-      else if (typeof rawKey !== "string") typeInvalid(report, keyPath, "a text");
-      else if (rawKey.length < 1 || rawKey.length > MAX_KEY_LENGTH) {
-        report(keyPath, "sensor_ref_invalid", "a key is 1 to 64 characters");
-      } else key = rawKey;
-    } else if (rawRef.startsWith("ha:") && HA_ENTITY_PATTERN.test(rawRef.slice(3))) {
-      if (rawKey !== undefined) {
-        report(keyPath, "sensor_ref_invalid", "an ha sensor takes no key");
-      }
-    } else {
-      report(refPath, "sensor_ref_invalid", "a sensor is z2m:<address> or ha:sensor.<id>");
+    if (!(rawRef.startsWith("ha:") && HA_ENTITY_PATTERN.test(rawRef.slice(3)))) {
+      report(refPath, "sensor_ref_invalid", "a sensor is ha:sensor.<id>");
     }
   } else if (rawRef !== undefined) typeInvalid(report, refPath, "a text");
 
@@ -476,7 +460,7 @@ function parseSensor(report: Report, path: string, value: unknown): SensorRef {
     }
     weight = rawWeight;
   } else if (rawWeight !== undefined) typeInvalid(report, at(path, "weight"), "a number");
-  return { ref, key, weight };
+  return { ref, weight };
 }
 
 function parseSensors(report: Report, path: string, value: unknown): readonly SensorRef[] {
@@ -487,7 +471,7 @@ function parseSensors(report: Report, path: string, value: unknown): readonly Se
     let faults = 0;
     const sensor = parseSensor(
       (p, code, message) => {
-        if (p === itemPath || p.endsWith(".ref") || p.endsWith(".key")) faults += 1;
+        if (p === itemPath || p.endsWith(".ref")) faults += 1;
         report(p, code, message);
       },
       itemPath,
@@ -635,9 +619,7 @@ function presetsToRaw(presets: Readonly<Record<PresetName, number | undefined>>)
 }
 
 function sensorToRaw(sensor: SensorRef): RawSensor {
-  return sensor.key === undefined
-    ? { ref: sensor.ref, weight: sensor.weight }
-    : { ref: sensor.ref, key: sensor.key, weight: sensor.weight };
+  return { ref: sensor.ref, weight: sensor.weight };
 }
 
 function roomToRaw(room: Room): RawRoom {

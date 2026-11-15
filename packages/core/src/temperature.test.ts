@@ -6,7 +6,7 @@ const NOW = 10_000_000;
 const STALE = 60_000;
 
 function sensor(ref: string, weight = 1): SensorRef {
-  return { ref, key: undefined, weight };
+  return { ref, weight };
 }
 
 function reading(id: string, over: Partial<SensorReading> = {}): SensorReading {

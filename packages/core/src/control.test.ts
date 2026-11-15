@@ -58,9 +58,9 @@ const DAY_KEY_LIST: readonly SettingKey[] = Object.values(DAY_KEYS);
 
 const OTHER_DAY: ResolvedDay = points("00:00/16 07:00/21 23:00/16");
 const THIRD_DAY: ResolvedDay = points("00:00/18");
-const SENSOR: SensorRef = { ref: "z2m:0x00124b00000000f1", key: "temperature", weight: 1 };
-const SENSOR_ID = "z2m:0x00124b00000000f1/temperature";
-const SENSOR_2: SensorRef = { ref: "ha:sensor.living", key: undefined, weight: 1 };
+const SENSOR: SensorRef = { ref: "ha:sensor.hall", weight: 1 };
+const SENSOR_ID = "ha:sensor.hall";
+const SENSOR_2: SensorRef = { ref: "ha:sensor.living", weight: 1 };
 const SENSOR_2_ID = "ha:sensor.living";
 
 /** The seven days, each holding `day`. */
@@ -216,7 +216,7 @@ function freshReading(world: World, value: number): SensorReading {
 }
 
 function staleReading(world: World): SensorReading {
-  return reading(19, 2 * HOUR_MS, nowOf(world));
+  return reading(19, 3 * HOUR_MS, nowOf(world));
 }
 
 const PENDING_READING: SensorReading = {
@@ -469,13 +469,7 @@ type Run = Readonly<{ world: World; steps: readonly number[] }>;
 const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) => {
   const roomValves = config.rooms.flatMap((room) => room.valves.map((v) => v.valveId));
   const ids = [...roomValves, ...EXTRA_IDS];
-  const sensorIds = [
-    ...new Set(
-      config.rooms.flatMap((room) =>
-        room.sensors.map((s) => (s.key === undefined ? s.ref : `${s.ref}/${s.key}`)),
-      ),
-    ),
-  ];
+  const sensorIds = [...new Set(config.rooms.flatMap((room) => room.sensors.map((s) => s.ref)))];
   return fc
     .record({
       configState: fc.oneof(

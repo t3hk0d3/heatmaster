@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { arbConfig, validRaw } from "../test/builders.ts";
 import {
   CONFIG_VERSION,
+  DEFAULT_SETTINGS,
   ConfigError,
   EMPTY_CONFIG,
   configToRaw,
@@ -113,15 +114,15 @@ describe("validation", () => {
             scheduleId: "default",
             valves: [{ valveId: "z2m:0x00124b0012345678" }],
             sensors: [
-              { ref: "z2m:0x00124b0087654321", key: "temperature", weight: 1 },
-              { ref: "ha:sensor.living_temperature", key: undefined, weight: 2 },
+              { ref: "ha:sensor.bedroom_temperature", weight: 1 },
+              { ref: "ha:sensor.living_temperature", weight: 2 },
             ],
             presets: { comfort: 22, eco: undefined, frost: undefined, boost: undefined },
           },
         ]);
       });
 
-      it('applies defaults: interval 300 000 ms, stale 3 600 000 ms, holdWrites true, language "en", timezone undefined, presets 20/17/7/23, sensor weight 1', () => {
+      it('applies defaults: interval 300 000 ms, stale 7 200 000 ms, holdWrites true, language "en", timezone undefined, presets 20/17/7/23, sensor weight 1', () => {
         const raw = {
           version: 1,
           schedules: validRaw().schedules,
@@ -138,7 +139,7 @@ describe("validation", () => {
         const config = validateConfig(raw);
         expect(config.settings).toEqual({
           externalWriteIntervalMs: 300_000,
-          sensorStaleAfterMs: 3_600_000,
+          sensorStaleAfterMs: 7_200_000,
           holdWrites: true,
           timezone: undefined,
           language: "en",
@@ -172,16 +173,12 @@ describe("validation", () => {
       });
     });
 
-    describe("On a z2m sensor without a key", () => {
-      it('its key is "temperature"', () => {
-        const raw = patched([...SENSORS, 0], { ref: "z2m:0x00124b0087654321" });
-        expect(validateConfig(raw).rooms[0]?.sensors[0]?.key).toBe("temperature");
-      });
-    });
-
-    describe("On an ha sensor", () => {
-      it("its key is undefined", () => {
-        expect(validateConfig(validRaw()).rooms[0]?.sensors[1]?.key).toBeUndefined();
+    describe('On a sensor ref "ha:sensor.<id>"', () => {
+      it("the sensor id equals the ref", () => {
+        const sensor = validateConfig(validRaw()).rooms[0]?.sensors[1];
+        expect(sensor === undefined ? undefined : sensorId(sensor)).toBe(
+          "ha:sensor.living_temperature",
+        );
       });
     });
 
@@ -260,7 +257,6 @@ describe("validation", () => {
         ["valves", "rooms[0].valves"],
         ["a valve", "rooms[0].valves[0]"],
         ["a sensor ref", "rooms[0].sensors[0].ref"],
-        ["a sensor key", "rooms[0].sensors[0].key"],
         ["a weight", "rooms[0].sensors[1].weight"],
         ["room presets", "rooms[0].presets"],
       ])("throws ConfigError with code type_invalid (%s)", (_label, path) => {
@@ -476,13 +472,12 @@ describe("validation", () => {
       );
     });
 
-    describe("On a sensor ref that is neither `z2m:` with a valid address nor `ha:` with an entity id", () => {
+    describe("On a sensor ref that is not `ha:` with an entity id", () => {
       it.each([
         "sensor.x",
         "zha:0x00124b0012345678",
-        "z2m:0X00124B0012345678",
+        "z2m:0x00124b0087654321",
         "z2m:kitchen",
-        "z2m:0x1234",
         "ha:",
       ])("throws ConfigError with code sensor_ref_invalid (%j)", (ref) => {
         expectIssue(
@@ -506,66 +501,20 @@ describe("validation", () => {
       );
     });
 
-    describe("On an ha sensor that has a key", () => {
-      it("throws ConfigError with code sensor_ref_invalid", () => {
+    describe("On a sensor object that has a key", () => {
+      it("throws ConfigError with code key_unknown at the key", () => {
         expectIssue(
           patched([...SENSORS, 1, "key"], "temperature"),
-          "sensor_ref_invalid",
+          "key_unknown",
           "rooms[0].sensors[1].key",
         );
       });
     });
 
-    describe("On a z2m sensor whose key is empty or longer than 64 characters", () => {
-      it.each(["", "k".repeat(65)])(
-        "throws ConfigError with code sensor_ref_invalid (%j)",
-        (key) => {
-          expectIssue(
-            patched([...SENSORS, 0, "key"], key),
-            "sensor_ref_invalid",
-            "rooms[0].sensors[0].key",
-          );
-        },
-      );
-    });
-
-    describe("On the same sensor id twice in one room (the same ha ref; or the same z2m ref with the same key, written out or by default)", () => {
+    describe("On the same sensor ref twice in one room", () => {
       it("throws ConfigError with code sensor_duplicate", () => {
         const ha = { ref: "ha:sensor.living_temperature" };
         expectIssue(onlyRoom({ sensors: [ha, ha] }), "sensor_duplicate", "rooms[0].sensors[1].ref");
-        const z = "z2m:0x00124b0087654321";
-        expectIssue(
-          onlyRoom({
-            sensors: [
-              { ref: z, key: "temperature" },
-              { ref: z, key: "temperature" },
-            ],
-          }),
-          "sensor_duplicate",
-        );
-        expectIssue(
-          onlyRoom({ sensors: [{ ref: z, key: "temperature" }, { ref: z }] }),
-          "sensor_duplicate",
-        );
-        expectIssue(onlyRoom({ sensors: [{ ref: z }, { ref: z }] }), "sensor_duplicate");
-      });
-    });
-
-    describe("On one z2m ref with two different keys in one room", () => {
-      it("returns the Config, with two sensors", () => {
-        const z = "z2m:0x00124b0087654321";
-        const config = validateConfig(
-          onlyRoom({
-            sensors: [
-              { ref: z, key: "temperature" },
-              { ref: z, key: "local_temperature" },
-            ],
-          }),
-        );
-        expect(config.rooms[0]?.sensors.map(sensorId)).toEqual([
-          `${z}/temperature`,
-          `${z}/local_temperature`,
-        ]);
       });
     });
 
@@ -810,11 +759,13 @@ describe("validation", () => {
       });
     });
 
-    describe("On a room with a z2m sensor and an ha sensor", () => {
-      it("the z2m sensor has its key and the ha sensor has none", () => {
-        const sensors = configToRaw(validateConfig(validRaw())).rooms?.[0]?.sensors;
-        expect(sensors?.[0]).toHaveProperty("key", "temperature");
-        expect(sensors?.[1]).not.toHaveProperty("key");
+    describe("On a room with sensors", () => {
+      it("no sensor has a key, and the round trip leaves the config unchanged", () => {
+        const config = validateConfig(validRaw());
+        const raw = configToRaw(config);
+        for (const sensor of raw.rooms?.[0]?.sensors ?? [])
+          expect(sensor).not.toHaveProperty("key");
+        expect(validateConfig(raw)).toEqual(config);
       });
     });
 
@@ -862,18 +813,17 @@ describe("validation", () => {
     });
   });
 
+  describe("DEFAULT_SETTINGS", () => {
+    it("sensorStaleAfterMs is 120 minutes", () => {
+      expect(DEFAULT_SETTINGS.sensorStaleAfterMs).toBe(120 * 60 * 1000);
+    });
+  });
+
   describe("sensorId", () => {
     describe("With an ha sensor", () => {
       it("returns its ref", () => {
-        const sensor: SensorRef = { ref: "ha:sensor.x", key: undefined, weight: 1 };
+        const sensor: SensorRef = { ref: "ha:sensor.x", weight: 1 };
         expect(sensorId(sensor)).toBe("ha:sensor.x");
-      });
-    });
-
-    describe('With a z2m sensor whose key is "temperature"', () => {
-      it('returns its ref, a slash and "temperature"', () => {
-        const sensor: SensorRef = { ref: "z2m:0x00124b0012345678", key: "temperature", weight: 1 };
-        expect(sensorId(sensor)).toBe("z2m:0x00124b0012345678/temperature");
       });
     });
   });

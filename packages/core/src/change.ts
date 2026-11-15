@@ -111,7 +111,6 @@ function checkSensors(
   before: Config | undefined,
   haLinked: boolean,
   sensors: ReadonlyMap<string, SensorInfo>,
-  valveAddresses: ReadonlySet<string>,
 ): void {
   const known = new Set(
     (before?.rooms ?? []).flatMap((room) => room.sensors.map((sensor) => sensorId(sensor))),
@@ -121,15 +120,13 @@ function checkSensors(
     .filter((sensor) => !known.has(sensorId(sensor)));
   for (const sensor of fresh) {
     const id = sensorId(sensor);
-    if (sensor.ref.startsWith("ha:") && !haLinked) {
+    if (!haLinked) {
       throw new ChangeRefused("ha_link_missing", { sensor: id });
     }
     const info = sensors.get(id);
     if (info?.exists !== true) throw new ChangeRefused("sensor_unknown", { sensor: id });
     if (!info.isTemperature) throw new ChangeRefused("sensor_not_temperature", { sensor: id });
-    const onValveAddress =
-      sensor.ref.startsWith("z2m:") && valveAddresses.has(sensor.ref.slice("z2m:".length));
-    if (info.onValve || onValveAddress) throw new ChangeRefused("sensor_on_valve", { sensor: id });
+    if (info.onValve) throw new ChangeRefused("sensor_on_valve", { sensor: id });
   }
 }
 
@@ -139,7 +136,6 @@ export function planChange(
   raw: unknown,
   options: ChangeOptions,
   sensors: ReadonlyMap<string, SensorInfo>,
-  valveAddresses: ReadonlySet<string>,
 ): ChangePlan {
   const config = validateConfig(raw);
   const nowMs = world.now.epochMilliseconds;
@@ -166,7 +162,7 @@ export function planChange(
   if (!options.haLinked && config.settings.timezone === undefined && !runningWithoutZone) {
     throw new ChangeRefused("timezone_missing");
   }
-  checkSensors(config, old?.config, options.haLinked, sensors, valveAddresses);
+  checkSensors(config, old?.config, options.haLinked, sensors);
   const views = new Map<string, Readonly<{ view: DeviceView; spec: ValveSpec }>>();
   for (const valveId of entering) {
     const view = world.devices.get(valveId);
