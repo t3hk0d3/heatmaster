@@ -25,6 +25,7 @@ function optionsFor(port: number): Options {
       clientId: undefined,
     },
     z2m: { baseTopic: "zigbee2mqtt" },
+    ha: undefined,
   };
 }
 
@@ -90,6 +91,9 @@ async function runMain(port: number): Promise<{
       MQTT_URL: `mqtt://127.0.0.1:${String(mqttPort)}`,
       DATA_DIR: temporaryFolder(),
       PUBLIC_DIR: temporaryFolder(),
+      // A dead local address: the process never reaches a real Home Assistant.
+      HA_URL: `http://127.0.0.1:${String(await freePort())}`,
+      HA_TOKEN: "test-token",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

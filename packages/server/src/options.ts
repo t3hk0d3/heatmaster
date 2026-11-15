@@ -1,12 +1,19 @@
 /** The one place that reads the environment. */
 
+import type { HaOptions } from "./ha-link.ts";
 import type { MqttOptions } from "./mqtt.ts";
 import { DEFAULT_BASE_TOPIC, type Z2mOptions } from "./z2m.ts";
 
 export const API_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 3000;
 
-export type Options = Readonly<{ port: number; mqtt: MqttOptions; z2m: Z2mOptions }>;
+export type Options = Readonly<{
+  port: number;
+  mqtt: MqttOptions;
+  z2m: Z2mOptions;
+  /** Undefined means "no Home Assistant link". */
+  ha: HaOptions;
+}>;
 
 /** A variable that is set to an empty text counts as not set. */
 function read(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
@@ -21,6 +28,15 @@ function parsePort(value: string | undefined): number {
     throw new Error(`HEATMASTER_PORT must be a whole number from 1 to 65535, got "${value}"`);
   }
   return port;
+}
+
+function parseHa(env: Readonly<Record<string, string | undefined>>): HaOptions {
+  const url = read(env, "HA_URL");
+  const token = read(env, "HA_TOKEN");
+  if (url === undefined && token === undefined) return undefined;
+  if (url === undefined) throw new Error("HA_URL is required when HA_TOKEN is set");
+  if (token === undefined) throw new Error("HA_TOKEN is required when HA_URL is set");
+  return { url, token };
 }
 
 export function loadOptions(env: Readonly<Record<string, string | undefined>>): Options {
@@ -40,5 +56,6 @@ export function loadOptions(env: Readonly<Record<string, string | undefined>>): 
       clientId: undefined,
     },
     z2m: { baseTopic: read(env, "Z2M_BASE_TOPIC") ?? DEFAULT_BASE_TOPIC },
+    ha: parseHa(env),
   };
 }

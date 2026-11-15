@@ -46,16 +46,25 @@ importers:
       fastify:
         specifier: 5.12.8
         version: 5.12.8
+      home-assistant-js-websocket:
+        specifier: 9.8.1
+        version: 9.8.1
       mqtt:
         specifier: 5.16.1
         version: 5.16.1
     devDependencies:
+      '@types/ws':
+        specifier: 8.18.2
+        version: 8.18.2
       aedes:
         specifier: 1.2.0
         version: 1.2.0
       mqtt-packet:
         specifier: 9.0.2
         version: 9.0.2
+      ws:
+        specifier: 8.23.0
+        version: 8.23.0
 
   packages/web:
     dependencies:
@@ -669,6 +678,9 @@ packages:
 
   help-me@5.0.0:
     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
+
+  home-assistant-js-websocket@9.8.1:
+    resolution: {integrity: sha512-WvovbrSoYLTKfh6aY5SxSWPPy50/mLWLCihQL8G2N+2e3mTrg3QTQCAp4R32/LwbkRBDGj0XNs6JFj8e2IYEUw==}
 
   hookified@1.15.1:
     resolution: {integrity: sha512-MvG/clsADq1GPM2KGo2nyfaWVyn9naPiXrqIe4jYjXNZQt238kWyOGrsyc/DmRAQ+Re6yeo6yX/yoNCG5KAEVg==}
@@ -1837,6 +1849,8 @@ snapshots:
       hookified: 1.15.1
 
   help-me@5.0.0: {}
+
+  home-assistant-js-websocket@9.8.1: {}
 
   hookified@1.15.1: {}
 

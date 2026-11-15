@@ -97,5 +97,27 @@ describe("options", () => {
         expect(options.z2m.baseTopic).toBe("zigbee2mqtt");
       });
     });
+
+    describe("With HA_URL=http://supervisor/core and HA_TOKEN set", () => {
+      it("ha holds both", () => {
+        expect(
+          loadOptions({ MQTT_URL, HA_URL: "http://supervisor/core", HA_TOKEN: "t0ken" }).ha,
+        ).toEqual({ url: "http://supervisor/core", token: "t0ken" });
+      });
+    });
+
+    describe("With neither HA_URL nor HA_TOKEN", () => {
+      it("ha is undefined", () => {
+        expect(loadOptions({ MQTT_URL }).ha).toBeUndefined();
+        expect(loadOptions({ MQTT_URL, HA_URL: "", HA_TOKEN: "" }).ha).toBeUndefined();
+      });
+    });
+
+    describe("With one of the two", () => {
+      it("throws an Error whose message names the other", () => {
+        expect(() => loadOptions({ MQTT_URL, HA_URL: "http://ha:8123" })).toThrow(/HA_TOKEN/);
+        expect(() => loadOptions({ MQTT_URL, HA_TOKEN: "t0ken" })).toThrow(/HA_URL/);
+      });
+    });
   });
 });
