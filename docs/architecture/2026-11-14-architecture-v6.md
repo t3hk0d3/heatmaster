@@ -6,7 +6,7 @@
 
 ## 1. What Heatmaster is now
 
-A standalone application in TypeScript on Node, shipped as a Home Assistant app (add-on) and as a plain container image. It manages Sonoff valves through Z2M over MQTT, reads other sensors from Home Assistant over the websocket API, shows its rooms in Home Assistant through MQTT discovery, and has its own web UI. Home Assistant can be down or absent; valves and Z2M sensors keep being managed.
+A standalone application in TypeScript on Node, shipped as a Home Assistant app (add-on) and as a plain container image. It manages Sonoff valves through Z2M over MQTT, reads room sensors from Home Assistant over the websocket API, shows its rooms in Home Assistant through MQTT discovery, and has its own web UI. Home Assistant can be down or absent; valves keep being followed, but room sensors are read only through it, so rooms then use the valves' own sensors.
 
 ## 2. Decisions
 
@@ -35,6 +35,7 @@ It remembered what it did (commands, results, in-flight slots, phases, a "writte
 
 1. Z2M gives no per-write result. For sensor source, active group, mode and setpoint it publishes the new value only after the valve acknowledged the write.
 2. The TRVZB schedule cannot be read from the valve. Z2M publishes what it sent.
+   On TRV-ZBT, Z2M publishes the previous edit group's cached days in messages that already name the new edit group, even with a fresh `last_seen`. TRV-ZBT day keys are write-only: they are never decoded.
 3. Every device message carries Z2M's whole cached state.
 4. On TRV-ZBT the "group to edit" lives in Z2M's memory, not on the valve. The group must be named in the same message as the days.
 5. No source and no existing tool reports a mode toggle being needed for a new schedule to take effect.
@@ -124,12 +125,14 @@ A config change (`plan_change`): validate; compare valve sets over the whole con
 
 | Group | Members | Policy | Evidence | Readable | Captured and restored |
 |---|---|---|---|---|---|
-| `schedule` | seven days | enforce | echoed | no | no |
-| `active_group` (TRV-ZBT) | one | enforce: group 3, only while the schedule group has no mark and the days are observed equal in a message whose edit group is 3 | acked | yes | yes |
+| `schedule` | seven days | enforce | TRVZB `echoed`; TRV-ZBT `none` (write-only) | no | no |
+| `active_group` (TRV-ZBT) | one | enforce: group 3, only while the schedule group has no mark and a write of the current week was sent | acked | yes | yes |
 | `sensor_source` | one | enforce: `external` once a push went out and the room temperature has been fresh for 10 min; `internal` when the room's sensors are stale or absent; otherwise left alone | acked | yes | yes |
 | `external_temperature` | one | stream | — | — | no |
 
 On TRV-ZBT Heatmaster writes days only into group 3, always naming the group in the same message, and never writes groups 1 and 2. A valve whose active group is already 3 may join; its group 3 is overwritten. Mode and setpoint are readings in plan 1.
+
+A write-only schedule (TRV-ZBT) is never compared with anything the valve says. It is sent when its mark is ready and when no write of the current week is recorded. The sign that a write took is the next heard message after it: a fresh `last_seen`, with `weekly_schedule_status: "success"` expected on it. For TRVZB nothing confirms a day write beyond that heard message.
 
 ## 10. The tick
 
@@ -148,7 +151,7 @@ per valve that is managed or releasing and has a profile:
 ```
 
 - **Pacing**, in memory per valve: 2 s spacing; a group's value written before waits 2 min, 10 min, 1 h, then 6 h before it is written again, counted over 24 h since the group's desired value last changed; a token bucket (*provisional:* 6 tokens, one back every 30 min, 4 at start). Three writes of the same value that were not caused by a mark raise "setting not holding". Refreshes use the same spacing, bucket and backoff.
-- **Activation.** `none`, or `setpoint`: after a schedule write whose days differed is observed equal while the valve is in `auto`, the current set point's temperature is written once. A mode toggle is not designed; if measurement shows it is needed, work stops and it is designed first.
+- **Activation.** `none`, or `setpoint`: after a schedule write whose days differed is observed equal (TRVZB) or has been followed by a heard message (TRV-ZBT) while the valve is in `auto`, the current set point's temperature is written once. A mode toggle is not designed; if measurement shows it is needed, work stops and it is designed first.
 - **Temperature push** (as v5 §9): on a change of 0.2 °C no sooner than the interval, and every 30 min; only to managed, observable, non-silent valves; stops when the room goes stale, when the valve is off (unless the profile says it may be fed) and on release; never queued or confirmed. When the feed stops and starts again, the next push still waits for the interval (at most 30 min) since the last one, so a room whose freshness flaps cannot cause a push per flap. A push that did not go out is reported back (`push failed`), so the valve does not count as fed.
 - **Release** finishes when every restorable setting has stayed equal for the release hold (*provisional:* 15 min), counted from after the release order, and the valve was heard during that time; a valve that does not speak by itself is asked once the hold has passed. Then the record moves to `released` and the valve leaves `releasing`.
 - **Hold writes** is a config setting, on by default, and an input to the tick: while on, no publish, setpoint write or push is decided. Reads continue, so a held installation still learns what its valves hold.
@@ -162,13 +165,15 @@ per valve that is managed or releasing and has a profile:
 - Z2M transport: base topic from the app's options (default `zigbee2mqtt`), confirmed by `bridge/info`; devices from `bridge/devices`; state from `<base>/<friendly name>`; writes to `…/set`, reads to `…/get`; link state from the MQTT connection and `bridge/state`; rejoins from `bridge/event`. Faults: bridge unknown, unsupported version, `last_seen` off.
 - Every Z2M device that has a valve profile is followed, configured or not, so a valve can be captured before it joins.
 
-**Home Assistant link** (optional; `home-assistant-js-websocket`). In the app it connects through the Supervisor's proxy with the Supervisor token; in a plain container with a URL and a long-lived token. It supplies: states of sensors that are not on Z2M, the entity, device and area registries (names, device classes), and the house's time zone. It is never used for valves.
+**Home Assistant link** (optional; `home-assistant-js-websocket`). In the app it connects through the Supervisor's proxy with the Supervisor token; in a plain container with a URL and a long-lived token. It supplies: the states of the room sensors, the entity, device and area registries (names, device classes, which device an entity belongs to), and the house's time zone. It is never used for valves.
 
-**Room sensors** are named by reference:
-- `z2m:<ieee>` with a payload key (default `temperature`): read from MQTT, liveness from the life token. Needs no Home Assistant. A sensor's id is its reference, plus the key for a Z2M sensor.
-- `ha:<entity id>`: value from state changes; liveness from `last_reported`, polled every 2 minutes with one REST request per watched sensor, because events do not carry it. Nothing is polled while no such sensor is configured. A state that is not a number keeps the last number until the staleness timeout (10 minutes at least). An entity from Home Assistant's MQTT integration that is not a Z2M device cannot be judged and is used with a warning. While the link is down these sensors are pending, not stale.
+**Room sensors** are read only through Home Assistant. The one reference is `ha:<entity id>`, and it is also the sensor's id. There is no payload key and no `z2m:` sensor reference; a `z2m:` reference is refused at config time. Valves stay on MQTT.
+- Value: from state changes. A state that is not a number keeps the last number until the staleness timeout (default 120 minutes, 10 minutes at least).
+- Liveness: the newest `last_reported` among all entities of the sensor's Home Assistant device (temperature, humidity, battery and the rest), because Home Assistant's MQTT temperature entity updates `last_reported` only when the value changes. The device comes from the entity registry. The link polls those entities every 2 minutes, one request per watched device, because events do not carry `last_reported`. Nothing is polled while no sensor is configured.
+- An entity that has no device cannot be judged: it is used with a warning, as if live.
+- While the link is down these sensors are pending, not stale.
 
-Without a Home Assistant link, `ha:` sensors are refused at config time and the time zone comes from the settings; a config that names none is refused (`timezone_missing`), unless the config it replaces is readable and names none either.
+Without a Home Assistant link, every room sensor is refused at config time, and the time zone comes from the settings; a config that names none is refused (`timezone_missing`), unless the config it replaces is readable and names none either.
 
 ## 12. One instance
 
@@ -262,6 +267,6 @@ Plan 1 v6 was reviewed three times on 2026-11-14: core contracts and arithmetic 
 | Safety M5 | A valve that is not in `auto` read `in_sync` for ever | Section 13; plan Tasks 8 and 10: the problem `valve_not_auto` |
 | Verification N1 | The restart limit halted one start early, its test lines could not pass, and a restart of the halted container could start the count again | Section 14; plan Task 22 (v6.2): the count is kept in the data folder, so the server starts at most five times in any 15 minutes, whoever starts the container again |
 
-Design changes from the should-fix findings and the rulings, in the sections above: marks are not replaced before they were acted on, and are stamped with the time the request went out (sections 9 and 10); `active_group` waits for an unmarked schedule (section 9); no refresh without a readable group, and one refresh for a settled release (sections 9 and 10); the `push failed` event (section 10); the clock-jump rule (section 6); the 2-minute REST poll and the 10-minute lower limit of the staleness timeout (section 11); the refusal without a time zone (sections 8 and 11); the takeover count under both protocol versions, the permanent stop and `mqtt_auth_failed` (section 12); the problems "valve not in auto" and "a store that could not be written" (section 13).
+Design changes from the should-fix findings and the rulings, in the sections above: marks are not replaced before they were acted on, and are stamped with the time the request went out (sections 9 and 10); `active_group` waits for an unmarked schedule (section 9); no refresh without a readable group, and one refresh for a settled release (sections 9 and 10); the `push failed` event (section 10); the clock-jump rule (section 6); the 2-minute poll, the device-wide liveness of `ha:` sensors, the 120-minute default and the 10-minute lower limit of the staleness timeout (section 11); the refusal without a time zone (sections 8 and 11); the takeover count under both protocol versions, the permanent stop and `mqtt_auth_failed` (section 12); the problems "valve not in auto" and "a store that could not be written" (section 13).
 
 Not adopted, by the user's ruling: an automatic recovery from "another instance"; a backoff across alternating desired values (the token bucket bounds them); a heard message as a condition for capturing originals (a preview or an apply asks each joining valve to report instead).
