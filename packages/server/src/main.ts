@@ -32,20 +32,27 @@ async function run(): Promise<void> {
   const shutdown = (): void => {
     if (stopping) return;
     stopping = true;
-    startup
-      .then((running) => running.stop())
-      .then(
-        () => {
-          process.exit(0);
-        },
-        () => {
-          // A failed start is reported (and ends the process with 1) below.
+    startup.then(
+      async (running) => {
+        try {
+          await running.stop();
+        } catch (error) {
+          console.error(error);
           process.exit(1);
-        },
-      );
+        }
+        process.exit(0);
+      },
+      () => {
+        // The start failed. The `await startup` below was registered first, so it has already
+        // logged the error by the time this runs.
+        process.exit(1);
+      },
+    );
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  // Registered before any signal can arrive, so a failed start is logged before the shutdown
+  // handler above gets to exit.
   try {
     await startup;
   } catch (error) {
