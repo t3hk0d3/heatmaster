@@ -276,6 +276,47 @@ describe("z2m", () => {
       });
     });
 
+    describe("With bridge/info without config.advanced.last_seen, without config, or with null", () => {
+      it("returns last_seen_disabled", async () => {
+        for (const config of [
+          { advanced: {} },
+          {},
+          undefined,
+          null,
+          { advanced: { last_seen: null } },
+        ]) {
+          const { mqtt, transport } = await harness();
+          mqtt.deliver(topic("bridge/info"), { ...INFO, config });
+          expect(transport.fault(), JSON.stringify(config)).toBe("last_seen_disabled");
+        }
+      });
+    });
+
+    describe("With an unknown last_seen value", () => {
+      it("returns last_seen_disabled", async () => {
+        const { mqtt, transport } = await harness();
+        mqtt.deliver(topic("bridge/info"), {
+          ...INFO,
+          config: { advanced: { last_seen: "ISO_9601" } },
+        });
+        expect(transport.fault()).toBe("last_seen_disabled");
+      });
+    });
+
+    describe("With last_seen ISO_8601_local (as recorded) or epoch", () => {
+      it("returns undefined", async () => {
+        expect(INFO.config.advanced.last_seen).toBe("ISO_8601_local");
+        for (const lastSeen of ["ISO_8601_local", "epoch"]) {
+          const { mqtt, transport } = await harness();
+          mqtt.deliver(topic("bridge/info"), {
+            ...INFO,
+            config: { advanced: { last_seen: lastSeen } },
+          });
+          expect(transport.fault(), lastSeen).toBeUndefined();
+        }
+      });
+    });
+
     describe('With version 2.14.3 and last_seen "ISO_8601"', () => {
       it("returns undefined", async () => {
         const { mqtt, transport } = await harness();

@@ -26,6 +26,10 @@ function parsePort(value: string | undefined): number {
 export function loadOptions(env: Readonly<Record<string, string | undefined>>): Options {
   const url = read(env, "MQTT_URL");
   if (url === undefined) throw new Error("MQTT_URL is required, for example mqtt://broker:1883");
+  if (!/^mqtts?:\/\//.test(url)) {
+    // The protocol-version fallback needs a tcp or tls stream (Task 15), so ws and wss are out.
+    throw new Error(`MQTT_URL must start with mqtt:// or mqtts://, got "${url}"`);
+  }
   return {
     port: parsePort(read(env, "HEATMASTER_PORT")),
     mqtt: {

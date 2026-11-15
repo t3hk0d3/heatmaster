@@ -8,6 +8,8 @@ export const DEFAULT_BASE_TOPIC = "zigbee2mqtt";
 /** The major version of Zigbee2MQTT recorded in docs/device-notes.md. */
 export const SUPPORTED_Z2M_MAJOR = 2;
 
+const LAST_SEEN_ON: readonly string[] = ["ISO_8601", "ISO_8601_local", "epoch"];
+
 type Bridge = "unknown" | "online" | "offline";
 type BridgeInfo = Readonly<{ version: unknown; lastSeen: unknown }>;
 
@@ -209,7 +211,9 @@ export function createZ2mTransport(mqtt: MqttClient, options: Z2mOptions): Trans
       if (fromMqtt !== undefined) return fromMqtt;
       if (info === undefined) return "bridge_unknown";
       if (majorOf(info.version) !== SUPPORTED_Z2M_MAJOR) return "version_unsupported";
-      if (info.lastSeen === "disable") return "last_seen_disabled";
+      // Zigbee2MQTT's own default is "disable" and bridge/info always carries the setting, so
+      // only a known enabled format proves the option is on.
+      if (!LAST_SEEN_ON.includes(info.lastSeen as string)) return "last_seen_disabled";
       return undefined;
     },
     linkUp,

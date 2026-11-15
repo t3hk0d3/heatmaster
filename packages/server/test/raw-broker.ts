@@ -10,6 +10,8 @@ export type RawBroker = Readonly<{
   port: number;
   packets(): readonly RecordedPacket[];
   withholdAcks(on: boolean): void;
+  /** While set, a QoS 1 publish is answered with a PUBACK that carries this reason code. */
+  refusePublishes(reasonCode: number | undefined): void;
   withholdConnack(on: boolean): void;
   refuseLogin(on: boolean): void;
   /** Sends a DISCONNECT packet with the reason code, then closes. */
@@ -41,6 +43,7 @@ export async function startRawBroker(
   let held = false;
   let refused = false;
   let acksHeld = false;
+  let refusal: number | undefined;
   let nextId = 0;
 
   function send(connection: Connection, packet: Packet): void {
@@ -92,7 +95,11 @@ export async function startRawBroker(
         break;
       case "publish":
         if (packet.qos === 1 && !acksHeld) {
-          send(connection, { cmd: "puback", messageId: packet.messageId ?? 0 });
+          send(connection, {
+            cmd: "puback",
+            messageId: packet.messageId ?? 0,
+            ...(refusal === undefined ? {} : { reasonCode: refusal }),
+          });
         }
         break;
       case "pingreq":
@@ -144,6 +151,9 @@ export async function startRawBroker(
     packets: () => [...recorded],
     withholdAcks(on) {
       acksHeld = on;
+    },
+    refusePublishes(reasonCode) {
+      refusal = reasonCode;
     },
     withholdConnack(on) {
       held = on;

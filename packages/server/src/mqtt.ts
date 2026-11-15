@@ -77,6 +77,14 @@ function logError(message: string, error: unknown): void {
   console.error(JSON.stringify({ level: "error", msg: message, err: String(error) }));
 }
 
+/** A PUBACK with a refusing reason code is the broker's answer, not a lost connection. */
+function publishFailure(error: Error): HeatmasterError {
+  const code = (error as Error & { code: unknown }).code;
+  return typeof code === "number"
+    ? new HeatmasterError("mqtt_refused", { reasonCode: String(code) })
+    : new HeatmasterError("mqtt_not_connected");
+}
+
 function validateFilter(filter: string): void {
   const levels = filter.split("/");
   const valid =
@@ -228,7 +236,7 @@ export function createMqttClient(
       const cancelTimer = clock.after(PUBLISH_TIMEOUT_MS, entry.fail);
       function callback(error?: Error | null): void {
         // MQTT.js passes null, not undefined, when nothing went wrong.
-        settle(error ? new HeatmasterError("mqtt_not_connected") : undefined, false);
+        settle(error ? publishFailure(error) : undefined, false);
       }
       function settle(error: HeatmasterError | undefined, removeFromStore: boolean): void {
         if (finished) return;

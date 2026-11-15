@@ -3,6 +3,7 @@ import type { IConnectPacket, IPublishPacket } from "mqtt-packet";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startFakeZ2m, type FakeZ2m } from "../test/fake-z2m.ts";
 import { createManualClock, type ManualClock } from "../test/manual-clock.ts";
+import { setTimeout as pause } from "node:timers/promises";
 import { rejectionOf } from "../test/rejection.ts";
 import { startRawBroker, type RawBroker } from "../test/raw-broker.ts";
 import { HeatmasterError } from "./errors.ts";
@@ -523,6 +524,18 @@ describe("mqtt", () => {
       });
     });
 
+    describe("With a PUBACK that carries a refusing reason code", () => {
+      it("rejects with HeatmasterError mqtt_refused, with the reason code in data", async () => {
+        const broker = await rawBroker();
+        const made = make({ url: broker.url });
+        await up(made);
+        broker.refusePublishes(135);
+        const error = await rejectionOf(made.client.publish("x/y", "p", { qos: 1, retain: false }));
+        expect(error).toBeInstanceOf(HeatmasterError);
+        expect(error).toMatchObject({ code: "mqtt_refused", data: { reasonCode: "135" } });
+      });
+    });
+
     describe("With an empty payload and retain true", () => {
       it("the broker receives an empty retained message", async () => {
         const broker = await rawBroker();
@@ -623,10 +636,14 @@ describe("mqtt", () => {
       }
     }
 
-    function expectTakenOver(made: Made): void {
+    async function expectTakenOver(made: Made, attempts: () => number): Promise<void> {
       expect(made.client.state()).toBe("ended");
       expect(made.client.fault()).toBe("another_instance");
       expect(made.events.filter((event) => event.kind === "taken_over")).toHaveLength(1);
+      // No new connection is attempted afterwards; give a stray attempt real time to show up.
+      const before = attempts();
+      await pause(150);
+      expect(attempts()).toBe(before);
     }
 
     function expectKeepsGoing(made: Made): void {
@@ -674,6 +691,8 @@ describe("mqtt", () => {
         const { broker } = await takenOver();
         const count = broker.packets().length;
         vi.advanceTimersByTime(10 * 60 * 1000);
+        // A stray packet would arrive over the network, so give it real time to show up.
+        await pause(150);
         expect(broker.packets()).toHaveLength(count);
         expect(publishes(broker, STATUS_TOPIC).map((packet) => String(packet.payload))).toEqual([
           STATUS_ONLINE,
@@ -702,7 +721,7 @@ describe("mqtt", () => {
         await drops(made, () => {
           broker.drop();
         }, [0, 10_000, 15_000]);
-        expectTakenOver(made);
+        await expectTakenOver(made, () => connects(broker).length);
       });
     });
 
@@ -727,7 +746,7 @@ describe("mqtt", () => {
         await drops(made, () => {
           fake.dropClients();
         }, [0, 10_000, 15_000]);
-        expectTakenOver(made);
+        await expectTakenOver(made, () => fake.attempts());
       });
     });
 
@@ -755,7 +774,7 @@ describe("mqtt", () => {
         await drops(made, () => {
           fake.dropClients();
         }, [4_000]);
-        expectTakenOver(made);
+        await expectTakenOver(made, () => fake.attempts());
       });
     });
 
@@ -784,6 +803,9 @@ describe("mqtt", () => {
         const broker = await rawBroker();
         const made = make({ url: broker.url });
         await up(made);
+        vi.useFakeTimers({
+          toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+        });
         broker.disconnect(142);
         await until(() => {
           expect(made.client.state()).toBe("ended");
@@ -799,11 +821,9 @@ describe("mqtt", () => {
 
       it("no connection attempt is made when 10 min pass", async () => {
         const { broker, made } = await takenOver();
-        vi.useFakeTimers({
-          toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-        });
         made.clock.advance(10 * 60 * 1000);
         vi.advanceTimersByTime(10 * 60 * 1000);
+        await pause(150);
         expect(vi.getTimerCount()).toBe(0);
         expect(connects(broker)).toHaveLength(1);
       });

@@ -65,6 +65,25 @@ describe("options", () => {
       });
     });
 
+    describe("With an MQTT_URL that is not tcp or tls", () => {
+      it("throws an Error whose message names MQTT_URL", () => {
+        for (const url of [
+          "ws://broker:9001",
+          "wss://broker/mqtt",
+          "http://broker",
+          "broker:1883",
+        ]) {
+          expect(() => loadOptions({ MQTT_URL: url }), url).toThrow(/MQTT_URL/);
+        }
+      });
+
+      it("mqtt:// and mqtts:// are accepted", () => {
+        expect(loadOptions({ MQTT_URL: "mqtts://broker:8883" }).mqtt.url).toBe(
+          "mqtts://broker:8883",
+        );
+      });
+    });
+
     describe("With the optional variables set to an empty text", () => {
       it("they count as not set", () => {
         const options = loadOptions({
