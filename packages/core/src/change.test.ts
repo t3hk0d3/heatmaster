@@ -389,7 +389,18 @@ describe("change", () => {
     describe("With an invalid document", () => {
       it("throws ConfigError and returns nothing", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        expect(() => plan(world, { version: 1, rooms: "none" })).toThrow(ConfigError);
+        const raw = { version: 1, presets: { eco: "warm" }, rooms: "none" };
+        let caught: unknown;
+        let result: ChangePlan | undefined;
+        try {
+          result = plan(world, raw);
+        } catch (error) {
+          caught = error;
+        }
+        expect(result).toBeUndefined();
+        expect(caught).toBeInstanceOf(ConfigError);
+        const paths = (caught as ConfigError).issues.map((issue) => issue.path);
+        expect(paths).toEqual(expect.arrayContaining(["presets.eco", "rooms"]));
       });
     });
 
@@ -426,6 +437,28 @@ describe("change", () => {
         const result = plan(world, doc([rawRoom("living", [V1])]), { overwriteUnreadable: true });
         expect(recordOf(result.ledger, V2)).toBe(kept);
         expect(result.stored.releasing.has(V2)).toBe(false);
+      });
+    });
+
+    describe('With config state "ok" and no stored config', () => {
+      it("throws ChangeRefused config_unreadable", () => {
+        const world = makeWorld({
+          stored: undefined,
+          devices: devicesOf({ [V1]: observedView() }),
+        });
+        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe("config_unreadable");
+      });
+    });
+
+    describe("With a leaving valve that is already in releasing", () => {
+      it("its release time becomes the time now", () => {
+        const world = current({
+          rooms: [room("living", [V1, V2])],
+          ledger: ledgerOf(record(V1), record(V2)),
+          releasing: new Map([[V1, NOW_MS - HOUR_MS]]),
+        });
+        const result = plan(world, doc([rawRoom("living", [V2])]));
+        expect(result.stored.releasing.get(V1)).toBe(NOW_MS);
       });
     });
 
@@ -978,6 +1011,28 @@ describe("change", () => {
       it("throws ChangeRefused config_unreadable", () => {
         const world = makeWorld({
           configState: "unreadable",
+          stored: undefined,
+          ledger: ledgerOf(record(V1)),
+        });
+        expect(codeOf(() => forgetValve(world, V1))).toBe("config_unreadable");
+      });
+    });
+
+    describe("While the ledger and the config are both unreadable", () => {
+      it("throws ChangeRefused config_unreadable", () => {
+        const world = makeWorld({
+          configState: "unreadable",
+          stored: undefined,
+          ledger: undefined,
+        });
+        expect(codeOf(() => forgetValve(world, V1))).toBe("config_unreadable");
+      });
+    });
+
+    describe('For a valve with a record while configState is "empty"', () => {
+      it("throws ChangeRefused config_unreadable", () => {
+        const world = makeWorld({
+          configState: "empty",
           stored: undefined,
           ledger: ledgerOf(record(V1)),
         });

@@ -130,7 +130,7 @@ export type PlannedWrite = Readonly<{
 }>;
 
 /** The transport key of a valve id: the part before the colon. */
-function transportOf(valveId: string): string {
+export function transportOf(valveId: string): string {
   const colon = valveId.indexOf(":");
   return colon < 0 ? valveId : valveId.slice(0, colon);
 }
@@ -148,10 +148,14 @@ export function isObservable(view: DeviceView | undefined): boolean {
   return view?.spec !== undefined && view.state?.messageAt !== undefined;
 }
 
+/** The view is not usable, or the valve's transport has an entry in `transportFaults`. */
+export function transportFaulted(world: World, view: DeviceView, valveId: string): boolean {
+  return !view.usable || hasFault(world, transportOf(valveId));
+}
+
 /** The valve's link is up, its view usable and its transport without a fault. */
 export function transportUsable(world: World, view: DeviceView, valveId: string): boolean {
-  const transport = transportOf(valveId);
-  return linkUp(world, transport) && view.usable && !hasFault(world, transport);
+  return linkUp(world, transportOf(valveId)) && !transportFaulted(world, view, valveId);
 }
 
 /** Groups in the spec's order; see the task's candidate rule. Pacing is not considered. */

@@ -1,4 +1,4 @@
-import { isObservable, preview, transportUsable } from "./control.ts";
+import { isObservable, preview, transportFaulted, transportOf } from "./control.ts";
 import type { DeviceView, Effect, PlannedWrite, World } from "./control.ts";
 import { memberships, withRecord, withoutRecord } from "./ledger.ts";
 import type { Ledger, StoredConfig } from "./ledger.ts";
@@ -101,11 +101,6 @@ function roomValves(config: Config | undefined): readonly string[] {
   return [...new Set(ids)];
 }
 
-/** The transport key of a valve id: the part before the colon. */
-function transportKey(valveId: string): string {
-  return valveId.slice(0, Math.max(0, valveId.indexOf(":")));
-}
-
 function byId(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -172,37 +167,37 @@ export function planChange(
     throw new ChangeRefused("timezone_missing");
   }
   checkSensors(config, old?.config, options.haLinked, sensors, valveAddresses);
-  const views = new Map<string, DeviceView>();
+  const views = new Map<string, Readonly<{ view: DeviceView; spec: ValveSpec }>>();
   for (const valveId of entering) {
     const view = world.devices.get(valveId);
     if (view === undefined) throw new ChangeRefused("valve_unknown", { valveId });
     if (view.spec === undefined) throw new ChangeRefused("valve_unsupported", { valveId });
-    views.set(valveId, view);
+    views.set(valveId, { view, spec: view.spec });
   }
+  const known = (valveId: string): Readonly<{ view: DeviceView; spec: ValveSpec }> => {
+    const entry = views.get(valveId);
+    if (entry === undefined) throw new Error(`valve ${valveId} was not checked`);
+    return entry;
+  };
 
   const ledger = world.ledger;
   if (ledger === undefined && entering.length > 0) throw new ChangeRefused("ledger_unreadable");
   const newValves = entering.filter((id) => ledger?.records.has(id) !== true);
   const rejoining = entering.filter((id) => ledger?.records.has(id) === true).sort(byId);
+  // A link that is down is not a refusal here: the valve is then not observed, or rejoins.
   for (const valveId of newValves) {
-    const view = views.get(valveId);
-    if (view === undefined) continue;
-    // A link that is down is not a refusal here: the valve is then not observed, or rejoins.
-    const transport = transportKey(valveId);
-    const linked: World = { ...world, links: { ...world.links, [transport]: true } };
-    if (!transportUsable(linked, view, valveId)) {
-      throw new ChangeRefused("transport_unusable", { valveId, transport });
+    if (transportFaulted(world, known(valveId).view, valveId)) {
+      throw new ChangeRefused("transport_unusable", { valveId, transport: transportOf(valveId) });
     }
   }
-  const unobserved = newValves.filter((id) => !isObservable(views.get(id))).sort(byId);
+  const unobserved = newValves.filter((id) => !isObservable(known(id).view)).sort(byId);
   if (unobserved.length > 0) {
     throw new ChangeRefused("valve_not_observed", { valveIds: unobserved.join(",") });
   }
   const captures = new Map<string, Capture>();
   for (const valveId of newValves) {
-    const view = views.get(valveId);
-    if (view?.spec === undefined) continue;
-    const taken = capture(valveId, view.spec, view.state);
+    const { view, spec } = known(valveId);
+    const taken = capture(valveId, spec, view.state);
     if (taken.unreadable.length > 0 && !options.acceptUnknownOriginals.has(valveId)) {
       throw new ChangeRefused("originals_unreadable", {
         valveId,
@@ -221,7 +216,7 @@ export function planChange(
           (current, taken) =>
             withRecord(current, {
               valveId: taken.valveId,
-              profile: views.get(taken.valveId)?.spec?.profile ?? "",
+              profile: known(taken.valveId).spec.profile,
               adoptedAt: nowMs,
               originals: taken.originals,
             }),

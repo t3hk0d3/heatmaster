@@ -173,6 +173,8 @@ export {
   isObservable,
   preview,
   tick,
+  transportFaulted,
+  transportOf,
   transportUsable,
 } from "./control.ts";
 export type { DeviceView, Effect, PlannedWrite, Selection, TickResult, World } from "./control.ts";
