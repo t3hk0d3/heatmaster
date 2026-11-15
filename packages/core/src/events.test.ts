@@ -182,20 +182,82 @@ describe("events", () => {
     });
 
     describe("With two heard device_messages for one valve at the same nowMs", () => {
+      const now = T0 + 60 * SECOND_MS;
+      const first = apply(inboxOf([[Z1, live(T0)]], [[Z1, unmarked()]]), message(Z1, "t1"), now);
+      // Between the two messages the valve was marked and asked, strictly before `now`.
+      const asked = withMarks(valve(first, Z1), {
+        active_group: { at: now - 2, askedAt: now - 1, writtenAt: undefined },
+      });
+      const second = apply(
+        {
+          ...first,
+          memory: { ...first.memory, valves: new Map([[Z1, { ...asked, asks: [now - 1] }]]) },
+        },
+        message(Z1, "t2"),
+        now,
+      );
+      it("both count as heard, and the result equals applying them one after the other", () => {
+        expect(first.states.get(Z1)?.heardAt).toBe(now);
+        expect(second.states.get(Z1)?.lifeToken).toBe("t2");
+        expect(markAt("active_group", valve(second, Z1))).toBeUndefined();
+        expect(valve(second, Z1).asks).toEqual([]);
+      });
+    });
+
+    describe("With the first message after start, or after link_up", () => {
       const vm = withMarks(unmarked(), {
         active_group: { at: T0, askedAt: T0 + 1, writtenAt: undefined },
       });
-      const base = inboxOf([[Z1, live(T0)]], [[Z1, vm]]);
-      const now = T0 + 60 * SECOND_MS;
-      const first = apply(base, message(Z1, "t1"), now);
-      const sequential = apply(first, message(Z1, "t2"), now);
-      it("both count as heard, and the result equals applying them one after the other", () => {
-        expect(first.states.get(Z1)?.heardAt).toBe(now);
-        expect(sequential.states.get(Z1)?.lifeToken).toBe("t2");
-        expect(sequential.states.get(Z1)?.heardAt).toBe(now);
-        expect(apply(apply(base, message(Z1, "t1"), now), message(Z1, "t2"), now)).toEqual(
-          sequential,
-        );
+      const afterStart = apply(
+        inboxOf([[Z1, newState(T0)]], [[Z1, { ...vm, asks: [T0 + 1] }]]),
+        message(Z1, "t1"),
+        T0 + 60 * SECOND_MS,
+      );
+      const upBase = inboxOf([[Z1, live(T0)]], [[Z1, unmarked()]]);
+      const up = apply(upBase, { kind: "link_up", transport: "z2m" }, T0 + 10);
+      const upAsked = {
+        ...up,
+        memory: {
+          ...up.memory,
+          valves: new Map([
+            [
+              Z1,
+              {
+                ...withMarks(valve(up, Z1), {
+                  active_group: { at: T0 + 10, askedAt: T0 + 11, writtenAt: undefined },
+                }),
+                asks: [T0 + 11],
+              },
+            ],
+          ]),
+        },
+      };
+      const afterUp = apply(upAsked, message(Z1, "t1"), T0 + 60 * SECOND_MS);
+      it("does not clear an asked mark after start", () => {
+        expect(markAt("active_group", valve(afterStart, Z1))?.askedAt).toBe(T0 + 1);
+        expect(valve(afterStart, Z1).asks).toEqual([T0 + 1]);
+        expect(afterStart.states.get(Z1)?.heardAt).toBeUndefined();
+      });
+      it("does not clear an asked mark after link_up", () => {
+        expect(markAt("active_group", valve(afterUp, Z1))?.askedAt).toBe(T0 + 11);
+        expect(valve(afterUp, Z1).asks).toEqual([T0 + 11]);
+      });
+    });
+
+    describe("With a device_message whose lifeToken is undefined", () => {
+      const vm = withMarks(unmarked(), {
+        active_group: { at: T0, askedAt: T0 + 1, writtenAt: undefined },
+      });
+      const out = apply(
+        inboxOf([[Z1, live(T0)]], [[Z1, { ...vm, asks: [T0 + 1] }]]),
+        message(Z1, undefined),
+        T0 + 60 * SECOND_MS,
+      );
+      it("is not heard: mark and asks stay, heardAt and token are kept", () => {
+        expect(markAt("active_group", valve(out, Z1))?.askedAt).toBe(T0 + 1);
+        expect(valve(out, Z1).asks).toEqual([T0 + 1]);
+        expect(out.states.get(Z1)?.heardAt).toBe(T0);
+        expect(out.states.get(Z1)?.lifeToken).toBe("t0");
       });
     });
 

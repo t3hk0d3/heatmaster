@@ -53,6 +53,14 @@ function mergeValues(old: SettingValues, fresh: Decoded["values"]): SettingValue
 }
 
 /**
+ * A message counts as heard when its token is set and differs from a stored one; the first token
+ * after a start or a link coming back is only stored.
+ */
+export function countsAsHeard(state: DeviceState, lifeToken: string | undefined): boolean {
+  return lifeToken !== undefined && state.lifeToken !== undefined && lifeToken !== state.lifeToken;
+}
+
+/**
  * Merges one message. The device is heard when the token is set and differs from a stored one;
  * the first token after a start or a link coming back is only stored. The flag is true when the
  * device was silent before the message and is heard now.
@@ -65,8 +73,7 @@ export function onMessage(
   silentAfterMs: number,
 ): readonly [DeviceState, boolean] {
   const wasSilent = liveness(state, nowMs, silentAfterMs) === "silent";
-  const heard =
-    lifeToken !== undefined && state.lifeToken !== undefined && lifeToken !== state.lifeToken;
+  const heard = countsAsHeard(state, lifeToken);
   const next: DeviceState = {
     values: mergeValues(state.values, decoded.values),
     readings: mergeReadings(state.readings, decoded.readings),

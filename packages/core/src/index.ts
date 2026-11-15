@@ -61,7 +61,14 @@ export type {
   ValveMode,
   ValveSpec,
 } from "./settings.ts";
-export { VALVE_SILENT_AFTER_MS, liveness, newState, onLinkUp, onMessage } from "./observation.ts";
+export {
+  VALVE_SILENT_AFTER_MS,
+  countsAsHeard,
+  liveness,
+  newState,
+  onLinkUp,
+  onMessage,
+} from "./observation.ts";
 export type { Decoded, DeviceState, Liveness } from "./observation.ts";
 export {
   EMPTY_LEDGER,

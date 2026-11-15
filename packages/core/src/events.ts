@@ -1,7 +1,13 @@
 import { clearMarks, mark, newValveMemory, noteHeard } from "./memory.ts";
 import type { GroupMemory, Memory, ValveMemory } from "./memory.ts";
 import { stopped } from "./feed.ts";
-import { VALVE_SILENT_AFTER_MS, newState, onLinkUp, onMessage } from "./observation.ts";
+import {
+  VALVE_SILENT_AFTER_MS,
+  countsAsHeard,
+  newState,
+  onLinkUp,
+  onMessage,
+} from "./observation.ts";
 import type { Decoded, DeviceState } from "./observation.ts";
 import type { Group, ValveSpec } from "./settings.ts";
 
@@ -69,8 +75,7 @@ function deviceMessage(
   const spec = specs.get(deviceId);
   if (spec === undefined) return next;
 
-  const heard =
-    lifeToken !== undefined && before.lifeToken !== undefined && lifeToken !== before.lifeToken;
+  const heard = countsAsHeard(before, lifeToken);
   let memory = next.memory;
   const old = memory.valves.get(deviceId);
   if (heard && old !== undefined && after.heardAt !== undefined) {
