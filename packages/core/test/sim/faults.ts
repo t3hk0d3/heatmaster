@@ -419,18 +419,16 @@ export function createRig(start: Initial): Rig {
     });
   }
 
-  const submit = (): void => {
+  /** Asks for the model; true when Heatmaster accepted the change (a crash may still have cut it). */
+  const submit = (): boolean => {
     sim.deliver();
     const cache = SLOTS.map((s) => decoded(sim, s, "cache"));
     const truth = SLOTS.map((s) => decoded(sim, s, "truth"));
     const asked = modelConfig(placement, schedules, hold, intervalMs);
     const result = sim.planChange(configToRaw(asked));
-    if (!result.ok) return;
-    // A crash that cut the change leaves the saved config behind what was asked.
-    const saved = sim.config().stored?.config;
-    cut =
-      saved === undefined ||
-      JSON.stringify(configToRaw(saved)) !== JSON.stringify(configToRaw(asked));
+    if (!result.ok) return false;
+    // A crash that cut the change leaves the saved revision behind the planned one.
+    cut = sim.config().stored?.revision !== result.plan.stored.revision;
     for (const taken of result.plan.joining) {
       const s: Slot = taken.valveId === VALVE_IDS[0] ? 0 : 1;
       joins.push({
@@ -441,16 +439,15 @@ export function createRig(start: Initial): Rig {
         originals: taken.originals,
       });
     }
+    return true;
   };
 
   /** The change the user asks for, kept only when Heatmaster accepts it. */
   const change = (edit: () => void, undo: () => void): void => {
     edit();
     sim.deliver();
-    const before = sim.config().stored?.revision;
-    submit();
-    // A refusal leaves the saved revision as it was.
-    if (sim.config().stored?.revision === before && before !== undefined) undo();
+    // A refusal is undone; a change that a crash cut stays asked, and is asked again.
+    if (!submit()) undo();
   };
 
   const competitorWrite = (s: Slot, what: "select" | "group" | "days"): void => {

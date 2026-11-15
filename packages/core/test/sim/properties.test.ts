@@ -636,7 +636,12 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         ],
       };
       it("the valve ends up adopted and in sync, and every property holds", () => {
-        nothingBroken(execute(plan).report);
+        const { report, rig } = execute(plan);
+        nothingBroken(report);
+        const world = rig.sim.world();
+        const kinds = memberships(world.configState, world.stored, world.ledger);
+        expect(kinds.get(VALVE_IDS[0])).toBe("managed");
+        expect(rig.sim.valve(VALVE_IDS[0]).truth().select).toBe("remote_temperature");
       });
     });
 
