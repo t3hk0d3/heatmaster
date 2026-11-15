@@ -1,6 +1,6 @@
 # Heatmaster architecture v6
 
-**Status:** written 2026-11-14 after the user's decisions D6–D11. Amended the same day after three reviews of plan 1 v6 and the user's rulings on them; section 19 lists every must-fix finding and what changed. It replaces `2026-11-14-architecture-v5.md`, which stays as the record of how the core design was reached and reviewed (its sections 16 and 17 list every finding). The core of v5 carries over; the shell is new. Where this document and the spec disagree, this document wins (spec §11).
+**Status:** written 2026-11-14 after the user's decisions D6–D11; D12 added 2026-11-15. Amended the same day after three reviews of plan 1 v6 and the user's rulings on them; section 19 lists every must-fix finding and what changed. It replaces `2026-11-14-architecture-v5.md`, which stays as the record of how the core design was reached and reviewed (its sections 16 and 17 list every finding). The core of v5 carries over; the shell is new. Where this document and the spec disagree, this document wins (spec §11).
 
 **Sources:** v5 and its reviews; `../research/` (existing projects); `../research/research-standalone-platform.md` (platform facts checked on 2026-11-14). Facts about valves and Zigbee2MQTT (Z2M) are still unmeasured on this house; section 15 lists the measurements. Numbers marked *provisional* are checked by them.
 
@@ -23,6 +23,7 @@ A standalone application in TypeScript on Node, shipped as a Home Assistant app 
 | D9 | TypeScript; Fastify for the server; Caddy in front as reverse proxy and static file server; s6-overlay as the container's init | user |
 | D10 | Valves and settings may be read on demand through Z2M's `get` ("refresh") | user |
 | D11 | The valve's saved schedule is not preserved or read. Heatmaster overwrites it eagerly | user |
+| D12 | Config and ledger stay plain JSON files. No SQLite and no ORM in plan 1; SQLite may come later for history only, and decisions never read it | user |
 
 Caddy is a reverse proxy for **one** server. Heatmaster must never run as two instances: both would write to the valves (section 12).
 
@@ -231,7 +232,7 @@ On one TRVZB and one TRV-ZBT, supervised:
 
 ## 18. Room for the later plans
 
-As v5 §15: manual changes become adopted settings with a value test (plan 2, with the room `climate` entity and its command topics); overrides, windows, seasons, modes, frost floor and child lock are clauses in the desired-settings function over stored intent; the heat output has its own timing rule and, where the output is an MQTT device, does not depend on Home Assistant; the full panel builds on the same API. A small optional Home Assistant integration could mirror problems into Repairs (D7).
+As v5 §15: manual changes become adopted settings with a value test (plan 2, with the room `climate` entity and its command topics); overrides, windows, seasons, modes, frost floor and child lock are clauses in the desired-settings function over stored intent; the heat output has its own timing rule and, where the output is an MQTT device, does not depend on Home Assistant; the full panel builds on the same API. History (a log of config changes, problem history, per-valve write counts, temperature history) goes into SQLite when its first feature arrives, without an ORM; config and ledger stay JSON files (D12). A small optional Home Assistant integration could mirror problems into Repairs (D7).
 
 ## 19. Review record
 
