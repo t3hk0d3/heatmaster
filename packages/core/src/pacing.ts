@@ -60,6 +60,26 @@ function recent(gm: GroupMemory, nowMs: number): readonly WriteRecord[] {
   return gm.writes.filter((w) => since(w.at, nowMs) <= WINDOW_MS);
 }
 
+/**
+ * The write records that can still change an answer: the newest `BACKOFF_MS.length` by `at` and
+ * the newest `NOT_HOLDING_AFTER` unmarked ones by `at`. The window keeps a suffix by time, so the
+ * capped count, the latest time and the capped unmarked count are the same as with every record,
+ * whatever the clock does. Returned oldest first.
+ */
+function keptWrites(writes: readonly WriteRecord[]): readonly WriteRecord[] {
+  const byAt = [...writes].sort((a, b) => a.at - b.at);
+  const kept = new Set([
+    ...byAt.slice(-BACKOFF_MS.length),
+    ...byAt.filter((w) => !w.marked).slice(-NOT_HOLDING_AFTER),
+  ]);
+  return byAt.filter((w) => kept.has(w));
+}
+
+/** The newest `BACKOFF_MS.length` asks by time, oldest first: all the backoff can read. */
+function keptAsks(asks: readonly number[]): readonly number[] {
+  return [...asks].sort((a, b) => a - b).slice(-BACKOFF_MS.length);
+}
+
 function withGroup(vm: ValveMemory, group: Group, gm: GroupMemory): ValveMemory {
   return { ...vm, groups: { ...vm.groups, [group]: gm } };
 }
@@ -84,7 +104,7 @@ export function charge(vm: ValveMemory, group: Group, nowMs: number, marked: boo
   const m = gm.mark;
   return withGroup(taken, group, {
     ...gm,
-    writes: [...gm.writes, { at: nowMs, marked }],
+    writes: keptWrites([...gm.writes, { at: nowMs, marked }]),
     mark: marked && m !== undefined ? { ...m, writtenAt: nowMs } : m,
   });
 }
@@ -115,7 +135,7 @@ export function mayAsk(vm: ValveMemory, nowMs: number): boolean {
 
 /** For a refresh: also stamps `askedAt` on the mark of every marked readable group. */
 export function chargeAsk(vm: ValveMemory, spec: ValveSpec, nowMs: number): ValveMemory {
-  let next: ValveMemory = { ...take(vm, nowMs), asks: [...vm.asks, nowMs] };
+  let next: ValveMemory = { ...take(vm, nowMs), asks: keptAsks([...vm.asks, nowMs]) };
   for (const gs of spec.groups) {
     const gm = next.groups[gs.group];
     if (!gs.readable || gm?.mark === undefined) continue;

@@ -21,7 +21,8 @@ export type GroupMemory = Readonly<{
 
 /**
  * Per valve, in memory only. `asks` holds the times of the refreshes sent since the valve was last
- * heard, oldest first. `lastWriteAt` is the last write, setpoint write or refresh. `lastPushAt` is
+ * heard, oldest first (only the newest 4 are kept; a group's `writes` keeps at most 7, see
+ * pacing). `lastWriteAt` is the last write, setpoint write or refresh. `lastPushAt` is
  * the last temperature push since this memory was created; `stopped` does not clear it.
  */
 export type ValveMemory = Readonly<{

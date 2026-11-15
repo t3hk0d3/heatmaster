@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { START_TOKENS, mark, newValveMemory, noteHeard, type ValveMemory } from "./memory.ts";
 import {
   BUCKET,
@@ -67,6 +67,32 @@ function writes(offsets: readonly number[], group: Group = "sensor_source"): Val
 /** Asks at each of the given offsets from T0. */
 function asks(offsets: readonly number[]): ValveMemory {
   return offsets.reduce((vm, offset) => chargeAsk(vm, TRV_ZBT, T0 + offset), unmarked());
+}
+
+/**
+ * Twenty request times: every 37 min from T0, then the clock is set back 3 h after the twelfth
+ * and the rest follow every 41 min from there.
+ */
+const HISTORY: readonly number[] = Array.from({ length: 20 }, (_, i) =>
+  i < 12
+    ? T0 + i * 37 * MINUTE_MS
+    : T0 + 11 * 37 * MINUTE_MS - 3 * HOUR_MS + (i - 11) * 41 * MINUTE_MS,
+);
+
+/** Times around each request time and the backoff and window edges, and one before them all. */
+function probes(times: readonly number[]): readonly number[] {
+  const offsets = [
+    -1,
+    0,
+    1,
+    2 * MINUTE_MS,
+    10 * MINUTE_MS,
+    HOUR_MS,
+    6 * HOUR_MS,
+    DAY_MS,
+    DAY_MS + 1,
+  ];
+  return [T0 - 2 * HOUR_MS, ...times.flatMap((t) => offsets.map((o) => t + o))];
 }
 
 /** Four tokens spent at T0, T0 + 2 s, T0 + 4 s and T0 + 6 s: none left at T0 + 8 s. */
@@ -139,6 +165,15 @@ describe("pacing", () => {
         const last = 75 * MINUTE_MS;
         const vm = writes([0, 3 * MINUTE_MS, 14 * MINUTE_MS, last]);
         expect(mayWrite(vm, "sensor_source", T0 + last + DAY_MS + 1)).toBe(true);
+      });
+    });
+    describe("With unmarked writes at 0, 2 min, 12 min and 20 h", () => {
+      const vm = writes([0, 2 * MINUTE_MS, 12 * MINUTE_MS, 20 * HOUR_MS]);
+      it("returns false at exactly 24 h: the write at 0 is still in the window, count 4, step 6 h, last 4 h ago", () => {
+        expect(mayWrite(vm, "sensor_source", T0 + DAY_MS)).toBe(false);
+      });
+      it("returns true at 24 h + 1 ms: the write at 0 has left the window, count 3, step 1 h", () => {
+        expect(mayWrite(vm, "sensor_source", T0 + DAY_MS + 1)).toBe(true);
       });
     });
     describe("With another group written 1 min ago and this group never", () => {
@@ -222,6 +257,34 @@ describe("pacing", () => {
         expect(vm.groups.schedule?.mark).toEqual(before.groups.schedule?.mark);
       });
     });
+    describe("After many writes, one of them after the clock was set back", () => {
+      const full = HISTORY.map((at, i) => ({ at, marked: i % 3 === 0 }));
+      const pruned = full.reduce(
+        (vm, w) => charge(vm, "sensor_source", w.at, w.marked),
+        unmarked(T0 - DAY_MS),
+      );
+      const gm = pruned.groups.sensor_source;
+      if (gm === undefined) throw new Error("no sensor_source");
+      const unpruned: ValveMemory = {
+        ...pruned,
+        groups: { ...pruned.groups, sensor_source: { ...gm, writes: full } },
+      };
+      it("keeps at most 7 write records: the newest 4 and the newest 3 unmarked, by at", () => {
+        const kept = gm.writes;
+        expect(kept.length).toBeLessThanOrEqual(7);
+        const byAt = [...full].sort((a, b) => a.at - b.at);
+        const want = new Set([...byAt.slice(-4), ...byAt.filter((w) => !w.marked).slice(-3)]);
+        expect([...kept].sort((a, b) => a.at - b.at)).toEqual(byAt.filter((w) => want.has(w)));
+      });
+      it("mayWrite and notHolding answer as with the whole history, at every probe time", () => {
+        for (const now of probes(HISTORY)) {
+          expect(mayWrite(pruned, "sensor_source", now)).toBe(
+            mayWrite(unpruned, "sensor_source", now),
+          );
+          expect(notHolding(pruned, now)).toEqual(notHolding(unpruned, now));
+        }
+      });
+    });
     describe("After 30 min without writes", () => {
       it("one token has come back, up to BUCKET", () => {
         const once = charge(unmarked(), "schedule", T0, false);
@@ -233,6 +296,15 @@ describe("pacing", () => {
   });
 
   describe("notHolding", () => {
+    describe("With unmarked writes at 0, 2 min, 12 min and 20 h", () => {
+      const vm = writes([0, 2 * MINUTE_MS, 12 * MINUTE_MS, 20 * HOUR_MS]);
+      it("lists the group at exactly 24 h + 2 min: three writes are still in the window", () => {
+        expect(notHolding(vm, T0 + DAY_MS + 2 * MINUTE_MS)).toEqual(["sensor_source"]);
+      });
+      it("does not list the group at 24 h + 2 min + 1 ms: two writes are left", () => {
+        expect(notHolding(vm, T0 + DAY_MS + 2 * MINUTE_MS + 1)).toEqual([]);
+      });
+    });
     describe("With 3 unmarked writes of the same value in 24 h", () => {
       it("lists the group", () => {
         const vm = writes([0, 3 * MINUTE_MS, 14 * MINUTE_MS]);
@@ -388,6 +460,20 @@ describe("pacing", () => {
         expect(vm.groups.schedule?.mark).toEqual(before.groups.schedule?.mark);
       });
     });
+    describe("After many asks, one of them after the clock was set back", () => {
+      const pruned = HISTORY.reduce((vm, at) => chargeAsk(vm, TRV_ZBT, at), unmarked(T0 - DAY_MS));
+      const unpruned: ValveMemory = { ...pruned, asks: HISTORY };
+      it("keeps the newest 4 asks, by time", () => {
+        expect([...pruned.asks].sort((a, b) => a - b)).toEqual(
+          [...HISTORY].sort((a, b) => a - b).slice(-4),
+        );
+      });
+      it("mayAsk answers as with the whole history, at every probe time", () => {
+        for (const now of probes(HISTORY)) {
+          expect(mayAsk(pruned, now)).toBe(mayAsk(unpruned, now));
+        }
+      });
+    });
     describe("With a readable group that has no mark", () => {
       it("no mark is created", () => {
         const vm = chargeAsk(mark(unmarked(), ["schedule"], T0), TRV_ZBT, T0 + MINUTE_MS);
@@ -431,24 +517,27 @@ describe("pacing", () => {
     });
 
     describe("With a TRV-ZBT spec, a valve that never answers and never takes a write, and every ask and write the rules allow taken second by second for t = 0 s … 86 400 s inclusive, from a new memory", () => {
-      let vm = newValveMemory(TRV_ZBT, T0);
       let askCount = 0;
+      let total = 0;
       const writeCount: Partial<Record<Group, number>> = {};
-      for (const s of seconds) {
-        const now = T0 + s * SECOND_MS;
-        if (mayAsk(vm, now)) {
-          vm = chargeAsk(vm, TRV_ZBT, now);
-          askCount += 1;
-        }
-        for (const gs of TRV_ZBT.groups) {
-          if (mayWrite(vm, gs.group, now)) {
-            const marked = vm.groups[gs.group]?.mark !== undefined;
-            vm = charge(vm, gs.group, now, marked);
-            writeCount[gs.group] = (writeCount[gs.group] ?? 0) + 1;
+      beforeAll(() => {
+        let vm = newValveMemory(TRV_ZBT, T0);
+        for (const s of seconds) {
+          const now = T0 + s * SECOND_MS;
+          if (mayAsk(vm, now)) {
+            vm = chargeAsk(vm, TRV_ZBT, now);
+            askCount += 1;
+          }
+          for (const gs of TRV_ZBT.groups) {
+            if (mayWrite(vm, gs.group, now)) {
+              const marked = vm.groups[gs.group]?.mark !== undefined;
+              vm = charge(vm, gs.group, now, marked);
+              writeCount[gs.group] = (writeCount[gs.group] ?? 0) + 1;
+            }
           }
         }
-      }
-      const total = askCount + Object.values(writeCount).reduce((a, b) => a + b, 0);
+        total = askCount + Object.values(writeCount).reduce((a, b) => a + b, 0);
+      });
       it("at most START_TOKENS + 48 = 52 asks and writes together", () => {
         expect(total).toBeLessThanOrEqual(START_TOKENS + 48);
       });
