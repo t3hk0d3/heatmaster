@@ -299,15 +299,25 @@ describe("ledger", () => {
         if (error !== undefined) expect(error).toBeInstanceOf(LedgerError);
       });
       it.each([
-        ["not an object", 7],
-        ["a list", []],
-        ["records missing", { released: [] }],
-        ["released not a list", { records: {}, released: {} }],
-        ["an unknown top key", { ...aRawLedger(), extra: 1 }],
-        ["a record that is not an object", { records: { [V1]: "x" }, released: [] }],
-        ["a released entry without valve_id", { records: {}, released: [{ profile: "p" }] }],
-      ])("throws LedgerError (%s)", (_, raw) => {
-        expect(thrown(() => ledgerFromRaw(raw))).toBeInstanceOf(LedgerError);
+        ["not an object", 7, ""],
+        ["a list", [], ""],
+        ["records missing", { released: [] }, "records"],
+        ["released not a list", { records: {}, released: {} }, "released"],
+        ["an unknown top key", { ...aRawLedger(), extra: 1 }, "extra"],
+        [
+          "a record that is not an object",
+          { records: { [V1]: "x" }, released: [] },
+          `records.${V1}`,
+        ],
+        [
+          "a released entry without valve_id",
+          { records: {}, released: [{ profile: "p" }] },
+          "released[0].valve_id",
+        ],
+      ])("throws LedgerError (%s)", (_, raw, path) => {
+        const error = thrown(() => ledgerFromRaw(raw));
+        expect(error).toBeInstanceOf(LedgerError);
+        expect((error as LedgerError).path).toBe(path);
       });
     });
     describe("With an unknown setting key, a malformed day or a malformed instant", () => {
@@ -317,18 +327,114 @@ describe("ledger", () => {
         return { ...raw, records: { [V1]: { ...records[V1], ...part } } };
       };
       it.each([
-        ["an unknown setting key", withRecordPart({ originals: { day_xyz: [] } })],
-        ["a day that is not a list", withRecordPart({ originals: { day_mon: "00:00/17" } })],
-        ["a day pair with a bad time", withRecordPart({ originals: { day_mon: [["7:00", 17]] } })],
-        ["a day pair with text", withRecordPart({ originals: { day_mon: [["07:00", "17"]] } })],
-        ["a day pair of three", withRecordPart({ originals: { day_mon: [["07:00", 17, 1]] } })],
-        ["a bad sensor source", withRecordPart({ originals: { sensor_source: "both" } })],
-        ["a group that is text", withRecordPart({ originals: { active_group: "3" } })],
-        ["an instant without ms", withRecordPart({ adopted_at: "2026-11-14T09:30:00Z" })],
-        ["an instant not in UTC", withRecordPart({ adopted_at: "2026-11-14T09:30:00.000+01:00" })],
-        ["an impossible instant", withRecordPart({ adopted_at: "2026-13-14T09:30:00.000Z" })],
-      ])("throws LedgerError (%s)", (_, raw) => {
-        expect(thrown(() => ledgerFromRaw(raw))).toBeInstanceOf(LedgerError);
+        [
+          "an unknown setting key",
+          withRecordPart({ originals: { day_xyz: [] } }),
+          `records.${V1}.originals.day_xyz`,
+        ],
+        [
+          "a day that is not a list",
+          withRecordPart({ originals: { day_mon: "00:00/17" } }),
+          `records.${V1}.originals.day_mon`,
+        ],
+        [
+          "a day pair with a bad time",
+          withRecordPart({ originals: { day_mon: [["7:00", 17]] } }),
+          `records.${V1}.originals.day_mon[0]`,
+        ],
+        [
+          "a day pair with text",
+          withRecordPart({ originals: { day_mon: [["07:00", "17"]] } }),
+          `records.${V1}.originals.day_mon[0]`,
+        ],
+        [
+          "a day pair of three",
+          withRecordPart({ originals: { day_mon: [["07:00", 17, 1]] } }),
+          `records.${V1}.originals.day_mon[0]`,
+        ],
+        [
+          "a bad sensor source",
+          withRecordPart({ originals: { sensor_source: "both" } }),
+          `records.${V1}.originals.sensor_source`,
+        ],
+        [
+          "a group that is text",
+          withRecordPart({ originals: { active_group: "3" } }),
+          `records.${V1}.originals.active_group`,
+        ],
+        [
+          "an instant without ms",
+          withRecordPart({ adopted_at: "2026-11-14T09:30:00Z" }),
+          `records.${V1}.adopted_at`,
+        ],
+        [
+          "an instant not in UTC",
+          withRecordPart({ adopted_at: "2026-11-14T09:30:00.000+01:00" }),
+          `records.${V1}.adopted_at`,
+        ],
+        [
+          "an impossible instant",
+          withRecordPart({ adopted_at: "2026-13-14T09:30:00.000Z" }),
+          `records.${V1}.adopted_at`,
+        ],
+      ])("throws LedgerError (%s)", (_, raw, path) => {
+        const error = thrown(() => ledgerFromRaw(raw));
+        expect(error).toBeInstanceOf(LedgerError);
+        expect((error as LedgerError).path).toBe(path);
+      });
+    });
+    describe("With a value the reader would reject", () => {
+      const sec = (text: string): ValveRecord["originals"] => ({
+        day_mon: [{ time: Temporal.PlainTime.from(text), temperature: 17 }],
+      });
+      const released = (over: Partial<ReleasedRecord>): Ledger => ({
+        records: new Map(),
+        released: [{ record: record(V2), endedAt: T0, forgotten: false, ...over }],
+      });
+      it.each([
+        ["a fractional group", ledgerOf(record(V1, { originals: { active_group: 1.5 } }))],
+        [
+          "a non-finite temperature",
+          ledgerOf(
+            record(V1, {
+              originals: {
+                day_mon: [{ time: Temporal.PlainTime.from("07:00"), temperature: Infinity }],
+              },
+            }),
+          ),
+        ],
+        [
+          "NaN as a temperature",
+          ledgerOf(
+            record(V1, {
+              originals: {
+                day_mon: [{ time: Temporal.PlainTime.from("07:00"), temperature: Number.NaN }],
+              },
+            }),
+          ),
+        ],
+        ["a time with seconds", ledgerOf(record(V1, { originals: sec("07:00:30") }))],
+        ["a fractional adoptedAt", ledgerOf(record(V1, { adoptedAt: T0 + 0.5 }))],
+        ["a fractional endedAt", released({ endedAt: T0 + 0.5 })],
+        [
+          "a sensor source that is not internal or external",
+          ledgerOf(record(V1, { originals: { sensor_source: "both" as "internal" } })),
+        ],
+        [
+          "an unknown setting key",
+          ledgerOf(
+            record(V1, { originals: { day_xyz: 1 } as unknown as ValveRecord["originals"] }),
+          ),
+        ],
+        [
+          "a value of the wrong kind for its key",
+          ledgerOf(record(V1, { originals: { active_group: "internal" } })),
+        ],
+      ])("throws a plain Error before anything is serialized (%s)", (_, ledger) => {
+        const error = thrown(() => ledgerToRaw(ledger));
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(LedgerError);
+        expect(error).not.toBeInstanceOf(RangeError);
       });
     });
   });

@@ -86,6 +86,13 @@ describe("observation", () => {
         expect(state.values).toEqual({ sensor_source: "internal", active_group: 1, day_mon: day });
       });
     });
+    describe("With a key that holds undefined", () => {
+      it("the stored value is kept, as for an absent key", () => {
+        const values = { sensor_source: undefined } as unknown as Decoded["values"];
+        const [state] = onMessage(heardState(T0), decoded({ values }), "a", now, SILENT_MS);
+        expect(state.values.sensor_source).toBe("internal");
+      });
+    });
     describe("With new readings", () => {
       it("they are merged over the stored ones", () => {
         const [state] = onMessage(

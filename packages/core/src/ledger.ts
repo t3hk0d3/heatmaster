@@ -116,6 +116,8 @@ export function memberships(
 
 const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** The largest epoch milliseconds a Temporal.Instant can hold. */
+const MAX_INSTANT_MS = 8_640_000_000_000_000;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -140,39 +142,90 @@ function instantFromRaw(value: unknown): number | undefined {
   }
 }
 
-function dayToRaw(day: ResolvedDay): unknown[] {
-  return day.map((p) => [p.time.toString({ smallestUnit: "minute" }), p.temperature]);
+/** The writer refuses what `ledgerFromRaw` would reject, so a saved ledger always loads again. */
+function writeFail(path: string, message: string): never {
+  throw new Error(`cannot write ${path || "(document)"}: ${message}`);
 }
 
-function valueToRaw(value: SettingValue | null): unknown {
-  return Array.isArray(value) ? dayToRaw(value) : value;
+/** `instantToRaw`, refusing an instant the reader would not take back. */
+function writeInstant(path: string, ms: number): string {
+  if (!Number.isSafeInteger(ms) || Math.abs(ms) > MAX_INSTANT_MS) {
+    return writeFail(path, "expected whole epoch milliseconds");
+  }
+  const text = instantToRaw(ms);
+  return INSTANT_PATTERN.test(text) ? text : writeFail(path, "expected a year from 0000 to 9999");
 }
 
-function originalsToRaw(originals: ValveRecord["originals"]): Record<string, unknown> {
+function pointToRaw(path: string, point: ResolvedPoint): unknown[] {
+  const time = point.time;
+  if (
+    time.second !== 0 ||
+    time.millisecond !== 0 ||
+    time.microsecond !== 0 ||
+    time.nanosecond !== 0
+  ) {
+    return writeFail(path, "expected a time in whole minutes");
+  }
+  if (!Number.isFinite(point.temperature)) return writeFail(path, "expected a finite temperature");
+  return [time.toString({ smallestUnit: "minute" }), point.temperature];
+}
+
+function valueToRaw(path: string, key: SettingKey, value: SettingValue | null): unknown {
+  if (value === null) return null;
+  switch (groupOf(key)) {
+    case "schedule":
+      if (!Array.isArray(value)) return writeFail(path, "expected a day");
+      return (value as ResolvedDay).map((p, i) => pointToRaw(`${path}[${String(i)}]`, p));
+    case "active_group":
+      return typeof value === "number" && Number.isInteger(value)
+        ? value
+        : writeFail(path, "expected a whole group number");
+    case "sensor_source":
+      return value === "internal" || value === "external"
+        ? value
+        : writeFail(path, "expected internal or external");
+  }
+}
+
+function originalsToRaw(
+  path: string,
+  originals: ValveRecord["originals"],
+): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(originals).map(([key, value]) => [key, valueToRaw(value)]),
+    Object.entries(originals).map(([key, value]) => {
+      const settingKey = SETTING_KEYS.find((k) => k === key);
+      if (settingKey === undefined) return writeFail(at(path, key), "unknown setting key");
+      return [key, valueToRaw(at(path, key), settingKey, value)];
+    }),
   );
 }
 
-function recordToRaw(record: ValveRecord): Record<string, unknown> {
+function recordToRaw(path: string, record: ValveRecord): Record<string, unknown> {
   return {
     profile: record.profile,
-    adopted_at: instantToRaw(record.adoptedAt),
-    originals: originalsToRaw(record.originals),
+    adopted_at: writeInstant(at(path, "adopted_at"), record.adoptedAt),
+    originals: originalsToRaw(at(path, "originals"), record.originals),
   };
 }
 
+/** Throws a plain Error, before anything is returned, on a value `ledgerFromRaw` would reject. */
 export function ledgerToRaw(ledger: Ledger): Record<string, unknown> {
   return {
     records: Object.fromEntries(
-      [...ledger.records].map(([valveId, record]) => [valveId, recordToRaw(record)]),
+      [...ledger.records].map(([valveId, record]) => [
+        valveId,
+        recordToRaw(at("records", valveId), record),
+      ]),
     ),
-    released: ledger.released.map((entry) => ({
-      valve_id: entry.record.valveId,
-      ...recordToRaw(entry.record),
-      ended_at: instantToRaw(entry.endedAt),
-      forgotten: entry.forgotten,
-    })),
+    released: ledger.released.map((entry, i) => {
+      const path = `released[${String(i)}]`;
+      return {
+        valve_id: entry.record.valveId,
+        ...recordToRaw(path, entry.record),
+        ended_at: writeInstant(at(path, "ended_at"), entry.endedAt),
+        forgotten: entry.forgotten,
+      };
+    }),
   };
 }
 
@@ -288,7 +341,10 @@ export function storedToRaw(stored: StoredConfig): Record<string, unknown> {
   return {
     revision: stored.revision,
     releasing: Object.fromEntries(
-      [...stored.releasing].map(([valveId, ms]) => [valveId, instantToRaw(ms)]),
+      [...stored.releasing].map(([valveId, ms]) => [
+        valveId,
+        writeInstant(at("releasing", valveId), ms),
+      ]),
     ),
     config: configToRaw(stored.config),
   };

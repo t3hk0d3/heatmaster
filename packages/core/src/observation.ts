@@ -44,7 +44,9 @@ function mergeValues(old: SettingValues, fresh: Decoded["values"]): SettingValue
   const values: Partial<Record<SettingKey, SettingValue>> = {};
   const keys = new Set([...Object.keys(old), ...Object.keys(fresh)]) as Set<SettingKey>;
   for (const key of keys) {
-    const value = Object.hasOwn(fresh, key) ? fresh[key] : old[key];
+    // A key holding undefined counts as absent; null removes the stored value.
+    const given = Object.hasOwn(fresh, key) ? fresh[key] : undefined;
+    const value = given === undefined ? old[key] : given;
     if (value !== null && value !== undefined) values[key] = value;
   }
   return values;
