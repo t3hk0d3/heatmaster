@@ -76,7 +76,10 @@ export type ConfigFile =
   | Readonly<{ state: "ok"; stored: StoredConfig }>
   | Readonly<{ state: "empty" }>
   | Readonly<{ state: "unreadable" }>;
-export type LedgerFile = Readonly<{ state: "ok"; ledger: Ledger }> | Readonly<{ state: "lost" }>;
+export type LedgerFile =
+  | Readonly<{ state: "ok"; ledger: Ledger }>
+  | Readonly<{ state: "lost" }>
+  | Readonly<{ state: "corrupt" }>;
 
 export type LoggedEffect = Readonly<{ at: number; effect: Effect }>;
 
@@ -118,7 +121,7 @@ export type SimDriver = Readonly<{
   setSensor: (ref: string, change: Readonly<{ value?: number; alive?: boolean }>) => void;
   /** The application stops and starts: memory and device states are dropped, the disk is read. */
   restart: () => void;
-  /** Stops after the n-th effect of the next step that has so many, then restarts. */
+  /** Stays armed until a step has at least n effects; runs the first n, then restarts. */
   crashAfterEffects: (n: number) => void;
   /** Runs `during` while Heatmaster is not there: what is sent meanwhile is lost; then it starts. */
   whileDown: (during: () => void) => void;
@@ -199,6 +202,8 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   /** The runtime's rule for a ledger file that did not load (Task 17's load rule). */
   const loadLedger = (): Ledger | undefined => {
     if (disk.ledger.state === "ok") return disk.ledger.ledger;
+    // An unreadable file always locks the store; only a missing one may become empty.
+    if (disk.ledger.state === "corrupt") return undefined;
     const configFile = disk.config;
     if (configFile.state === "unreadable") return undefined;
     if (configFile.state === "ok") {
@@ -227,8 +232,8 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   const sensorReadings = (): ReadonlyMap<string, SensorReading> => {
     const readings = new Map<string, SensorReading>();
     for (const [ref, s] of sensors) {
-      if (s.alive) s.seenAt = nowMs;
-      readings.set(ref, { sensorId: ref, value: s.value, seenAt: s.seenAt, pending: false });
+      const seenAt = s.alive ? nowMs : s.seenAt;
+      readings.set(ref, { sensorId: ref, value: s.value, seenAt, pending: false });
     }
     return readings;
   };
@@ -338,6 +343,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
 
   const step = (dtMs: number): TickResult => {
     nowMs += dtMs;
+    for (const s of sensors.values()) if (s.alive) s.seenAt = nowMs;
     const due = faults;
     faults = [];
     for (const fault of due) fault();
@@ -353,11 +359,13 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     }
     inbox = { ...inbox, memory: result.memory };
 
-    const limit = crashAfter;
-    crashAfter = undefined;
+    // A crash stays armed until a step has at least that many effects.
+    const limit =
+      crashAfter !== undefined && result.effects.length >= crashAfter ? crashAfter : undefined;
+    if (limit !== undefined) crashAfter = undefined;
     const effects = limit === undefined ? result.effects : result.effects.slice(0, limit);
     for (const effect of effects) execute(effect);
-    if (limit !== undefined && limit <= result.effects.length) {
+    if (limit !== undefined) {
       startApplication();
       return result;
     }
@@ -423,8 +431,8 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     loseConfig(how) {
       disk.config = { state: how === "lost" ? "empty" : "unreadable" };
     },
-    loseLedger() {
-      disk.ledger = { state: "lost" };
+    loseLedger(how) {
+      disk.ledger = { state: how };
     },
     importCopy() {
       if (copy === undefined) throw new Error("no originals copy was recorded");

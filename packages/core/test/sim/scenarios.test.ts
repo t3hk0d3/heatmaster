@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   BUCKET,
   REFILL_MS,
-  RELEASE_HOLD_MS,
   START_TOKENS,
   VALVE_SILENT_AFTER_MS,
   configToRaw,
@@ -318,8 +317,11 @@ describe("scenarios", () => {
         const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]], sensor: false }] });
         sim.valve(valveIdOf(A)).setPolicy((_request, nth) => (nth === 0 ? "lose" : "land"));
         sim.step(0);
-        sim.runTo(5 * MINUTE_MS);
-        expect(times(sim, valveIdOf(A), "refresh").slice(0, 2)).toEqual([0, 120]);
+        sim.runTo(15 * MINUTE_MS);
+        // Without the loss one answer at 2 min 30 s ends the asking; with it the next ask follows
+        // the backoff (10 min after the second).
+        expect(times(sim, valveIdOf(A), "refresh")).toEqual([0, 120, 720]);
+        expect(sim.valve(valveIdOf(A)).received().reads).toBe(2);
       });
     });
 
@@ -431,7 +433,6 @@ describe("scenarios", () => {
         const next = withNewRoom(built.config, n);
         // Its days already equal the new room's: the same default week.
         built.sim.valve(n).setup({ days: { group: 1, texts: desiredTexts(next, "new", "trvzb") } });
-        built.sim.setSensor("ha:sensor.r1", {});
         built.sim.step(0);
         built.sim.planChange(configToRaw(next));
         built.sim.step(STEP_MS);
@@ -482,11 +483,13 @@ describe("scenarios", () => {
         const { sim, n, joinedAt } = joined();
         const since = (t: number): number => t - seconds(joinedAt);
         expect(times(sim, n, "refresh").map(since)).toEqual([30]);
-        expect(published(sim, n).map((w) => w.keys)).toEqual([
+        const writes = published(sim, n);
+        expect(writes.map((w) => w.keys)).toEqual([
           SEVEN_DAYS,
           ["active_group"],
           ["sensor_source"],
         ]);
+        expect(since(writes[2]?.at ?? 0)).toBeGreaterThanOrEqual(10 * 60);
         expect(sim.valve(n).truth().activeGroup).toBe(3);
         expect(sim.valve(n).truth().select).toBe("remote_temperature");
         const vm = sim.memory().valves.get(n);
@@ -727,6 +730,8 @@ describe("scenarios", () => {
         expect(sim.config().stored?.releasing.has(id)).toBe(false);
         const last = published(sim, id).at(-1);
         expect(last?.keys).toEqual(["sensor_source"]);
+        // The undo came after the wake-up, not before.
+        expect(last?.at ?? 0).toBeGreaterThan(seconds(removedAt) + 40 * 60);
         expect(sim.valve(id).truth().select).toBe("local_temperature");
       });
     });
@@ -772,7 +777,6 @@ describe("scenarios", () => {
         expect(sim.ledger()?.released.map((r) => r.record.valveId)).toContain(id);
         expect(sim.config().stored?.releasing.has(id)).toBe(false);
         expect(sim.copy()?.records.has(id)).toBe(false);
-        expect(RELEASE_HOLD_MS).toBe(15 * MINUTE_MS);
       });
     });
 
@@ -1058,6 +1062,71 @@ describe("scenarios", () => {
       });
       return { ...built, a: valveIdOf(A), b: valveIdOf(B) };
     }
+
+    describe("a crash after the n-th effect", () => {
+      it("runs n effects, then drops the memory and the device states and reads the disk again", () => {
+        const { sim } = build({
+          rooms: [
+            { id: "r1", valves: [[A, "trvzb"]] },
+            { id: "r2", valves: [[B, "trv_zbt"]] },
+          ],
+        });
+        const [a, b] = [valveIdOf(A), valveIdOf(B)];
+        sim.crashAfterEffects(1);
+        sim.step(0);
+        expect(sim.log()).toHaveLength(1);
+        expect(sim.memory().valves.size).toBe(0);
+        expect(sim.inbox().states.get(a)?.messageAt).toBeUndefined();
+        expect(sim.inbox().states.get(b)?.messageAt).toBeUndefined();
+        expect(sim.config().stored).toBeDefined();
+        expect(sim.ledger()?.records.size).toBe(2);
+      });
+
+      it("stays armed through a step with fewer effects", () => {
+        const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trv_zbt"]] }] });
+        sim.crashAfterEffects(2);
+        sim.step(0);
+        expect(sim.memory().valves.size).toBe(1);
+        sim.step(STEP_MS);
+        // The first step with two effects (the push and the days) crashes.
+        expect(sim.memory().valves.size).toBe(0);
+      });
+    });
+
+    describe("a lost or corrupt ledger file", () => {
+      function bare(how: "lost" | "corrupt"): SimDriver {
+        const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }], recorded: false });
+        sim.loseConfig("lost");
+        sim.loseLedger(how);
+        sim.restart();
+        return sim;
+      }
+
+      it("is empty when it was not expected and the copy holds no record, if the file is missing", () => {
+        expect(bare("lost").ledger()?.records.size).toBe(0);
+      });
+
+      it("is unreadable when the file is corrupt, whatever else holds", () => {
+        expect(bare("corrupt").ledger()).toBeUndefined();
+      });
+    });
+
+    describe("a Home Assistant replay", () => {
+      it("carries old tokens, so it is not a valve report", () => {
+        const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }] });
+        const a = valveIdOf(A);
+        sim.step(0);
+        sim.runTo(15 * MINUTE_MS);
+        const heardAt = sim.inbox().states.get(a)?.heardAt;
+        const before = sim.effectsOf(a).length;
+        sim.replayCache();
+        sim.step(STEP_MS);
+        const state = sim.inbox().states.get(a);
+        expect(state?.messageAt).toBe(sim.now());
+        expect(state?.heardAt).toBe(heardAt);
+        expect(sim.effectsOf(a)).toHaveLength(before);
+      });
+    });
 
     describe("a TRV-ZBT day write", () => {
       it("is echoed with the old last_seen, and a fresh message with weekly_schedule_status success follows", () => {
