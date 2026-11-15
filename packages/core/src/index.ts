@@ -166,3 +166,13 @@ export type {
 } from "./status.ts";
 export { applyEvent } from "./events.ts";
 export type { Event, Inbox } from "./events.ts";
+export {
+  RELEASE_HOLD_MS,
+  RELEASE_STALLED_AFTER_MS,
+  candidates,
+  isObservable,
+  preview,
+  tick,
+  transportUsable,
+} from "./control.ts";
+export type { DeviceView, Effect, PlannedWrite, Selection, TickResult, World } from "./control.ts";
