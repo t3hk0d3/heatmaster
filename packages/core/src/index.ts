@@ -193,3 +193,8 @@ export type {
   ChangeRefusedCode,
   SensorInfo,
 } from "./change.ts";
+export { PROFILES, findProfile, validateProfile } from "./profiles/index.ts";
+export type { Binding, Profile } from "./profiles/index.ts";
+export { TRVZB_SPEC } from "./profiles/sonoff-trvzb.ts";
+export { TRV_ZBT_SPEC } from "./profiles/sonoff-trv-zbt.ts";
+export { decodeDay, encodeDay } from "./profiles/sonoff-codec.ts";
