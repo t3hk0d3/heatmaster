@@ -4,20 +4,17 @@ import {
   Z2M_DAY_PAYLOAD,
   Z2M_KEYS,
   decodeCommon,
+  checkGroup,
   encodeDay,
+  groupSpec,
   parseGroup,
   selectOption,
 } from "./sonoff-codec.ts";
 import type { Binding, Profile } from "./base.ts";
-import type { GroupSpec, ValveSpec } from "../settings.ts";
+import type { ValveSpec } from "../settings.ts";
 
-const HOUR_MS = 60 * 60 * 1000;
 /** The schedule group Heatmaster owns. Groups 1 and 2 are never written. */
 const OWNED_GROUP = 3;
-
-function group(spec: Pick<GroupSpec, "group" | "evidence" | "capture" | "readable">): GroupSpec {
-  return { ...spec, maxAgeMs: 24 * HOUR_MS };
-}
 
 /**
  * Sonoff TRV-ZBT: three schedule groups of 12 slots, of which Heatmaster owns the third. Its days
@@ -33,9 +30,9 @@ export const TRV_ZBT_SPEC: ValveSpec = {
   slotCount: 12,
   scheduleGroup: OWNED_GROUP,
   groups: [
-    group({ group: "schedule", evidence: "none", capture: false, readable: false }),
-    group({ group: "active_group", evidence: "acked", capture: true, readable: true }),
-    group({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "schedule", evidence: "none", capture: false, readable: false }),
+    groupSpec({ group: "active_group", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
   ],
   activation: "none",
   externalSensor: true,
@@ -61,10 +58,10 @@ export const TRV_ZBT_BINDING: Binding = {
     // The edit group comes first: the valve applies keys in order.
     if (Object.keys(days).length > 0) message[Z2M_KEYS.editGroup] = String(OWNED_GROUP);
     Object.assign(message, days);
-    if (typeof values.active_group === "number")
-      message[Z2M_KEYS.activeGroup] = String(values.active_group);
+    if (values.active_group !== undefined)
+      message[Z2M_KEYS.activeGroup] = String(checkGroup(values.active_group));
     if (values.sensor_source !== undefined)
-      message[Z2M_KEYS.select] = selectOption(values.sensor_source as "internal" | "external");
+      message[Z2M_KEYS.select] = selectOption(values.sensor_source);
     return message;
   },
   encodeSetpoint: (celsius) => ({ [Z2M_KEYS.setpoint]: celsius }),

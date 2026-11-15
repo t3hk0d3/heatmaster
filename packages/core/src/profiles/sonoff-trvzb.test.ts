@@ -38,6 +38,13 @@ describe("TRVZB binding", () => {
         expect(decoded.readings.feedLost).toBe(true);
       });
     });
+    describe("With the sensor select reading an option the binding does not know", () => {
+      it("feedLost is false and sensor_source is null", () => {
+        const decoded = binding.decode({ temperature_sensor_select: "something_new" });
+        expect(decoded.readings.feedLost).toBe(false);
+        expect(decoded.values.sensor_source).toBeNull();
+      });
+    });
     describe("With one day text that is malformed", () => {
       it("that day maps to null and the others decode", () => {
         const decoded = binding.decode({
@@ -103,6 +110,18 @@ describe("TRVZB binding", () => {
         expect(binding.encode({ sensor_source: "external" })).toEqual({
           temperature_sensor_select: "remote_temperature",
         });
+      });
+    });
+  });
+  describe("encode, bad input", () => {
+    describe("With an unknown sensor source", () => {
+      it("throws RangeError", () => {
+        expect(() => binding.encode({ sensor_source: "bogus" as "internal" })).toThrow(RangeError);
+      });
+    });
+    describe("With active_group, which the TRVZB does not have", () => {
+      it("throws RangeError", () => {
+        expect(() => binding.encode({ active_group: 3 })).toThrow(RangeError);
       });
     });
   });

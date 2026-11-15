@@ -69,12 +69,13 @@ describe("profiles index", () => {
         }
       });
       it("encode, encodeSetpoint, encodeTemperature and encodeRefresh never return the mode key", () => {
-        for (const { profile, transport } of ALL_SPECS) {
+        for (const { profile, transport, spec } of ALL_SPECS) {
+          const hasActive = spec.groups.some((g) => g.group === "active_group");
           const b = profile.bindings[transport];
           const messages = [
             b?.encode({
               sensor_source: "internal",
-              active_group: 3,
+              ...(hasActive ? { active_group: 3 } : {}),
               day_mon: [{ time: Temporal.PlainTime.from("07:00"), temperature: 19 }],
             }),
             b?.encodeSetpoint(20),
@@ -109,31 +110,31 @@ describe("profiles index", () => {
       it("throws", () => {
         expect(() => {
           validateProfile(withSpec({ scheduleGroup: undefined }));
-        }).toThrow();
+        }).toThrow(/active_group needs a schedule group/);
       });
     });
     describe("With active_group listed before schedule", () => {
       it("throws", () => {
         expect(() => {
           validateProfile(withSpec({ groups: [...spec.groups].reverse() }));
-        }).toThrow();
+        }).toThrow(/schedule must come before active_group/);
       });
     });
     describe("With a spec whose profile is not the key, or that has no binding", () => {
       it("throws", () => {
         expect(() => {
           validateProfile(withSpec({ profile: "other" }));
-        }).toThrow();
+        }).toThrow(/spec.profile is not the key/);
         expect(() => {
           validateProfile({ ...base, bindings: {} });
-        }).toThrow();
+        }).toThrow(/no binding/);
       });
     });
     describe("With sensor_source and no external sensor", () => {
       it("throws", () => {
         expect(() => {
           validateProfile(withSpec({ externalSensor: false }));
-        }).toThrow();
+        }).toThrow(/sensor_source needs an external sensor/);
       });
     });
   });

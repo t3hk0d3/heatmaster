@@ -3,7 +3,7 @@ import { normalizeDay } from "../schedule.ts";
 import { DAY_KEYS, EMPTY_READINGS } from "../settings.ts";
 import type { Weekday } from "../model.ts";
 import type { ResolvedDay, ResolvedPoint } from "../schedule.ts";
-import type { Readings, SensorSource, SettingKey, SettingValue } from "../settings.ts";
+import type { GroupSpec, Readings, SensorSource, SettingKey, SettingValue } from "../settings.ts";
 
 const ENTRY = /^(\d{1,2}):(\d{2})\/(-?\d+(?:\.\d+)?)$/;
 
@@ -78,8 +78,26 @@ const SOURCE_TO_SELECT: Readonly<Record<SensorSource, string>> = {
   external: "remote_temperature",
 };
 
-export function selectOption(source: SensorSource): string {
+/** The select option of a sensor source. Throws `RangeError` for anything else. */
+export function selectOption(source: unknown): string {
+  if (source !== "internal" && source !== "external") throw new RangeError("unknown sensor source");
   return SOURCE_TO_SELECT[source];
+}
+
+/** A group number to write: an integer 1-3. Throws `RangeError` for anything else. */
+export function checkGroup(value: unknown): number {
+  const n = parseGroup(value);
+  if (typeof value !== "number" || n === undefined) throw new RangeError("unknown schedule group");
+  return n;
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/** A group of a spec; every group is trusted for 24 h before it is marked again. */
+export function groupSpec(
+  spec: Pick<GroupSpec, "group" | "evidence" | "capture" | "readable">,
+): GroupSpec {
+  return { ...spec, maxAgeMs: 24 * HOUR_MS };
 }
 
 function finite(value: unknown): number | undefined {
@@ -97,8 +115,7 @@ function readings(payload: Readonly<Record<string, unknown>>, editGroup: number 
   const running = payload.running_state;
   const select = payload[Z2M_KEYS.select];
   let feedLost: boolean | undefined;
-  if (typeof select === "string" && Object.hasOwn(SELECT_TO_SOURCE, select))
-    feedLost = select === "remote_source_offline";
+  if (typeof select === "string") feedLost = select === "remote_source_offline";
   const out: Readings = {
     ...EMPTY_READINGS,
     mode: mode === "off" || mode === "auto" || mode === "heat" ? mode : undefined,

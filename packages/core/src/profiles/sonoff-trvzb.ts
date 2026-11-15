@@ -5,16 +5,11 @@ import {
   Z2M_KEYS,
   decodeCommon,
   encodeDay,
+  groupSpec,
   selectOption,
 } from "./sonoff-codec.ts";
 import type { Binding, Profile } from "./base.ts";
-import type { GroupSpec, ValveSpec } from "../settings.ts";
-
-const HOUR_MS = 60 * 60 * 1000;
-
-function group(spec: Pick<GroupSpec, "group" | "evidence" | "capture" | "readable">): GroupSpec {
-  return { ...spec, maxAgeMs: 24 * HOUR_MS };
-}
+import type { ValveSpec } from "../settings.ts";
 
 /** Sonoff TRVZB: one schedule of 6 slots, whose days cannot be read back; an external sensor. */
 export const TRVZB_SPEC: ValveSpec = {
@@ -26,8 +21,8 @@ export const TRVZB_SPEC: ValveSpec = {
   slotCount: 6,
   scheduleGroup: undefined,
   groups: [
-    group({ group: "schedule", evidence: "echoed", capture: false, readable: false }),
-    group({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "schedule", evidence: "echoed", capture: false, readable: false }),
+    groupSpec({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
   ],
   activation: "none",
   externalSensor: true,
@@ -45,8 +40,9 @@ export const TRVZB_BINDING: Binding = {
       if (Array.isArray(value))
         message[Z2M_DAY_PAYLOAD[day]] = encodeDay(value, TRVZB_SPEC.slotCount);
     }
+    if (values.active_group !== undefined) throw new RangeError("the TRVZB has no active group");
     if (values.sensor_source !== undefined)
-      message[Z2M_KEYS.select] = selectOption(values.sensor_source as "internal" | "external");
+      message[Z2M_KEYS.select] = selectOption(values.sensor_source);
     return message;
   },
   encodeSetpoint: (celsius) => ({ [Z2M_KEYS.setpoint]: celsius }),

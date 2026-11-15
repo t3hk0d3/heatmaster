@@ -66,6 +66,22 @@ describe("TRV-ZBT binding", () => {
         );
       });
     });
+    describe("With days and active_group 3 together", () => {
+      it("carries the group to edit first, then the days, then the active group, exactly", () => {
+        const message = binding.encode({ day_mon: DAY, active_group: 3 });
+        expect(Object.entries(message)).toEqual([
+          ["schedule_group_to_edit", "3"],
+          ["weekly_schedule_monday", `00:00/16 06:00/19 22:00/16${" 22:00/16".repeat(9)}`],
+          ["schedule_active_group", "3"],
+        ]);
+      });
+    });
+    describe("With an active_group outside 1-3 or an unknown sensor source", () => {
+      it("throws RangeError", () => {
+        expect(() => binding.encode({ active_group: 4 })).toThrow(RangeError);
+        expect(() => binding.encode({ sensor_source: "bogus" as "internal" })).toThrow(RangeError);
+      });
+    });
     describe("With active_group 3 alone", () => {
       it("the message carries the active group and no group to edit", () => {
         expect(binding.encode({ active_group: 3 })).toEqual({ schedule_active_group: "3" });
