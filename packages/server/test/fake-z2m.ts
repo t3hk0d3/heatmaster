@@ -110,14 +110,25 @@ export async function startFakeZ2m(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as net.AddressInfo).port;
 
+  // Aedes stores a retained message before it delivers it. A plain message published right after
+  // one was seen to get through while the retained ones before it never reached the client. Each
+  // publish waits for the one before it, as the messages of one Zigbee2MQTT process arrive in order.
+  let publishing: Promise<void> = Promise.resolve();
+
   function put(topic: string, payload: string, retain: boolean): void {
     if (retain) {
       if (payload === "") retained.delete(topic);
       else retained.set(topic, payload);
     }
-    aedes.publish({ cmd: "publish", qos: 0, dup: false, topic, payload, retain }, () => {
-      /* an in-process publish does not fail */
-    });
+    publishing = publishing.then(
+      () =>
+        new Promise<void>((resolve) => {
+          aedes.publish({ cmd: "publish", qos: 0, dup: false, topic, payload, retain }, () => {
+            // An in-process publish does not fail.
+            resolve();
+          });
+        }),
+    );
   }
 
   function publishInfo(): void {

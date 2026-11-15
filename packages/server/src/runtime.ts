@@ -1,0 +1,1311 @@
+/**
+ * The runtime: holds what is known, runs the core's tick and change functions, and executes the
+ * effects they return. It decides nothing about writes itself, with three exceptions written out
+ * below: the failed-send rule, the direct ask and the clock-jump rule.
+ */
+
+import {
+  ChangeRefused,
+  EMPTY_CONFIG,
+  EMPTY_MEMORY,
+  EMPTY_READINGS,
+  SETTING_KEYS,
+  VALVE_SILENT_AFTER_MS,
+  applyEvent,
+  configToRaw,
+  describeValue,
+  findProfile,
+  forgetValve as coreForgetValve,
+  ledgerToRaw,
+  liveness,
+  memberships,
+  newState,
+  planChange,
+  preview as previewWrites,
+  problemStoreWriteFailed,
+  restoreValve as coreRestoreValve,
+  sensorId,
+  storedToRaw,
+  tick,
+  transportOf,
+  validateConfig,
+  withHold,
+} from "@heatmaster/core";
+import type {
+  Binding,
+  ChangeOptions,
+  ChangePlan,
+  Config,
+  ConfigState,
+  Decoded,
+  DeviceState,
+  DeviceView,
+  Effect,
+  Event,
+  Group,
+  Inbox,
+  Ledger,
+  Liveness,
+  Membership,
+  Problem,
+  RoomStatus,
+  SensorInfo,
+  SensorReading,
+  SensorRef,
+  SettingKey,
+  StoredConfig,
+  ValveSpec,
+  World,
+} from "@heatmaster/core";
+import type { Clock } from "./clock.ts";
+import { HeatmasterError } from "./errors.ts";
+import type { HaLink } from "./ha-link.ts";
+import type { ConfigStore, LedgerStore } from "./stores.ts";
+import type { DeviceInfo, RawEvent, Transport } from "./transport.ts";
+
+const SECOND_MS = 1000;
+const MINUTE_MS = 60 * SECOND_MS;
+const HOUR_MS = 60 * MINUTE_MS;
+
+export const TICK_INTERVAL_MS = 30 * SECOND_MS;
+export const EVENT_DEBOUNCE_MS = 1 * SECOND_MS;
+export const DIRECT_ASK_SPACING_MS = 60 * SECOND_MS;
+export const DIRECT_ASK_WINDOW_MS = 1 * HOUR_MS;
+export const DIRECT_ASK_WINDOW_LIMIT = 6;
+export const CLOCK_JUMP_MS = 5 * MINUTE_MS;
+export const HA_LINK_KEY = "ha";
+
+const HA_PREFIX = "ha:";
+
+/** Where the runtime logs; main passes the Fastify logger. */
+export type RuntimeLog = Readonly<{
+  info(message: string, data?: Readonly<Record<string, unknown>>): void;
+  warn(message: string, data?: Readonly<Record<string, unknown>>): void;
+  error(message: string, data?: Readonly<Record<string, unknown>>): void;
+}>;
+
+export type RuntimeDeps = Readonly<{
+  configStore: ConfigStore;
+  ledgerStore: LedgerStore;
+  transports: Readonly<Record<string, Transport>>;
+  ha: HaLink | undefined;
+  clock: Clock;
+  processTimeZone: string;
+  log: RuntimeLog;
+}>;
+
+export type ApplyOptions = Readonly<{
+  expectedRevision: number | undefined;
+  acceptUnknownOriginals: readonly string[];
+  overwriteUnreadable: boolean;
+}>;
+
+export type RoomSnapshot = Readonly<{
+  roomId: string;
+  name: string;
+  areaId: string | undefined;
+  areaName: string | undefined;
+  valveIds: readonly string[];
+  sensorIds: readonly string[];
+  status: RoomStatus | undefined;
+}>;
+
+export type DeviceSnapshot = Readonly<{
+  deviceId: string;
+  transport: string;
+  name: string;
+  modelId: string;
+  manufacturer: string | undefined;
+  firmware: string | undefined;
+  supported: boolean;
+  membership: Membership | undefined;
+  liveness: Liveness;
+  observed: boolean;
+  heardAt: number | undefined;
+}>;
+
+export type UnassignedValve = Readonly<{
+  valveId: string;
+  name: string;
+  observed: boolean;
+  liveness: Liveness;
+  heardAt: number | undefined;
+  values: Readonly<Record<string, unknown>>;
+}>;
+
+export type SensorSnapshot = Readonly<{
+  sensorId: string;
+  ref: string;
+  name: string;
+  celsius: number | undefined;
+  seenAt: number | undefined;
+  pending: boolean;
+  unobservable: boolean;
+}>;
+
+export type Snapshot = Readonly<{
+  revision: number;
+  configState: ConfigState;
+  ledgerReadable: boolean;
+  originalsCopyRecords: number;
+  held: boolean;
+  language: "en" | "ru";
+  timeZone: string;
+  tickedAt: number | undefined;
+  rooms: readonly RoomSnapshot[];
+  problems: readonly Problem[];
+  memberships: Readonly<Record<string, Membership>>;
+  devices: readonly DeviceSnapshot[];
+  unassigned: readonly UnassignedValve[];
+  sensors: readonly SensorSnapshot[];
+  links: Readonly<Record<string, boolean>>;
+  transportFaults: Readonly<Record<string, string>>;
+}>;
+
+export type HeatmasterRuntime = Readonly<{
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  snapshot(): Snapshot;
+  subscribe(listener: (snapshot: Snapshot) => void): () => void;
+  apply(raw: unknown, options: ApplyOptions): Promise<ChangePlan>;
+  preview(raw: unknown, options: ApplyOptions): Promise<ChangePlan>;
+  exportConfig(): Readonly<{ revision: number; config: Readonly<Record<string, unknown>> }>;
+  resync(roomId: string | undefined): Promise<void>;
+  refreshValve(valveId: string): Promise<void>;
+  restoreValve(valveId: string): Promise<void>;
+  forgetValve(valveId: string): Promise<void>;
+  importOriginals(acceptEmpty: boolean): Promise<void>;
+  setHold(on: boolean): Promise<void>;
+  diagnostics(): Readonly<Record<string, unknown>>;
+  settled(): Promise<void>;
+}>;
+
+// ---- effects -------------------------------------------------------------------------------------
+
+export type EffectContext = Readonly<{
+  configStore: ConfigStore;
+  ledgerStore: LedgerStore;
+  transports: Readonly<Record<string, Transport>>;
+  bindingOf: (valveId: string) => Binding | undefined;
+  overwriteUnreadable: boolean;
+  onLedgerSaved: (ledger: Ledger) => void;
+  onConfigSaved: (stored: StoredConfig) => void;
+  onSent: (valveId: string, what: "refresh" | "publish") => void;
+}>;
+
+type StoreName = "config" | "ledger" | "copy";
+
+export type EffectOutcome = Readonly<{
+  error: unknown;
+  unsent: readonly string[];
+  unpushed: readonly string[];
+  stores: Readonly<Partial<Record<StoreName, boolean>>>;
+}>;
+
+/** A failure as one line of text for the log. */
+function errorText(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  return typeof error === "string" ? error : JSON.stringify(error);
+}
+
+/** Raises the first failure of an effect list, as it was raised. */
+function raise(outcome: EffectOutcome): void {
+  const error = outcome.error;
+  if (error === undefined) return;
+  if (error instanceof Error) throw error;
+  throw new Error(errorText(error));
+}
+
+function codeOf(error: unknown): string | undefined {
+  return error instanceof HeatmasterError ? error.code : undefined;
+}
+
+type ValveEffect = Extract<
+  Effect,
+  { kind: "publish" | "publishSetpoint" | "pushTemperature" | "refresh" }
+>;
+
+/** Sends one valve effect. Resolves true when something went out, false when there was nothing. */
+async function sendValveEffect(effect: ValveEffect, context: EffectContext): Promise<boolean> {
+  const binding = context.bindingOf(effect.valveId);
+  const key = transportOf(effect.valveId);
+  const transport = Object.hasOwn(context.transports, key) ? context.transports[key] : undefined;
+  if (binding === undefined || transport === undefined) {
+    throw new HeatmasterError("device_unknown", { deviceId: effect.valveId });
+  }
+  switch (effect.kind) {
+    case "publish":
+      await transport.publish(effect.valveId, binding.encode(effect.values));
+      return true;
+    case "publishSetpoint":
+      await transport.publish(effect.valveId, binding.encodeSetpoint(effect.celsius));
+      return true;
+    case "pushTemperature":
+      await transport.publish(effect.valveId, binding.encodeTemperature(effect.celsius));
+      return true;
+    case "refresh": {
+      const payload = binding.encodeRefresh();
+      if (payload === undefined) return false;
+      await transport.read(effect.valveId, payload);
+      return true;
+    }
+  }
+}
+
+/**
+ * Executes the effects in order, each awaited. A failed save, or a send that fails with
+ * `mqtt_not_connected`, drops the rest of the list; any other failure of a valve's effect skips
+ * that valve's remaining effects. Never rejects.
+ */
+export async function executeEffects(
+  effects: readonly Effect[],
+  context: EffectContext,
+): Promise<EffectOutcome> {
+  let error: unknown;
+  let failed = false;
+  let dropped = false;
+  const skipped = new Set<string>();
+  const unsent: string[] = [];
+  const unpushed: string[] = [];
+  const stores: Partial<Record<StoreName, boolean>> = {};
+
+  const fail = (cause: unknown): void => {
+    if (!failed) error = cause;
+    failed = true;
+  };
+  const notOut = (effect: ValveEffect): void => {
+    const list = effect.kind === "pushTemperature" ? unpushed : unsent;
+    if (!list.includes(effect.valveId)) list.push(effect.valveId);
+  };
+
+  for (const effect of effects) {
+    try {
+      switch (effect.kind) {
+        case "saveLedger":
+        case "writeOriginalsCopy":
+        case "saveConfig": {
+          if (dropped) continue;
+          const store: StoreName =
+            effect.kind === "saveLedger"
+              ? "ledger"
+              : effect.kind === "saveConfig"
+                ? "config"
+                : "copy";
+          try {
+            if (effect.kind === "saveLedger") await context.ledgerStore.save(effect.ledger);
+            else if (effect.kind === "writeOriginalsCopy") {
+              await context.ledgerStore.writeCopy(effect.ledger);
+            } else await context.configStore.save(effect.stored, context.overwriteUnreadable);
+          } catch (cause) {
+            stores[store] = false;
+            fail(cause);
+            dropped = true;
+            continue;
+          }
+          stores[store] = true;
+          if (effect.kind === "saveLedger") context.onLedgerSaved(effect.ledger);
+          if (effect.kind === "saveConfig") context.onConfigSaved(effect.stored);
+          break;
+        }
+        default: {
+          if (dropped || skipped.has(effect.valveId)) {
+            notOut(effect);
+            continue;
+          }
+          let went: boolean;
+          try {
+            went = await sendValveEffect(effect, context);
+          } catch (cause) {
+            fail(cause);
+            notOut(effect);
+            if (codeOf(cause) === "mqtt_not_connected") dropped = true;
+            else skipped.add(effect.valveId);
+            continue;
+          }
+          if (went && (effect.kind === "publish" || effect.kind === "refresh")) {
+            context.onSent(effect.valveId, effect.kind);
+          }
+        }
+      }
+    } catch (cause) {
+      // A callback threw: the effect went out, so it is not listed; the failure is reported.
+      fail(cause);
+    }
+  }
+  return { error, unsent, unpushed, stores };
+}
+
+// ---- the runtime ---------------------------------------------------------------------------------
+
+type Queued = Readonly<{ key: string; event: RawEvent; at: number }>;
+
+type TickRecord = Readonly<{
+  rooms: ReadonlyMap<string, RoomStatus>;
+  problems: readonly Problem[];
+  timeZone: string;
+  tickedAt: number;
+}>;
+
+type Profiled = Readonly<{ spec: ValveSpec; binding: Binding }>;
+
+const STORE_NAMES: readonly StoreName[] = ["config", "ledger", "copy"];
+
+function zoneAccepted(zone: string | undefined): zone is string {
+  if (zone === undefined || zone === "") return false;
+  try {
+    Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(zone);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function roomSensors(config: Config | undefined): readonly SensorRef[] {
+  const seen = new Set<string>();
+  const sensors: SensorRef[] = [];
+  for (const room of config?.rooms ?? []) {
+    for (const sensor of room.sensors) {
+      const id = sensorId(sensor);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      sensors.push(sensor);
+    }
+  }
+  return sensors;
+}
+
+function entityOf(ref: string): string | undefined {
+  return ref.startsWith(HA_PREFIX) ? ref.slice(HA_PREFIX.length) : undefined;
+}
+
+function sorted<T>(items: Iterable<T>, key: (item: T) => string): T[] {
+  return [...items].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+}
+
+function describeValues(state: DeviceState | undefined): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const key of SETTING_KEYS) {
+    const value = state?.values[key];
+    if (value !== undefined) values[key] = describeValue(key, value);
+  }
+  return values;
+}
+
+const NOTHING_DECODED: Decoded = { values: {}, readings: EMPTY_READINGS };
+
+export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
+  const { clock, log, ha } = deps;
+  const transports = deps.transports;
+  const keys = Object.keys(transports).sort();
+
+  let started = false;
+  let stopping = false;
+  let configState: ConfigState = "empty";
+  let stored: StoredConfig | undefined;
+  let ledger: Ledger | undefined;
+  let copyRecords = 0;
+  let forcedHold = false;
+  let inbox: Inbox = { states: new Map(), memory: EMPTY_MEMORY };
+  const lastPayloads = new Map<string, Readonly<Record<string, unknown>>>();
+  let followed = new Map<string, ReadonlySet<string>>();
+  const warnedTopics = new Set<string>();
+  let lastTick: TickRecord | undefined;
+  const storeFailed: Partial<Record<StoreName, boolean>> = {};
+  const directAsks = new Map<string, number[]>();
+  const listeners = new Set<(snapshot: Snapshot) => void>();
+
+  let cancelInterval: (() => void) | undefined;
+  let cancelDebounce: (() => void) | undefined;
+  let executing = false;
+  const queue: Queued[] = [];
+  let lastWall: number | undefined;
+  let lastMono: number | undefined;
+  let jumpSeenAt: number | undefined;
+
+  // The lock: one task at a time, in the order asked.
+  let tail: Promise<void> = Promise.resolve();
+  let busy = 0;
+  let tickQueued = false;
+  const idle: (() => void)[] = [];
+
+  function withLock<T>(task: () => Promise<T>): Promise<T> {
+    busy += 1;
+    const run = tail.then(task);
+    tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    void tail.then(() => {
+      busy -= 1;
+      if (busy === 0) for (const resolve of idle.splice(0)) resolve();
+    });
+    return run;
+  }
+
+  function notStarted(): HeatmasterError {
+    return new HeatmasterError("not_started");
+  }
+
+  /** Read through a function: `stop` may set it while `start` awaits. */
+  function isStopping(): boolean {
+    return stopping;
+  }
+
+  function requireStarted(): void {
+    if (!started || stopping) throw notStarted();
+  }
+
+  // ---- what is known --------------------------------------------------------------------------
+
+  function readableStored(): StoredConfig | undefined {
+    return configState === "ok" ? stored : undefined;
+  }
+
+  function currentMemberships(): ReadonlyMap<string, Membership> {
+    return memberships(configState, stored, ledger);
+  }
+
+  function listed(
+    deviceId: string,
+  ): Readonly<{ info: DeviceInfo; transport: Transport }> | undefined {
+    const key = transportOf(deviceId);
+    const transport = Object.hasOwn(transports, key) ? transports[key] : undefined;
+    const info = transport?.devices().get(deviceId);
+    return transport === undefined || info === undefined ? undefined : { info, transport };
+  }
+
+  function profileOf(deviceId: string): Profiled | undefined {
+    const found = listed(deviceId);
+    return found === undefined ? undefined : findProfile(found.info.modelId, found.transport.key);
+  }
+
+  function isFollowed(deviceId: string): boolean {
+    return followed.get(transportOf(deviceId))?.has(deviceId) === true;
+  }
+
+  /** Spec by valve id, for every followed device with a profile. */
+  function specs(): ReadonlyMap<string, ValveSpec> {
+    const map = new Map<string, ValveSpec>();
+    for (const ids of followed.values()) {
+      for (const id of ids) {
+        const profile = profileOf(id);
+        if (profile !== undefined) map.set(id, profile.spec);
+      }
+    }
+    return map;
+  }
+
+  function zone(): string {
+    const configured = readableStored()?.config.settings.timezone;
+    if (zoneAccepted(configured)) return configured;
+    const house = ha?.house()?.timeZone;
+    if (zoneAccepted(house)) return house;
+    return deps.processTimeZone;
+  }
+
+  function heldNow(): boolean {
+    return forcedHold || readableStored()?.config.settings.holdWrites === true;
+  }
+
+  /** The stored config as the world sees it: hold forced on after a failed `setHold(true)`. */
+  function worldStored(): StoredConfig | undefined {
+    if (stored === undefined || !forcedHold) return stored;
+    const settings = { ...stored.config.settings, holdWrites: true };
+    return { ...stored, config: { ...stored.config, settings } };
+  }
+
+  function linkStates(): Record<string, boolean> {
+    const links: Record<string, boolean> = {};
+    for (const key of keys) links[key] = transports[key]?.linkUp() === true;
+    if (ha !== undefined) links[HA_LINK_KEY] = ha.up();
+    return links;
+  }
+
+  function faults(): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const key of keys) {
+      const fault = transports[key]?.fault();
+      if (fault !== undefined) result[key] = fault;
+    }
+    return result;
+  }
+
+  type Readings = Readonly<{
+    sensors: ReadonlyMap<string, SensorReading>;
+    unobservable: ReadonlySet<string>;
+  }>;
+
+  /** One reading per sensor; see the task's table. Sensors are read through Home Assistant only. */
+  function readSensors(sensors: readonly SensorRef[], nowMs: number): Readings {
+    const readings = new Map<string, SensorReading>();
+    const unobservable = new Set<string>();
+    for (const sensor of sensors) {
+      const id = sensorId(sensor);
+      const entity = entityOf(sensor.ref);
+      const none = (pending: boolean): SensorReading => ({
+        sensorId: id,
+        value: undefined,
+        seenAt: undefined,
+        pending,
+      });
+      if (ha === undefined || entity === undefined) {
+        readings.set(id, none(false));
+        continue;
+      }
+      // While the link is down an old value must not be fed to a valve.
+      if (!ha.up()) {
+        readings.set(id, none(true));
+        continue;
+      }
+      const found = ha.sensor(entity);
+      if (found === undefined) {
+        readings.set(id, none(false));
+        continue;
+      }
+      if (!found.observable) {
+        unobservable.add(id);
+        readings.set(id, { sensorId: id, value: found.celsius, seenAt: nowMs, pending: false });
+        continue;
+      }
+      let seenAt = found.lastReportedAt;
+      // Home Assistant's stamps from before a clock jump are off by the same step.
+      if (seenAt !== undefined && jumpSeenAt !== undefined && seenAt < jumpSeenAt) {
+        seenAt = jumpSeenAt;
+      }
+      readings.set(id, { sensorId: id, value: found.celsius, seenAt, pending: false });
+    }
+    return { sensors: readings, unobservable };
+  }
+
+  function buildWorld(nowMs: number, extraSensors: readonly SensorRef[] = []): World {
+    const devices = new Map<string, DeviceView>();
+    for (const [key, ids] of followed) {
+      const transport = transports[key];
+      if (transport === undefined) continue;
+      const usable = transport.fault() === undefined;
+      for (const id of ids) {
+        const info = transport.devices().get(id);
+        if (info === undefined) continue;
+        devices.set(id, {
+          name: info.name,
+          spec: findProfile(info.modelId, key)?.spec,
+          usable,
+          state: inbox.states.get(id),
+        });
+      }
+    }
+    const readable = readableStored();
+    const { sensors, unobservable } = readSensors(
+      [...roomSensors(readable?.config), ...extraSensors],
+      nowMs,
+    );
+    return {
+      configState,
+      stored: worldStored(),
+      ledger,
+      devices,
+      links: linkStates(),
+      transportFaults: faults(),
+      sensors,
+      unobservableSensors: unobservable,
+      memory: inbox.memory,
+      now: Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(zone()),
+    };
+  }
+
+  // ---- following ------------------------------------------------------------------------------
+
+  /** Works out the devices to follow, tells each transport and the Home Assistant link. */
+  function refollow(): void {
+    const nowMs = clock.nowMs();
+    const kinds = currentMemberships();
+    const next = new Map<string, ReadonlySet<string>>();
+    for (const key of keys) {
+      const transport = transports[key];
+      if (transport === undefined) continue;
+      const ids = new Set<string>();
+      for (const info of transport.devices().values()) {
+        if (findProfile(info.modelId, key) === undefined) continue;
+        ids.add(info.deviceId);
+        if (/[+#]/.test(info.name) && !warnedTopics.has(`${info.deviceId}|${info.name}`)) {
+          warnedTopics.add(`${info.deviceId}|${info.name}`);
+          log.warn("a valve's name holds + or # and cannot be a topic; it is not followed", {
+            valveId: info.deviceId,
+            name: info.name,
+          });
+        }
+      }
+      for (const valveId of kinds.keys()) if (transportOf(valveId) === key) ids.add(valveId);
+      next.set(key, ids);
+    }
+    const before = followed;
+    followed = next;
+    let states = inbox.states;
+    const edit = (): Map<string, DeviceState> => {
+      if (states === inbox.states) states = new Map(inbox.states);
+      return states as Map<string, DeviceState>;
+    };
+    for (const ids of next.values()) {
+      for (const id of ids) if (!states.has(id)) edit().set(id, newState(nowMs));
+    }
+    // A followed device without a profile that is no longer followed loses its state.
+    for (const [key, ids] of before) {
+      for (const id of ids) {
+        if (next.get(key)?.has(id) === true || profileOf(id) !== undefined) continue;
+        edit().delete(id);
+        lastPayloads.delete(id);
+      }
+    }
+    if (states !== inbox.states) inbox = { ...inbox, states };
+    for (const key of keys) transports[key]?.follow(next.get(key) ?? new Set());
+    if (ha !== undefined) {
+      const entities = new Set<string>();
+      for (const sensor of roomSensors(readableStored()?.config)) {
+        const entity = entityOf(sensor.ref);
+        if (entity !== undefined) entities.add(entity);
+      }
+      ha.watch(entities);
+    }
+  }
+
+  // ---- events ---------------------------------------------------------------------------------
+
+  function applyCore(event: Event, nowMs: number): void {
+    inbox = applyEvent(inbox, event, specs(), nowMs);
+  }
+
+  function requestTick(): void {
+    if (!started || stopping || cancelDebounce !== undefined) return;
+    cancelDebounce = clock.after(EVENT_DEBOUNCE_MS, () => {
+      cancelDebounce = undefined;
+      queueTick();
+    });
+  }
+
+  function handleRaw(key: string, event: RawEvent, at: number): void {
+    switch (event.kind) {
+      case "message": {
+        if (!isFollowed(event.deviceId)) break;
+        const profile = profileOf(event.deviceId);
+        let decoded = NOTHING_DECODED;
+        if (profile === undefined) lastPayloads.set(event.deviceId, event.payload);
+        else decoded = profile.binding.decode(event.payload);
+        applyCore(
+          { kind: "device_message", deviceId: event.deviceId, decoded, lifeToken: event.lifeToken },
+          at,
+        );
+        break;
+      }
+      case "rejoined":
+        applyCore({ kind: "rejoined", deviceId: event.deviceId }, at);
+        break;
+      case "bridge_restarted":
+        applyCore({ kind: "bridge_restarted", transport: key }, at);
+        break;
+      case "link_up":
+        applyCore({ kind: "link_up", transport: key }, at);
+        break;
+      case "link_down":
+        break;
+      case "devices_changed":
+        refollow();
+        break;
+    }
+    requestTick();
+  }
+
+  function onTransportEvent(key: string, event: RawEvent): void {
+    if (stopping) return;
+    const at = clock.nowMs();
+    if (executing) {
+      queue.push({ key, event, at });
+      return;
+    }
+    handleRaw(key, event, at);
+  }
+
+  // ---- ticks ----------------------------------------------------------------------------------
+
+  function cancelTimers(): void {
+    cancelInterval?.();
+    cancelInterval = undefined;
+    cancelDebounce?.();
+    cancelDebounce = undefined;
+  }
+
+  function queueTick(): void {
+    if (!started || stopping || tickQueued) return;
+    tickQueued = true;
+    void withLock(async () => {
+      tickQueued = false;
+      await runTick();
+    });
+  }
+
+  /** The clock-jump rule: a wall clock that moved unlike the monotonic one was set. */
+  function checkJump(nowMs: number): void {
+    const mono = clock.monoMs();
+    if (lastWall !== undefined && lastMono !== undefined) {
+      const drift = nowMs - lastWall - (mono - lastMono);
+      if (Math.abs(drift) > CLOCK_JUMP_MS) {
+        log.warn("the wall clock was set; every link counts as new", { driftMs: drift });
+        jumpSeenAt = nowMs;
+        for (const key of keys) applyCore({ kind: "link_up", transport: key }, nowMs);
+      }
+    }
+    lastWall = nowMs;
+    lastMono = mono;
+  }
+
+  function effectContext(overwriteUnreadable: boolean): EffectContext {
+    return {
+      configStore: deps.configStore,
+      ledgerStore: deps.ledgerStore,
+      transports,
+      bindingOf: (valveId) => profileOf(valveId)?.binding,
+      overwriteUnreadable,
+      onLedgerSaved: (saved) => {
+        ledger = saved;
+      },
+      onConfigSaved: (saved) => {
+        stored = saved;
+        configState = "ok";
+      },
+      onSent: (valveId, what) => {
+        applyCore({ kind: "sent", valveId, what, at: clock.nowMs() }, clock.nowMs());
+      },
+    };
+  }
+
+  /** Executes effects; afterwards the failed-send rule, the stores' state and the queued events. */
+  async function execute(
+    effects: readonly Effect[],
+    overwriteUnreadable: boolean,
+  ): Promise<EffectOutcome> {
+    executing = true;
+    let outcome: EffectOutcome;
+    try {
+      outcome = await executeEffects(effects, effectContext(overwriteUnreadable));
+    } finally {
+      executing = false;
+    }
+    for (const name of STORE_NAMES) {
+      const result = outcome.stores[name];
+      if (result !== undefined) storeFailed[name] = !result;
+    }
+    if (outcome.stores.ledger === true || outcome.stores.copy === true) {
+      copyRecords = await deps.ledgerStore.copyRecords();
+    }
+    const nowMs = clock.nowMs();
+    if (outcome.error !== undefined) {
+      log.error("an effect failed", {
+        error: errorText(outcome.error),
+        unsent: outcome.unsent,
+        unpushed: outcome.unpushed,
+      });
+    }
+    if (outcome.unsent.length > 0) {
+      applyCore({ kind: "resync_requested", valveIds: new Set(outcome.unsent) }, nowMs);
+    }
+    for (const valveId of outcome.unpushed) applyCore({ kind: "push_failed", valveId }, nowMs);
+    for (const queued of queue.splice(0)) handleRaw(queued.key, queued.event, queued.at);
+    return outcome;
+  }
+
+  async function runTick(): Promise<void> {
+    if (!started || stopping) return;
+    const nowMs = clock.nowMs();
+    checkJump(nowMs);
+    const world = buildWorld(nowMs);
+    const result = tick(world);
+    inbox = { ...inbox, memory: result.memory };
+    lastTick = {
+      rooms: result.rooms,
+      problems: result.problems,
+      timeZone: world.now.timeZoneId,
+      tickedAt: nowMs,
+    };
+    const outcome = await execute(result.effects, false);
+    if (outcome.stores.config === true || outcome.stores.ledger === true) refollow();
+    notify();
+  }
+
+  function notify(): void {
+    const snapshot = makeSnapshot();
+    for (const listener of [...listeners]) {
+      try {
+        listener(snapshot);
+      } catch (error) {
+        log.error("a snapshot listener failed", { error: String(error) });
+      }
+    }
+  }
+
+  // ---- the direct ask -------------------------------------------------------------------------
+
+  /** A read a user triggered; see the task's direct-ask rule. */
+  async function directAsk(valveId: string): Promise<void> {
+    const found = listed(valveId);
+    if (found === undefined) throw new HeatmasterError("valve_unknown", { valveId });
+    const profile = findProfile(found.info.modelId, found.transport.key);
+    if (profile === undefined) throw new HeatmasterError("valve_unsupported", { valveId });
+    if (found.transport.fault() !== undefined || !found.transport.linkUp()) {
+      throw new HeatmasterError("transport_unusable", { valveId });
+    }
+    const nowMs = clock.nowMs();
+    const recent = (directAsks.get(valveId) ?? []).filter(
+      (at) => nowMs - at < DIRECT_ASK_WINDOW_MS && at <= nowMs,
+    );
+    const last = recent.at(-1);
+    if (
+      (last !== undefined && nowMs - last < DIRECT_ASK_SPACING_MS) ||
+      recent.length >= DIRECT_ASK_WINDOW_LIMIT
+    ) {
+      directAsks.set(valveId, recent);
+      log.warn("a direct ask was refused by its limit", { valveId });
+      throw new HeatmasterError("ask_limited", { valveId });
+    }
+    const payload = profile.binding.encodeRefresh();
+    if (payload === undefined) return;
+    directAsks.set(valveId, [...recent, nowMs]);
+    await found.transport.read(valveId, payload);
+  }
+
+  async function askQuietly(valveIds: readonly string[]): Promise<void> {
+    for (const valveId of valveIds) {
+      try {
+        await directAsk(valveId);
+      } catch (error) {
+        log.info("a direct ask was not sent", { valveId, error: String(error) });
+      }
+    }
+  }
+
+  // ---- changes --------------------------------------------------------------------------------
+
+  async function plan(raw: unknown, options: ApplyOptions, dryRun: boolean): Promise<ChangePlan> {
+    const config = validateConfig(raw);
+    const nowMs = clock.nowMs();
+    const world = buildWorld(nowMs, roomSensors(config));
+    const valveAddresses = new Set<string>();
+    for (const transport of Object.values(transports)) {
+      for (const info of transport.devices().values()) {
+        if (findProfile(info.modelId, transport.key) !== undefined)
+          valveAddresses.add(info.address);
+      }
+    }
+    const infos = new Map<string, SensorInfo>();
+    for (const sensor of roomSensors(config)) {
+      const entity = entityOf(sensor.ref);
+      infos.set(
+        sensorId(sensor),
+        ha === undefined || entity === undefined
+          ? { exists: false, isTemperature: false, onValve: false }
+          : ha.sensorInfo(entity, valveAddresses),
+      );
+    }
+    const changeOptions: ChangeOptions = {
+      expectedRevision: options.expectedRevision,
+      dryRun,
+      acceptUnknownOriginals: new Set(options.acceptUnknownOriginals),
+      overwriteUnreadable: options.overwriteUnreadable,
+      haLinked: ha?.ready() === true,
+    };
+    let result: ChangePlan;
+    try {
+      result = planChange(world, raw, changeOptions, infos);
+    } catch (error) {
+      if (error instanceof ChangeRefused && error.code === "valve_not_observed") {
+        await askQuietly((error.data.valveIds ?? "").split(",").filter((id) => id !== ""));
+      }
+      throw error;
+    }
+    if (result.joining.length > 0) await askQuietly(result.joining.map((c) => c.valveId));
+    return result;
+  }
+
+  /** Executes a change's effects, then follows again and ticks; raises a failure afterwards. */
+  async function carryOut(effects: readonly Effect[], overwriteUnreadable: boolean): Promise<void> {
+    const outcome = await execute(effects, overwriteUnreadable);
+    refollow();
+    await runTick();
+    raise(outcome);
+  }
+
+  // ---- snapshot -------------------------------------------------------------------------------
+
+  function deviceLiveness(deviceId: string, nowMs: number): Liveness {
+    const state = inbox.states.get(deviceId);
+    const transport = transports[transportOf(deviceId)];
+    if (state === undefined || transport?.linkUp() !== true) return "unknown";
+    return liveness(state, nowMs, VALVE_SILENT_AFTER_MS);
+  }
+
+  function storeProblems(): Problem[] {
+    return STORE_NAMES.filter((name) => storeFailed[name] === true).map((name) =>
+      problemStoreWriteFailed(name),
+    );
+  }
+
+  function makeSnapshot(): Snapshot {
+    const nowMs = clock.nowMs();
+    const readable = readableStored();
+    const kinds = currentMemberships();
+    const membershipRecord: Record<string, Membership> = {};
+    for (const [id, kind] of sorted(kinds, ([id]) => id)) membershipRecord[id] = kind;
+
+    const rooms: RoomSnapshot[] = (readable?.config.rooms ?? []).map((room) => ({
+      roomId: room.id,
+      name: room.name,
+      areaId: room.areaId,
+      areaName: room.areaId === undefined ? undefined : ha?.areaName(room.areaId),
+      valveIds: room.valves.map((v) => v.valveId),
+      sensorIds: room.sensors.map((s) => sensorId(s)),
+      status: lastTick?.rooms.get(room.id),
+    }));
+
+    const devices: DeviceSnapshot[] = [];
+    for (const key of keys) {
+      const transport = transports[key];
+      if (transport === undefined) continue;
+      for (const info of transport.devices().values()) {
+        const state = inbox.states.get(info.deviceId);
+        devices.push({
+          deviceId: info.deviceId,
+          transport: key,
+          name: info.name,
+          modelId: info.modelId,
+          manufacturer: info.manufacturer,
+          firmware: info.firmware,
+          supported: findProfile(info.modelId, key) !== undefined,
+          membership: kinds.get(info.deviceId),
+          liveness: deviceLiveness(info.deviceId, nowMs),
+          observed: state?.messageAt !== undefined,
+          heardAt: state?.heardAt,
+        });
+      }
+    }
+    devices.sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0));
+
+    const unassigned: UnassignedValve[] = [];
+    for (const device of devices) {
+      if (!device.supported || !isFollowed(device.deviceId)) continue;
+      if (device.membership !== undefined && device.membership !== "orphan") continue;
+      unassigned.push({
+        valveId: device.deviceId,
+        name: device.name,
+        observed: device.observed,
+        liveness: device.liveness,
+        heardAt: device.heardAt,
+        values: describeValues(inbox.states.get(device.deviceId)),
+      });
+    }
+
+    const refs = roomSensors(readable?.config);
+    const { sensors: readings, unobservable } = readSensors(refs, nowMs);
+    const sensors: SensorSnapshot[] = refs.map((sensor) => {
+      const id = sensorId(sensor);
+      const reading = readings.get(id);
+      const entity = entityOf(sensor.ref);
+      return {
+        sensorId: id,
+        ref: sensor.ref,
+        name: (entity === undefined ? undefined : ha?.entityName(entity)) ?? sensor.ref,
+        celsius: reading?.value,
+        seenAt: reading?.seenAt,
+        pending: reading?.pending === true,
+        unobservable: unobservable.has(id),
+      };
+    });
+
+    return {
+      revision: readable?.revision ?? 0,
+      configState,
+      ledgerReadable: ledger !== undefined,
+      originalsCopyRecords: copyRecords,
+      held: heldNow(),
+      language: readable?.config.settings.language ?? "en",
+      timeZone: lastTick?.timeZone ?? zone(),
+      tickedAt: lastTick?.tickedAt,
+      rooms,
+      problems: [...(lastTick?.problems ?? []), ...storeProblems()],
+      memberships: membershipRecord,
+      devices,
+      unassigned,
+      sensors,
+      links: linkStates(),
+      transportFaults: faults(),
+    };
+  }
+
+  // ---- diagnostics ----------------------------------------------------------------------------
+
+  function memoryDiagnostics(nowMs: number): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [valveId, vm] of sorted(inbox.memory.valves, ([id]) => id)) {
+      const marks: Record<string, unknown> = {};
+      const writes: Record<string, number> = {};
+      for (const [group, gm] of Object.entries(vm.groups) as [Group, (typeof vm.groups)[Group]][]) {
+        if (gm === undefined) continue;
+        if (gm.mark !== undefined) marks[group] = { ...gm.mark };
+        writes[group] = gm.writes.filter((w) => nowMs - w.at <= 24 * HOUR_MS).length;
+      }
+      result[valveId] = {
+        tokens: vm.tokens,
+        tokensAt: vm.tokensAt,
+        lastWriteAt: vm.lastWriteAt,
+        marks,
+        writes24h: writes,
+        asks: [...vm.asks],
+        lastPushAt: vm.lastPushAt,
+        feedValue: vm.feedValue,
+        feedAt: vm.feedAt,
+      };
+    }
+    return result;
+  }
+
+  function diagnostics(): Readonly<Record<string, unknown>> {
+    const nowMs = clock.nowMs();
+    const snapshot = makeSnapshot();
+    const devices: Record<string, unknown> = {};
+    for (const ids of followed.values()) {
+      for (const id of sorted(ids, (x) => x)) {
+        const found = listed(id);
+        const state = inbox.states.get(id);
+        devices[id] = {
+          info: found?.info,
+          liveness: deviceLiveness(id, nowMs),
+          heardAt: state?.heardAt,
+          messageAt: state?.messageAt,
+          values: describeValues(state),
+          readings: state === undefined ? undefined : { ...state.readings },
+          payload: lastPayloads.get(id),
+        };
+      }
+    }
+    const sensors: Record<string, unknown> = {};
+    for (const sensor of snapshot.sensors) {
+      sensors[sensor.sensorId] = { ...sensor };
+    }
+    let previewed: unknown;
+    try {
+      previewed = previewWrites(buildWorld(nowMs)).map((write) => ({
+        valveId: write.valveId,
+        values: Object.fromEntries(
+          Object.entries(write.values).map(([key, value]) => [
+            key,
+            describeValue(key as SettingKey, value),
+          ]),
+        ),
+        current: Object.fromEntries(
+          Object.entries(write.current).map(([key, value]) => [
+            key,
+            describeValue(key as SettingKey, value),
+          ]),
+        ),
+      }));
+    } catch (error) {
+      previewed = { error: String(error) };
+    }
+    const result = {
+      revision: snapshot.revision,
+      configState,
+      config: stored === undefined ? undefined : storedToRaw(stored),
+      ledger: ledger === undefined ? undefined : ledgerToRaw(ledger),
+      memberships: snapshot.memberships,
+      devices,
+      sensors,
+      memory: memoryDiagnostics(nowMs),
+      rooms: snapshot.rooms,
+      problems: snapshot.problems,
+      preview: previewed,
+      links: snapshot.links,
+      transports: keys.map((key) => ({
+        key,
+        fault: transports[key]?.fault(),
+        link: transports[key]?.linkUp() === true,
+      })),
+      ha:
+        ha === undefined ? undefined : { state: ha.state(), ready: ha.ready(), house: ha.house() },
+      timeZone: snapshot.timeZone,
+    };
+    // One plain JSON value: no undefined, no Map, nothing shared with the runtime's state.
+    return JSON.parse(JSON.stringify(result)) as Readonly<Record<string, unknown>>;
+  }
+
+  // ---- the public value -----------------------------------------------------------------------
+
+  return {
+    async start() {
+      if (started) return;
+      const loaded = await deps.configStore.load();
+      configState = loaded.state;
+      stored = loaded.stored;
+      const expected =
+        configState === "unreadable" ||
+        (stored !== undefined &&
+          (stored.config.rooms.some((room) => room.valves.length > 0) ||
+            stored.releasing.size > 0));
+      ledger = await deps.ledgerStore.load(expected);
+      copyRecords = await deps.ledgerStore.copyRecords();
+      started = true;
+      stopping = false;
+      // Nothing waits for Home Assistant or for a replay. After a restart a valve is left alone
+      // until its first message; the tick asks it to report. The feed gap this leaves is reasoned
+      // in docs/reviews/review6-safety.md, "Feed gap after a Heatmaster restart": with sensors
+      // through Home Assistant, a room is fresh as soon as the link is up and the sensor's newest
+      // report is under the 120-min staleness, so the gap is 30 min since the last heartbeat push
+      // plus the downtime plus the time until the valve answers.
+      ha?.start(() => {
+        requestTick();
+      });
+      for (const key of keys) {
+        await transports[key]?.start((event) => {
+          onTransportEvent(key, event);
+        });
+      }
+      refollow();
+      await withLock(runTick);
+      if (!isStopping()) {
+        cancelInterval = clock.every(TICK_INTERVAL_MS, () => {
+          queueTick();
+        });
+      }
+    },
+
+    async stop() {
+      if (!started || stopping) return;
+      stopping = true;
+      cancelTimers();
+      await withLock(() => Promise.resolve());
+      cancelTimers();
+      queue.length = 0;
+      await ha?.stop();
+      for (const key of keys) await transports[key]?.stop();
+      started = false;
+    },
+
+    snapshot: makeSnapshot,
+
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+
+    apply(raw, options) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const result = await plan(raw, options, false);
+        await carryOut(result.effects, options.overwriteUnreadable);
+        return result;
+      });
+    },
+
+    preview(raw, options) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        return plan(raw, options, true);
+      });
+    },
+
+    exportConfig() {
+      requireStarted();
+      if (configState === "unreadable" || (configState === "ok" && stored === undefined)) {
+        throw new HeatmasterError("config_unreadable");
+      }
+      if (stored === undefined) return { revision: 0, config: configToRaw(EMPTY_CONFIG) };
+      return { revision: stored.revision, config: configToRaw(stored.config) };
+    },
+
+    resync(roomId) {
+      // Thrown inside the executor, a failure becomes the rejection.
+      return new Promise<void>((resolve) => {
+        requireStarted();
+        let valveIds: string[];
+        if (roomId === undefined) {
+          valveIds = [...currentMemberships().keys()];
+        } else {
+          const room = readableStored()?.config.rooms.find((r) => r.id === roomId);
+          if (room === undefined) throw new HeatmasterError("room_unknown", { roomId });
+          valveIds = room.valves.map((v) => v.valveId);
+        }
+        applyCore({ kind: "resync_requested", valveIds: new Set(valveIds) }, clock.nowMs());
+        requestTick();
+        resolve();
+      });
+    },
+
+    async refreshValve(valveId) {
+      requireStarted();
+      await directAsk(valveId);
+    },
+
+    restoreValve(valveId) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const effects = coreRestoreValve(buildWorld(clock.nowMs()), valveId);
+        await carryOut(effects, false);
+      });
+    },
+
+    forgetValve(valveId) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const effects = coreForgetValve(buildWorld(clock.nowMs()), valveId);
+        await carryOut(effects, false);
+      });
+    },
+
+    importOriginals(acceptEmpty) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        ledger = await deps.ledgerStore.importCopy(acceptEmpty);
+        copyRecords = await deps.ledgerStore.copyRecords();
+        refollow();
+        await runTick();
+      });
+    },
+
+    setHold(on) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        if (configState === "unreadable" || (configState === "ok" && stored === undefined)) {
+          throw new HeatmasterError("config_unreadable");
+        }
+        if (stored === undefined) {
+          if (on) return;
+          throw new HeatmasterError("config_missing");
+        }
+        const next = withHold(stored, on);
+        if (next === stored) {
+          if (forcedHold) {
+            forcedHold = false;
+            await runTick();
+          }
+          return;
+        }
+        const outcome = await execute([{ kind: "saveConfig", stored: next }], false);
+        if (outcome.error === undefined) forcedHold = false;
+        else if (on) forcedHold = true;
+        await runTick();
+        raise(outcome);
+      });
+    },
+
+    diagnostics,
+
+    settled() {
+      if (busy === 0) return Promise.resolve();
+      return new Promise<void>((resolve) => idle.push(resolve));
+    },
+  };
+}

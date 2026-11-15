@@ -1,10 +1,39 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyBaseLogger } from "fastify";
 import pkg from "../package.json" with { type: "json" };
+import { systemClock, type Clock } from "./clock.ts";
+import { buildHaLink, type HaLog } from "./ha-link.ts";
+import { createMqttClient } from "./mqtt.ts";
 import { API_HOST, loadOptions, type Options } from "./options.ts";
+import { createRuntime, type HeatmasterRuntime, type RuntimeLog } from "./runtime.ts";
+import { createConfigStore, createLedgerStore } from "./stores.ts";
+import { buildTransports } from "./z2m.ts";
 
-export type Running = Readonly<{ stop(): Promise<void> }>;
+export type Running = Readonly<{ runtime: HeatmasterRuntime; stop(): Promise<void> }>;
 
-export async function start(options: Options, logger = true): Promise<Running> {
+/** The runtime's and the Home Assistant link's log lines go through Fastify's logger. */
+function runtimeLog(logger: FastifyBaseLogger): RuntimeLog & HaLog {
+  return {
+    info: (message, data) => {
+      logger.info(data ?? {}, message);
+    },
+    warn: (message, data) => {
+      logger.warn(data ?? {}, message);
+    },
+    error: (message, data) => {
+      logger.error(data ?? {}, message);
+    },
+  };
+}
+
+/**
+ * Starts the API, then the MQTT client, the transports, the Home Assistant link, the stores and
+ * the runtime. `logger` false silences Fastify's logger (tests).
+ */
+export async function start(
+  options: Options,
+  clock: Clock = systemClock,
+  logger = true,
+): Promise<Running> {
   const app = Fastify({ logger });
   app.get("/api/health", () => ({ status: "ok", version: pkg.version }));
   try {
@@ -13,9 +42,44 @@ export async function start(options: Options, logger = true): Promise<Running> {
     await app.close();
     throw error;
   }
+  const log = runtimeLog(app.log);
+  // The MQTT client and the Zigbee2MQTT transport take no logger; they write to console.error.
+  const mqtt = createMqttClient(options.mqtt, clock);
+  const runtime = createRuntime({
+    configStore: createConfigStore(options.dataDir, clock),
+    ledgerStore: createLedgerStore(
+      { dataDir: options.dataDir, publicDir: options.publicDir },
+      clock,
+      pkg.version,
+    ),
+    transports: buildTransports(mqtt, options.z2m),
+    ha: buildHaLink(options.ha, clock, log),
+    clock,
+    processTimeZone: Temporal.Now.timeZoneId(),
+    log,
+  });
+  const shutdown = async (): Promise<void> => {
+    try {
+      await runtime.stop();
+    } finally {
+      try {
+        await mqtt.end();
+      } finally {
+        await app.close();
+      }
+    }
+  };
+  try {
+    await mqtt.connect();
+    await runtime.start();
+  } catch (error) {
+    await shutdown();
+    throw error;
+  }
   let stopping: Promise<void> | undefined;
   return {
-    stop: () => (stopping ??= app.close()),
+    runtime,
+    stop: () => (stopping ??= shutdown()),
   };
 }
 
@@ -40,6 +104,8 @@ async function run(): Promise<void> {
           console.error(error);
           process.exit(1);
         }
+        // Exit, do not wait: the Home Assistant library's reconnect timer (up to 5 s) and its
+        // connect time-out outlive the link's stop.
         process.exit(0);
       },
       () => {
