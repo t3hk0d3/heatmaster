@@ -36,3 +36,49 @@ export type {
   ResolvedWeek,
 } from "./schedule.ts";
 export { roundHalfUp } from "./rounding.ts";
+export {
+  DAY_KEYS,
+  EMPTY_READINGS,
+  GROUPS,
+  SETTING_KEYS,
+  describeValue,
+  groupOf,
+  members,
+  mergeReadings,
+  valueKey,
+  valuesEqual,
+} from "./settings.ts";
+export type {
+  Activation,
+  Evidence,
+  Group,
+  GroupSpec,
+  Readings,
+  SensorSource,
+  SettingKey,
+  SettingValue,
+  SettingValues,
+  ValveMode,
+  ValveSpec,
+} from "./settings.ts";
+export { VALVE_SILENT_AFTER_MS, liveness, newState, onLinkUp, onMessage } from "./observation.ts";
+export type { Decoded, DeviceState, Liveness } from "./observation.ts";
+export {
+  EMPTY_LEDGER,
+  LedgerError,
+  ledgerFromRaw,
+  ledgerToRaw,
+  memberships,
+  storedFromRaw,
+  storedToRaw,
+  withRecord,
+  withoutRecord,
+} from "./ledger.ts";
+export type {
+  ConfigState,
+  Ledger,
+  Membership,
+  ReleasedRecord,
+  StoredConfig,
+  ValveRecord,
+} from "./ledger.ts";
