@@ -176,3 +176,18 @@ export {
   transportUsable,
 } from "./control.ts";
 export type { DeviceView, Effect, PlannedWrite, Selection, TickResult, World } from "./control.ts";
+export {
+  ChangeRefused,
+  capture,
+  forgetValve,
+  planChange,
+  restoreValve,
+  withHold,
+} from "./change.ts";
+export type {
+  Capture,
+  ChangeOptions,
+  ChangePlan,
+  ChangeRefusedCode,
+  SensorInfo,
+} from "./change.ts";
