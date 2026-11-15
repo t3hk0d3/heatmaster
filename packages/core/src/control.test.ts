@@ -2041,6 +2041,14 @@ describe("control", () => {
         expect(saves(tick(heldFifteen()))).toHaveLength(3);
       });
     });
+    describe("With everything equal for 15 min but the link down", () => {
+      it("nothing is saved and the hold starts again", () => {
+        const down = { ...heldFifteen(), links: { z2m: false } };
+        const result = tick(down);
+        expect(saves(result)).toEqual([]);
+        expect(vmOf(result).equalSince).toBeUndefined();
+      });
+    });
     describe("With a value changing back during the hold", () => {
       const world = releasedEqual();
       const first = tick(world);

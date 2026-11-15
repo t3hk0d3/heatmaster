@@ -483,7 +483,8 @@ function runValve(
 
   let finished = false;
   if (kind === "releasing") {
-    const settled = cands.length === 0 && !markedDesired;
+    // The hold counts only while the valve can be observed: a link that is down hides changes.
+    const settled = canRead && cands.length === 0 && !markedDesired;
     const equalSince = settled ? (vm.equalSince ?? nowMs) : undefined;
     vm = { ...vm, equalSince };
     const holdPassed = equalSince !== undefined && nowMs - equalSince >= RELEASE_HOLD_MS;

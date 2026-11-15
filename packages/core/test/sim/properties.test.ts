@@ -1,7 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
-  BACKOFF_MS,
   BUCKET,
   configToRaw,
   START_TOKENS,
@@ -74,6 +73,8 @@ type Id = (typeof IDS)[number];
 
 type Report = ReadonlyMap<Id, readonly string[]>;
 
+/** The brief's waits between refreshes of a valve that is not heard: 2 min, 10 min, 1 h, 6 h. */
+const REFRESH_BACKOFF_MIN = [2, 10, 60, 360];
 const DAY_WINDOW_MS = 24 * HOUR_MS;
 const VALVE_EFFECTS = new Set(["publish", "publishSetpoint", "pushTemperature", "refresh"]);
 
@@ -106,7 +107,7 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
   const spent = new Map<string, number[]>();
   const pushes = new Map<string, { at: number; inc: number }[]>();
   const asks = new Map<string, number[]>();
-  const heard = new Map<string, number | undefined>();
+  const newest = new Map<string, string>();
   const incSeen = new Map<string, number>();
   const epochs = new Map<string, { inc: number; key: string | undefined; run: number }>();
   const publishes = new Map<string, number[]>();
@@ -133,10 +134,14 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
         incSeen.set(valveId, inc);
         reset.add(valveId);
       }
-      const at = world.devices.get(valveId)?.state?.heardAt;
-      const before = heard.get(valveId);
-      if (at !== undefined && (before === undefined || at > before)) reset.add(valveId);
-      heard.set(valveId, at);
+      // Heard means the valve spoke: a message with a last_seen newer than every one before. A
+      // replay or an echo carries an old one. This does not use the core's own idea of heard.
+      const token = world.devices.get(valveId)?.state?.lifeToken;
+      const before = newest.get(valveId);
+      if (token !== undefined && (before === undefined || token > before)) {
+        newest.set(valveId, token);
+        reset.add(valveId);
+      }
     }
     for (const valveId of reset) asks.set(valveId, []);
 
@@ -220,7 +225,7 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
         const list = asks.get(valveId) ?? [];
         const last = list.at(-1);
         if (last !== undefined) {
-          const wait = BACKOFF_MS[Math.min(list.length, BACKOFF_MS.length) - 1] ?? 0;
+          const wait = (REFRESH_BACKOFF_MIN[Math.min(list.length, 4) - 1] ?? 0) * MINUTE_MS;
           if (at - last < wait) {
             found(
               "budget.refreshBackoff",
@@ -293,7 +298,10 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
       const join = rig.joins.find(
         (j) => j.valveId === record.valveId && j.adoptedAt === record.adoptedAt,
       );
-      if (join === undefined) continue;
+      if (join === undefined) {
+        found("originals.cache", `${key} is a record that no join of a config change made`);
+        continue;
+      }
       for (const [k, original] of Object.entries(record.originals)) {
         if (!sameValue(join.cache[k as SettingKey], original)) {
           found(
@@ -517,9 +525,10 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
       propertyTest("a ledger entry never changes once written", ["originals.immutable"]);
     });
     describe("After a release finished", () => {
-      propertyTest("the bridge's cache holds the record's originals for the captured settings", [
-        "release.cache",
-      ]);
+      propertyTest(
+        "the bridge's cache holds the record's originals for the captured settings (unknown originals aside)",
+        ["release.cache"],
+      );
       propertyTest(
         "in a plan with no battery swap the valve's true sensor source and active group equal them too",
         ["release.truth"],
@@ -531,7 +540,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
   describe("intent", () => {
     describe("At every moment", () => {
       propertyTest(
-        "no publish, setpoint write, temperature push or refresh reaches a valve that is not managed or releasing",
+        "no publish, setpoint write, temperature push or refresh reaches a valve that is not managed or releasing (the driver's own `get` after a valve_not_observed refusal aside)",
         ["intent.unmanaged"],
       );
       propertyTest(
@@ -570,39 +579,98 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
       trvzbSelect: "local_temperature",
       zbtSelect: "local_temperature",
       zbtGroup: 1,
+      intervalMin: 5,
     } as const;
     const nothingBroken = (report: Report): void => {
       for (const id of IDS) expect(report.get(id) ?? [], id).toEqual([]);
+    };
+    const waits = (hours: number): Fault[] =>
+      Array.from({ length: hours / 4 }, (): Fault => ({ k: "wait", seconds: 14400 }));
+    /** The most requests (refreshes, publishes, setpoint writes) in any 24 h window. */
+    const busiest = (rig: Rig, valveId: string): number => {
+      const times = rig.sim
+        .log()
+        .flatMap(({ at, effect }) =>
+          "valveId" in effect &&
+          effect.valveId === valveId &&
+          ["refresh", "publish", "publishSetpoint"].includes(effect.kind)
+            ? [at]
+            : [],
+        );
+      return Math.max(
+        0,
+        ...times.map((t) => times.filter((u) => u <= t && u > t - DAY_WINDOW_MS).length),
+      );
     };
 
     describe("With a TRV-ZBT that sleeps for two days after both valves were placed", () => {
       const plan: FaultPlan = {
         initial,
-        steps: [
-          { k: "sleep", valve: 1 },
-          ...Array.from({ length: 12 }, (): Fault => ({ k: "wait", seconds: 14400 })),
-        ],
+        steps: [...waits(4), { k: "sleep", valve: 1 }, { k: "bridgeRestart" }, ...waits(48)],
       };
-      it("it is asked with the backoff until it counts as silent, and every property holds", () => {
+      it("it is asked 2 min, 10 min and 1 h after the one before, then not any more once it is silent", () => {
         const { report, rig } = execute(plan);
         nothingBroken(report);
-        const asks = rig.sim.effectsOf(VALVE_IDS[1], "refresh");
-        expect(asks.length).toBeGreaterThanOrEqual(4);
+        const asks = rig.sim
+          .effectsOf(VALVE_IDS[1], "refresh")
+          .map((e) => e.at / 1000)
+          .filter((t) => t < 20 * 3600);
+        const first = asks.findIndex((t) => t >= 4 * 3600);
+        const gaps = asks
+          .slice(first)
+          .flatMap((t, i, all) => (i === 0 ? [] : [t - (all[i - 1] ?? 0)]));
+        expect(gaps).toHaveLength(3);
+        for (const [i, minutes] of [2, 10, 60].entries()) {
+          expect(gaps[i]).toBeGreaterThanOrEqual(minutes * 60);
+          expect(gaps[i]).toBeLessThan(minutes * 60 + 61);
+        }
       });
     });
 
-    describe("With a TRV-ZBT whose writes are all lost for a day", () => {
+    describe("With every write to the TRV-ZBT lost for a day after its week changed", () => {
       const plan: FaultPlan = {
         initial,
         steps: [
-          { k: "fate", valve: 1, on: "write", fate: "lose", delaySeconds: 0, count: 4 },
-          ...Array.from({ length: 6 }, (): Fault => ({ k: "wait", seconds: 14400 })),
+          { k: "fate", valve: 1, on: "write", fate: "lose", delaySeconds: 0, count: 500 },
+          { k: "edit", schedule: "alt", variant: 2 },
+          ...waits(24),
         ],
       };
-      it("it is written to no more than the budget allows, and every property holds", () => {
+      it("the week is sent at least once and at most 7 times in 24 h, and every property holds", () => {
         const { report, rig } = execute(plan);
         nothingBroken(report);
-        expect(rig.sim.effectsOf(VALVE_IDS[1], "publish").length).toBeGreaterThanOrEqual(1);
+        const weeks = rig.sim
+          .effectsOf(VALVE_IDS[1], "publish")
+          .filter((e) => e.at > 6 * 60 * 1000 && e.at <= 24 * HOUR_MS + 6 * 60 * 1000)
+          .filter((e) => e.effect.kind === "publish" && Object.hasOwn(e.effect.values, "day_mon"));
+        expect(weeks.length).toBeGreaterThanOrEqual(1);
+        expect(weeks.length).toBeLessThanOrEqual(7);
+      });
+    });
+
+    describe("With the schedules edited every 5 min for a day, so that only the tokens can stop the writes", () => {
+      const edits: Fault[] = [];
+      let dv = 0;
+      let av = 1;
+      for (let i = 0; i < 288; i++) {
+        if (i % 2 === 0) {
+          dv = (dv + 1) % 3;
+          edits.push({ k: "edit", schedule: "default", variant: dv as 0 | 1 | 2 });
+        } else {
+          av = (av + 1) % 3;
+          edits.push({ k: "edit", schedule: "alt", variant: av as 0 | 1 | 2 });
+        }
+        edits.push({ k: "wait", seconds: 300 });
+      }
+      const plan: FaultPlan = { initial, steps: edits };
+      it("a valve gets about the bucket and its refills in 24 h, never more, and every property holds", () => {
+        const { report, rig } = execute(plan);
+        nothingBroken(report);
+        for (const valveId of VALVE_IDS) {
+          const most = busiest(rig, valveId);
+          expect(most).toBeGreaterThanOrEqual(BUCKET + 40);
+          expect(most).toBeLessThanOrEqual(BUCKET + 48 + START_TOKENS);
+        }
       });
     });
   });

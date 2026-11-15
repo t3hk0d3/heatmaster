@@ -1353,6 +1353,39 @@ describe("scenarios", () => {
       });
     });
 
+    describe("crashAfterEffects in a config change", () => {
+      it("cuts the join's effects after the ledger and loses the config", () => {
+        const built = build({
+          rooms: [{ id: "r1", valves: [[A, "trvzb"]] }],
+          extra: [[B, "trvzb"]],
+        });
+        const { sim, config } = built;
+        sim.runTo(5 * MINUTE_MS);
+        sim.valve(valveIdOf(B)).person({}, sim.now());
+        sim.step(STEP_MS);
+        const joined = copyOfRooms(config, [
+          simRoom("r1", [valveIdOf(A), valveIdOf(B)], [sensorRef("r1")]),
+        ]);
+        sim.crashAfterEffects(1);
+        expect(sim.planChange(configToRaw(joined)).ok).toBe(true);
+        const ledgerFile = sim.disk().ledger;
+        expect(ledgerFile.state === "ok" && ledgerFile.ledger.records.has(valveIdOf(B))).toBe(true);
+        const file = sim.disk().config;
+        expect(file.state === "ok" && file.stored.config.rooms[0]?.valves).toHaveLength(1);
+        expect(sim.memory().valves.size).toBe(0);
+        expect(sim.log().filter((e) => e.effect.kind === "saveConfig")).toHaveLength(0);
+      });
+      it("stays armed while a change has fewer effects", () => {
+        const built = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }] });
+        const { sim, config } = built;
+        sim.runTo(5 * MINUTE_MS);
+        sim.crashAfterEffects(2);
+        expect(sim.planChange(configToRaw(config)).ok).toBe(true);
+        expect(sim.memory().valves.size).toBe(1);
+        expect(sim.log().filter((e) => e.effect.kind === "saveConfig")).toHaveLength(1);
+      });
+    });
+
     describe("crashAfterEffects", () => {
       it("is disarmed by undefined", () => {
         const { sim } = one();

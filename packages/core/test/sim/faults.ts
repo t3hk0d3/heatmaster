@@ -110,13 +110,16 @@ export type Fault =
     }>
   | Readonly<{ k: "importCopy" }>
   | Readonly<{ k: "swap"; valve: Slot }>
-  | Readonly<{ k: "rejoin"; valve: Slot }>;
+  | Readonly<{ k: "rejoin"; valve: Slot }>
+  | Readonly<{ k: "sensor"; room: "a" | "b"; delta: number }>;
 
 /** What the two valves hold when Heatmaster first meets them. */
 export type Initial = Readonly<{
   trvzbSelect: SelectValue;
   zbtSelect: SelectValue;
   zbtGroup: 1 | 2 | 3;
+  /** The configured temperature write interval, in minutes (1 to 60). */
+  intervalMin: number;
 }>;
 
 export type FaultPlan = Readonly<{ initial: Initial; steps: readonly Fault[] }>;
@@ -128,6 +131,7 @@ const initial: fc.Arbitrary<Initial> = fc.record({
   trvzbSelect: fc.constantFrom<SelectValue>("local_temperature", "remote_temperature"),
   zbtSelect: fc.constantFrom<SelectValue>("local_temperature", "remote_temperature"),
   zbtGroup: fc.constantFrom<1 | 2 | 3>(1, 2, 3),
+  intervalMin: fc.constantFrom(1, 5, 5, 10, 30, 60),
 });
 
 const person: fc.Arbitrary<PersonKind> = fc.oneof(
@@ -159,7 +163,7 @@ function faultArbitrary(crashy: boolean): fc.Arbitrary<Fault> {
           on: fc.constantFrom<"write" | "read" | "any">("any", "write", "read"),
           fate: fc.constantFrom<"lose" | "queue" | "late">("lose", "queue", "late"),
           delaySeconds: fc.integer({ min: 0, max: LATE_LIMIT_MS / 1000 }),
-          count: fc.integer({ min: 1, max: 4 }),
+          count: fc.integer({ min: 1, max: 8 }),
         })
         .map((r): Fault => ({ k: "fate", ...r })),
     },
@@ -170,7 +174,7 @@ function faultArbitrary(crashy: boolean): fc.Arbitrary<Fault> {
     { weight: weight(2, 8), arbitrary: fc.constant<Fault>({ k: "restart" }) },
     {
       weight: weight(2, 8),
-      arbitrary: fc.integer({ min: 1, max: 3 }).map((after): Fault => ({ k: "crash", after })),
+      arbitrary: fc.integer({ min: 1, max: 6 }).map((after): Fault => ({ k: "crash", after })),
     },
     {
       weight: 3,
@@ -220,6 +224,15 @@ function faultArbitrary(crashy: boolean): fc.Arbitrary<Fault> {
     { weight: 3, arbitrary: fc.constant<Fault>({ k: "importCopy" }) },
     { weight: 1, arbitrary: slot.map((valve): Fault => ({ k: "swap", valve })) },
     { weight: 2, arbitrary: slot.map((valve): Fault => ({ k: "rejoin", valve })) },
+    {
+      weight: 6,
+      arbitrary: fc
+        .record({
+          room: fc.constantFrom<"a" | "b">("a", "b"),
+          delta: fc.constantFrom(-2, -0.5, -0.1, 0.1, 0.3, 1, 2),
+        })
+        .map((r): Fault => ({ k: "sensor", ...r })),
+    },
   );
 }
 
@@ -254,6 +267,8 @@ interface FaultState {
   competitors: [Competitor | undefined, Competitor | undefined];
   linkDown: boolean;
   haDown: boolean;
+  /** The rig's step, so that the observers also see the quiescence. */
+  step: ((dtMs: number) => void) | undefined;
 }
 
 const faultStates = new WeakMap<SimDriver, FaultState>();
@@ -317,6 +332,7 @@ export function modelConfig(
   placement: Placement,
   schedules: Readonly<Record<ScheduleName, Variant>>,
   hold: boolean,
+  intervalMs?: number,
 ): Config {
   // A room with no valve does not exist.
   const rooms: Room[] = ROOM_NAMES.map((name) =>
@@ -328,11 +344,14 @@ export function modelConfig(
   )
     .filter((r) => r.valves.length > 0)
     .map((r) => ({ ...r, scheduleId: r.id === "b" ? "alt" : "default" }));
-  return makeConfig({
+  const config = makeConfig({
     rooms,
     holdWrites: hold,
     schedules: [scheduleOf("default", schedules.default), scheduleOf("alt", schedules.alt)],
   });
+  return intervalMs === undefined
+    ? config
+    : { ...config, settings: { ...config.settings, externalWriteIntervalMs: intervalMs } };
 }
 
 /** The values a binding reads from a payload: the cache's, or what the valve would report. */
@@ -361,7 +380,9 @@ export function createRig(start: Initial): Rig {
   let placement: [RoomName | null, RoomName | null] = [null, null];
   let schedules: Record<ScheduleName, Variant> = { default: 0, alt: 1 };
   let hold = false;
-  const config = modelConfig(placement, schedules, hold);
+  const levels: Record<string, number> = { a: 20, b: 20 };
+  const intervalMs = start.intervalMin * MINUTE_MS;
+  const config = modelConfig(placement, schedules, hold, intervalMs);
   const sim = createSimDriver({
     config,
     ledger: { records: new Map(), released: [] },
@@ -374,6 +395,7 @@ export function createRig(start: Initial): Rig {
     competitors: [undefined, undefined],
     linkDown: false,
     haDown: false,
+    step: undefined,
   };
   faultStates.set(sim, state);
   const joins: Join[] = [];
@@ -397,7 +419,7 @@ export function createRig(start: Initial): Rig {
     sim.deliver();
     const cache = SLOTS.map((s) => decoded(sim, s, "cache"));
     const truth = SLOTS.map((s) => decoded(sim, s, "truth"));
-    const result = sim.planChange(configToRaw(modelConfig(placement, schedules, hold)));
+    const result = sim.planChange(configToRaw(modelConfig(placement, schedules, hold, intervalMs)));
     if (!result.ok) return;
     for (const taken of result.plan.joining) {
       const s: Slot = taken.valveId === VALVE_IDS[0] ? 0 : 1;
@@ -476,6 +498,8 @@ export function createRig(start: Initial): Rig {
     for (const observer of observers) observer(info);
   };
 
+  state.step = step;
+
   const advance = (ms: number, stepMs = STEP_MS): void => {
     const end = sim.elapsed() + ms;
     while (sim.elapsed() < end) step(Math.min(stepMs, end - sim.elapsed()));
@@ -504,12 +528,21 @@ export function createRig(start: Initial): Rig {
         advance(fault.seconds * 1000);
         return;
       case "fate":
-        state.fates[fault.valve].push({
-          on: fault.on,
-          fate: fault.fate,
-          delayMs: fault.delaySeconds * 1000,
-        });
+        for (let i = 0; i < fault.count; i++) {
+          state.fates[fault.valve].push({
+            on: fault.on,
+            fate: fault.fate,
+            delayMs: fault.delaySeconds * 1000,
+          });
+        }
         return;
+      case "sensor": {
+        const ref = sensorOf(fault.room);
+        const next = Math.min(28, Math.max(12, (levels[fault.room] ?? 20) + fault.delta));
+        levels[fault.room] = next;
+        sim.setSensor(ref, { value: next });
+        return;
+      }
       case "sleep":
         sim.valve(VALVE_IDS[fault.valve]).sleep();
         return;
@@ -626,7 +659,7 @@ export function createRig(start: Initial): Rig {
 
   return {
     sim,
-    model: () => modelConfig(placement, schedules, hold),
+    model: () => modelConfig(placement, schedules, hold, intervalMs),
     joins,
     onStep: (fn) => {
       observers.push(fn);
@@ -674,5 +707,10 @@ export function quiesce(sim: SimDriver): void {
       if (n !== "c") sim.setSensor(sensorOf(n), { pending: false });
     }
   }
-  sim.runTo(sim.elapsed() + longest + 26 * HOUR_MS, 60 * 1000);
+  const end = sim.elapsed() + longest + 26 * HOUR_MS;
+  const stepMs = 60 * 1000;
+  while (sim.elapsed() + stepMs <= end) {
+    if (state?.step === undefined) sim.step(stepMs);
+    else state.step(stepMs);
+  }
 }

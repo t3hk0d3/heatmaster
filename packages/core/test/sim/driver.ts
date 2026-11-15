@@ -418,8 +418,12 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     return info;
   };
 
+  /** A crash armed by `crashAfterEffects` also cuts a change's effects: the rest is lost. */
   const executeAll = (effects: readonly Effect[]): void => {
-    for (const effect of effects) execute(effect);
+    const limit = crashAfter !== undefined && effects.length >= crashAfter ? crashAfter : undefined;
+    if (limit !== undefined) crashAfter = undefined;
+    for (const effect of limit === undefined ? effects : effects.slice(0, limit)) execute(effect);
+    if (limit !== undefined) startApplication();
   };
 
   return {
