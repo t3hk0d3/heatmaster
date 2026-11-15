@@ -157,3 +157,5 @@ export type {
   SyncState,
   ValveStatus,
 } from "./status.ts";
+export { applyEvent } from "./events.ts";
+export type { Event, Inbox } from "./events.ts";
