@@ -31,6 +31,7 @@ import {
   migrateConfigFile,
   migrateCopyFile,
   migrateLedgerFile,
+  migratePacingFile,
 } from "./stores.ts";
 
 const FIXTURES = path.resolve(import.meta.dirname, "../test/fixtures/stores");
@@ -808,6 +809,21 @@ describe("migrations", () => {
 });
 
 describe("stores — pacing.json", () => {
+  describe("With the version 1 fixture", () => {
+    it("migrates unchanged and loads its stamps", async () => {
+      const w = world();
+      put(w.file("pacing.json"), fixtureText("pacing.v1.json"));
+      const file = JSON.parse(fixtureText("pacing.v1.json")) as Record<string, unknown>;
+      expect(migratePacingFile(file)).toEqual(file);
+      expect(() => migratePacingFile({ version: 2, valves: {} })).toThrow();
+      const loaded = await createPacingStore(w.dataDir).load();
+      expect(loaded.state).toBe("ok");
+      expect([...loaded.stamps]).toEqual([
+        ["z2m:0x00124b0012345678", 1_700_003_600_000],
+        ["z2m:0x00124b00abcdef01", 1_700_007_200_000],
+      ]);
+    });
+  });
   const STAMPS = new Map([
     ["z2m:a", START_MS + 3_600_000],
     ["z2m:b", START_MS + 7_200_000],

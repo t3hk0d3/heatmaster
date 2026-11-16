@@ -61,6 +61,7 @@ import type {
   SensorRef,
   SettingKey,
   StoredConfig,
+  TickResult,
   ValveSpec,
   World,
 } from "@heatmaster/core";
@@ -902,6 +903,16 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         next.set(valveId, Math.min(stamp, nowMs + BUCKET * REFILL_MS));
       }
     }
+    // After a file that could not be read the starting buckets are empty, and the file must say
+    // so for every configured valve, also those not listed yet: a rewrite as "all full" would
+    // fail open at the next restart.
+    if (buckets.fallback > nowMs) {
+      const emptyAt = Math.min(buckets.fallback, nowMs + BUCKET * REFILL_MS);
+      for (const [valveId, kind] of kinds) {
+        const configured = kind === "managed" || kind === "releasing" || kind === "frozen";
+        if (!next.has(valveId) && (configured || configState !== "ok")) next.set(valveId, emptyAt);
+      }
+    }
     return next;
   }
 
@@ -913,7 +924,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const next = pacingStamps(memory, nowMs);
     buckets = { stamps: next, fallback: buckets.fallback };
     const changed =
-      persisted === undefined ||
+      persisted?.size !== next.size ||
       [...next].some(([valveId, stamp]) => persisted?.get(valveId) !== stamp);
     if (!changed) return;
     try {
@@ -928,12 +939,42 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     }
   }
 
+  /**
+   * A save of the config made by `tick` holds the real config, not the one with the hold forced
+   * on after a failed `setHold(true)`: the forced hold is not the user's choice.
+   */
+  function withoutForcedHold(result: TickResult, worldConfig: Config | undefined): TickResult {
+    if (!forcedHold || stored === undefined) return result;
+    const effects = result.effects.map((effect) =>
+      effect.kind === "saveConfig" && effect.stored.config === worldConfig
+        ? { ...effect, stored: { ...effect.stored, config: stored?.config ?? worldConfig } }
+        : effect,
+    );
+    return { ...result, effects };
+  }
+
+  /**
+   * A release ordered after now was clamped by the tick. Kept here whether or not its save
+   * works, so that a failing save does not move the order forward at every tick.
+   */
+  function keepClamped(nowMs: number): void {
+    if (stored === undefined) return;
+    if (![...stored.releasing.values()].some((orderedAt) => orderedAt > nowMs)) return;
+    const releasing = new Map<string, number>();
+    for (const [valveId, orderedAt] of stored.releasing) {
+      releasing.set(valveId, Math.min(orderedAt, nowMs));
+    }
+    stored = { ...stored, releasing };
+  }
+
   async function runTick(): Promise<void> {
     if (!started || stopping) return;
     const nowMs = clock.nowMs();
     checkJump(nowMs);
     const world = buildWorld(nowMs);
-    const result = tick(world);
+    const given = tick(world);
+    const result = withoutForcedHold(given, world.stored?.config);
+    keepClamped(nowMs);
     inbox = { ...inbox, memory: result.memory };
     lastTick = {
       rooms: result.rooms,

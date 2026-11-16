@@ -2135,6 +2135,18 @@ describe("control", () => {
         expect(valveEffects(tick(future))).toEqual(valveEffects(tick(now)));
         expect(publishes(valveEffects(tick(future)))).toEqual([{ sensor_source: "internal" }]);
       });
+      it("the hold is counted from the clamped time: equal for 15 min, the release finishes", () => {
+        const world = released(equalWorld(), nowOf(equalWorld()) + HOUR_MS);
+        const t = nowOf(world);
+        const first = tick(world);
+        const save = first.effects.find((e) => e.kind === "saveConfig");
+        if (save?.kind !== "saveConfig") throw new Error("expected saveConfig");
+        const kept = { ...world, memory: first.memory, stored: save.stored };
+        const heardWorld = hear(kept, {}, t + MINUTE_MS);
+        const marked = updateVm(heardWorld, (vm) => mark(vm, ["schedule"], t + 2 * MINUTE_MS));
+        const result = tick(later(marked, RELEASE_HOLD_MS));
+        expect(kindsOf(saves(result))).toContain("saveLedger");
+      });
       it("release_stalled fires measured from the clamped time", () => {
         const save = configSaves(tick(future))[0];
         if (save?.kind !== "saveConfig") throw new Error("expected saveConfig");
@@ -2508,13 +2520,16 @@ describe("control", () => {
     });
     describe("With a valve that already has memory", () => {
       it("the stamps are not applied", () => {
+        const base = equalWorld();
+        const first = tick(base);
+        const held = vmOf(first);
+        expect(held.tokens).toBeGreaterThan(0);
         const world = {
-          ...equalWorld(),
-          buckets: { stamps: new Map(), fallback: nowOf(equalWorld()) + 99 * REFILL_MS },
+          ...base,
+          memory: first.memory,
+          buckets: { stamps: new Map(), fallback: nowOf(base) + BUCKET * REFILL_MS },
         };
-        const before = world.memory.valves.get(V);
-        const after = vmOf(tick(world));
-        expect(after.tokens).toBe(before?.tokens ?? after.tokens);
+        expect(vmOf(tick(world)).tokens).toBe(held.tokens);
       });
     });
   });

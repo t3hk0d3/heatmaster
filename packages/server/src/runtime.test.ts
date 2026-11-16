@@ -3225,6 +3225,37 @@ describe("runtime", () => {
       });
     });
 
+    describe("With an unreadable file and no device listed before the first tick", () => {
+      it("the file is rewritten with an empty bucket for every configured valve, so a restart stays empty", async () => {
+        const rig = await boot({
+          devices: [],
+          seed: { ...managedSeed([A]), pacing: "unreadable" },
+        });
+        expect(stampOf(rig)).toBe(T + BUCKET * REFILL_MS);
+        const again = await boot({ after: rig, devices: [trvzb(A)] });
+        await again.advance(REFILL_MS - MINUTE);
+        expect(again.z2m.attempts()).toEqual([]);
+        await again.advance(2 * MINUTE);
+        expect(requests(again)).toBe(1);
+      });
+    });
+
+    describe("With a file holding an entry of a valve that is gone and no bucket changing", () => {
+      it("the entry counts as a change: the file is rewritten without it", async () => {
+        const rig = await boot({
+          seed: {
+            ...managedSeed([A]),
+            pacing: { [A]: T + BUCKET * REFILL_MS, "z2m:0xgone": T + 3 * REFILL_MS },
+          },
+        });
+        expect(rig.stores.pacingSaves).toHaveLength(1);
+        const file = readJson(path.join(rig.dataDir, "pacing.json")) as {
+          valves: Record<string, unknown>;
+        };
+        expect(Object.keys(file.valves)).toEqual([A]);
+      });
+    });
+
     describe("With a stamp later than a whole empty bucket away", () => {
       it("it counts as an empty bucket: the first token comes after REFILL_MS", async () => {
         const rig = await boot({
@@ -3235,6 +3266,49 @@ describe("runtime", () => {
         await rig.advance(2 * MINUTE);
         expect(requests(rig)).toBe(1);
       });
+    });
+  });
+
+  describe("a hold forced after a failed setHold(true)", () => {
+    describe("With a release finishing while the hold is forced and the user has applied hold_writes false", () => {
+      it("the config tick saves keeps hold_writes false in config.json", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await hear(rig, [A]);
+        rig.stores.fail.config = 1;
+        await rejectionOf(rig.rt.setHold(true));
+        await rig.rt.apply(raw({ rooms: [] }), APPLY);
+        for (let minute = 0; minute < 20; minute++) {
+          rig.say(A, `a-r${String(minute)}`);
+          await rig.advance(MINUTE);
+        }
+        expect(
+          (readJson(path.join(rig.dataDir, "ledger.json")).data as { records: object }).records,
+        ).toEqual({});
+        expect(readJson(path.join(rig.dataDir, "config.json"))).toMatchObject({
+          data: { config: { settings: { hold_writes: false } } },
+        });
+        expect(rig.rt.snapshot().held).toBe(true);
+      });
+    });
+  });
+
+  describe("a release ordered in the future while config saves fail", () => {
+    it("release_stalled is measured from the first clamp, not from the latest tick", async () => {
+      const rig = await boot({
+        start: false,
+        seed: {
+          config: raw({ rooms: [] }),
+          releasing: { [A]: T + HOUR },
+          ledger: [record(A, "external")],
+        },
+      });
+      rig.stores.fail.config = 100_000;
+      await rig.rt.start();
+      await rig.rt.settled();
+      await rig.advance(6 * HOUR - MINUTE);
+      expect(problemKinds(rig.rt.snapshot())).not.toContain("release_stalled");
+      await rig.advance(2 * MINUTE);
+      expect(problemKinds(rig.rt.snapshot())).toContain("release_stalled");
     });
   });
 });

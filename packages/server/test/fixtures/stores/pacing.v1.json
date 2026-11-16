@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "valves": {
+    "z2m:0x00124b0012345678": { "bucketFullAt": 1700003600000 },
+    "z2m:0x00124b00abcdef01": { "bucketFullAt": 1700007200000 }
+  }
+}
