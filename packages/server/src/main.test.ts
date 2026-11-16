@@ -368,27 +368,22 @@ const NO_CHANGE = {
   overwriteUnreadable: false,
 };
 
-function weekOf(weekend: number): Record<string, unknown> {
-  const day = (temperature: number): unknown[] => [
-    { time: "00:00", temperature: 16 },
-    { time: "07:00", temperature },
+function weekOf(weekend: number): unknown[] {
+  const day = (temperature: number): Record<string, number> => ({
+    "00:00": 16,
+    "07:00": temperature,
+  });
+  return [
+    { days: "weekdays", temperature: day(20) },
+    { days: "weekend", temperature: day(weekend) },
   ];
-  return {
-    mon: day(20),
-    tue: day(20),
-    wed: day(20),
-    thu: day(20),
-    fri: day(20),
-    sat: day(weekend),
-    sun: day(weekend),
-  };
 }
 
 function houseConfig(rooms: boolean, weekend = 20): Record<string, unknown> {
   return {
-    version: 1,
+    version: 2,
     settings: { hold_writes: false, timezone: "Europe/Amsterdam" },
-    schedules: [{ id: "main", name: "Main", default_week: weekOf(weekend) }],
+    schedules: [{ id: "main", name: "Main", week: weekOf(weekend) }],
     rooms: rooms
       ? [
           {
@@ -1023,7 +1018,7 @@ const SETTING_KEYS_RAW = [
   "active_group",
   "sensor_source",
 ];
-const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const TIME_KEY = /^\d\d:\d\d$/;
 
 type Shape =
   | Readonly<{ fields: Readonly<Record<string, Shape>> }>
@@ -1037,7 +1032,9 @@ const RECORD_FIELDS: Readonly<Record<string, Shape>> = {
   originals: { mapOf: "leaf", keys: (key) => SETTING_KEYS_RAW.includes(key) },
 };
 const PRESETS: Shape = { fields: { comfort: "leaf", eco: "leaf", frost: "leaf", boost: "leaf" } };
-const SET_POINT: Shape = { fields: { time: "leaf", preset: "leaf", temperature: "leaf" } };
+const WEEK_BLOCK: Shape = {
+  fields: { days: "leaf", temperature: { mapOf: "leaf", keys: (key) => TIME_KEY.test(key) } },
+};
 const CONFIG_DOCUMENT: Shape = {
   fields: {
     version: "leaf",
@@ -1056,9 +1053,7 @@ const CONFIG_DOCUMENT: Shape = {
         fields: {
           id: "leaf",
           name: "leaf",
-          default_week: {
-            fields: Object.fromEntries(WEEKDAY_KEYS.map((d) => [d, { listOf: SET_POINT }])),
-          },
+          week: { listOf: WEEK_BLOCK },
         },
       },
     },

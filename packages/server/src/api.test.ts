@@ -68,7 +68,7 @@ function planOf(revision = 3): ChangePlan {
   };
 }
 
-const DOCUMENT = { version: 1, settings: { timezone: "Europe/Amsterdam" }, rooms: [] };
+const DOCUMENT = { version: 2, settings: { timezone: "Europe/Amsterdam" }, rooms: [] };
 
 type Stub = Readonly<{
   runtime: ApiRuntime;
@@ -518,7 +518,7 @@ describe("api", () => {
   describe("GET /api/config", () => {
     describe("With a stored config", () => {
       const config = {
-        version: 1,
+        version: 2,
         settings: { timezone: "Europe/Amsterdam", hold_writes: false },
         rooms: [{ id: "living", name: "Living", valves: [{ id: VALVE }] }],
       };
@@ -558,21 +558,21 @@ describe("api", () => {
       it('the times read back from the YAML text are still text such as "06:30"', async () => {
         const { app, stub: runtime } = await rig();
         const config = {
-          schedules: [{ default_week: { mon: [{ time: "06:30", temperature: 20 }] } }],
+          schedules: [{ week: [{ days: ["mon"], temperature: { "06:30": 20 } }] }],
         };
         runtime.exportConfig.mockReturnValue({ revision: 1, config });
         const body = (await app.inject({ method: "GET", url: "/api/config" })).json<{
           yaml: string;
         }>();
         const back = parse(body.yaml, { version: "1.2", schema: "core" }) as typeof config;
-        expect(back.schedules[0]?.default_week.mon[0]?.time).toBe("06:30");
+        expect(Object.keys(back.schedules[0]?.week[0]?.temperature ?? {})).toEqual(["06:30"]);
       });
     });
 
     describe("With a 21:00 set point and a room named off", () => {
       const config = {
         rooms: [{ id: "off", name: "off" }],
-        schedules: [{ default_week: { mon: [{ time: "21:00", temperature: 20 }] } }],
+        schedules: [{ week: [{ days: ["mon"], temperature: { "21:00": 20 } }] }],
       };
 
       it("the YAML text quotes both, and reads back equal under YAML 1.1 and 1.2 core", async () => {
@@ -626,7 +626,7 @@ describe("api", () => {
     describe("With the same document as YAML text", () => {
       it("preview receives an equal document", async () => {
         const { app, stub: runtime } = await rig();
-        const yaml = "version: 1\nsettings:\n  timezone: Europe/Amsterdam\nrooms: []\n";
+        const yaml = "version: 2\nsettings:\n  timezone: Europe/Amsterdam\nrooms: []\n";
         await post(app, "/api/config/preview", { yaml });
         expect(runtime.preview.mock.calls[0]?.[0]).toEqual(DOCUMENT);
       });
@@ -1206,21 +1206,13 @@ describe("api", () => {
     };
 
     const document = {
-      version: 1,
+      version: 2,
       settings: { hold_writes: true, timezone: "Europe/Amsterdam" },
       schedules: [
         {
           id: "main",
           name: "Main",
-          default_week: Object.fromEntries(
-            ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((day) => [
-              day,
-              [
-                { time: "00:00", temperature: 16 },
-                { time: "07:00", temperature: 20 },
-              ],
-            ]),
-          ),
+          week: [{ days: "all", temperature: { "00:00": 16, "07:00": 20 } }],
         },
       ],
       rooms: [
@@ -1307,6 +1299,18 @@ describe("api", () => {
         expect(planned.writes.length).toBeGreaterThan(0);
       });
 
+      it("POST /api/config/preview with a version 1 document is refused with the version issue", async () => {
+        const response = await post(world.app, "/api/config/preview", {
+          config: { ...document, version: 1 },
+        });
+        expect(response.statusCode).toBe(400);
+        const error = errorOf(response);
+        expect(error.code).toBe("config_invalid");
+        expect(error.data.issues).toEqual([
+          expect.objectContaining({ code: "version_unsupported", path: "version" }),
+        ]);
+      });
+
       it("POST /api/config with the same body answers applied true and revision 1", async () => {
         const response = await post(world.app, "/api/config", { config: document });
         expect(response.statusCode).toBe(200);
@@ -1329,11 +1333,18 @@ describe("api", () => {
         expect(exported.config).toMatchObject({
           settings: { timezone: "Europe/Amsterdam" },
           rooms: [{ id: "living", name: "Living", valves: [{ id: `z2m:${IEEE}` }] }],
-          schedules: [
-            { id: "main", name: "Main", default_week: document.schedules[0]?.default_week },
-          ],
+          schedules: [{ id: "main", name: "Main", week: document.schedules[0]?.week }],
         });
         expect(response.body).not.toContain("releasing");
+      });
+
+      it("GET /api/config shows the week as blocks of days under version 2 in the YAML text", async () => {
+        const response = await world.app.inject({ method: "GET", url: "/api/config" });
+        const { yaml } = response.json<{ yaml: string }>();
+        expect(yaml).toContain("version: 2");
+        expect(yaml).toContain("days: all");
+        expect(yaml).toContain('"07:00": 20');
+        expect(yaml).not.toContain("default_week");
       });
     });
   });

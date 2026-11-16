@@ -14,16 +14,23 @@ export type {
   Week,
   Weekday,
 } from "./model.ts";
-export { CONFIG_VERSION, configToRaw, migrateRaw, validateConfig } from "./validation.ts";
+export {
+  CONFIG_VERSION,
+  configToRaw,
+  migrateRaw,
+  upgradeRawV1,
+  validateConfig,
+} from "./validation.ts";
 export type {
   RawConfig,
+  RawDayPlan,
+  RawDays,
   RawPresets,
   RawRoom,
   RawSchedule,
   RawSensor,
-  RawSetPoint,
   RawSettings,
-  RawWeek,
+  RawWeekBlock,
 } from "./validation.ts";
 export { aggregate, freshness } from "./temperature.ts";
 export type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";

@@ -8,6 +8,7 @@ import {
   configToRaw,
   effectivePresets,
   migrateRaw,
+  upgradeRawV1,
   sensorId,
   validateConfig,
 } from "./index.ts";
@@ -65,15 +66,26 @@ function expectIssue(raw: unknown, code: string, path?: string): void {
 
 const ROOM = ["rooms", 0] as const;
 const SENSORS = [...ROOM, "sensors"] as const;
-const MON = ["schedules", 0, "default_week", "mon"] as const;
+const WEEK = ["schedules", 0, "week"] as const;
+const BLOCK = [...WEEK, 0] as const;
+const PLAN = [...BLOCK, "temperature"] as const;
+const DAYS = [...BLOCK, "days"] as const;
 
 function onlyRoom(edit: Record<string, unknown>): Record<string, unknown> {
   return patched([...ROOM], { ...(validRaw().rooms?.[0] as object), ...edit });
 }
 
-function withMon(day: unknown): Record<string, unknown> {
-  return patched([...MON], day);
+/** The valid document with the weekday block's day plan replaced. */
+function withPlan(plan: unknown): Record<string, unknown> {
+  return patched([...PLAN], plan);
 }
+
+/** The valid document with the whole week replaced. */
+function withWeek(blocks: unknown): Record<string, unknown> {
+  return patched([...WEEK], blocks);
+}
+
+const ECO = { "00:00": "eco" };
 
 function allPaths(value: unknown, prefix: Path = []): readonly Path[] {
   if (typeof value !== "object" || value === null) return [prefix];
@@ -88,9 +100,9 @@ function allPaths(value: unknown, prefix: Path = []): readonly Path[] {
 
 describe("validation", () => {
   describe("validateConfig", () => {
-    describe("On {version: 1} alone", () => {
+    describe("On {version: 2} alone", () => {
       it("returns a Config equal to EMPTY_CONFIG", () => {
-        expect(validateConfig({ version: 1 })).toEqual(EMPTY_CONFIG);
+        expect(validateConfig({ version: 2 })).toEqual(EMPTY_CONFIG);
       });
     });
 
@@ -124,7 +136,7 @@ describe("validation", () => {
 
       it('applies defaults: interval 300 000 ms, stale 7 200 000 ms, holdWrites true, language "en", timezone undefined, presets 20/17/7/23, sensor weight 1', () => {
         const raw = {
-          version: 1,
+          version: 2,
           schedules: validRaw().schedules,
           rooms: [
             {
@@ -194,7 +206,7 @@ describe("validation", () => {
     });
 
     describe("On a missing or unsupported version", () => {
-      it.each([{}, { version: 2 }, { version: "1" }, { version: null }, { version: 0 }])(
+      it.each([{}, { version: 3 }, { version: "2" }, { version: null }, { version: 0 }])(
         "throws ConfigError with code version_unsupported (%j)",
         (raw) => {
           expect(codesOf(raw)).toEqual(["version_unsupported"]);
@@ -208,8 +220,7 @@ describe("validation", () => {
         [["settings", "extra"], "settings.extra"],
         [["presets", "extra"], "presets.extra"],
         [["schedules", 0, "extra"], "schedules[0].extra"],
-        [["schedules", 0, "default_week", "extra"], "schedules[0].default_week.extra"],
-        [[...MON, 0, "extra"], "schedules[0].default_week.mon[0].extra"],
+        [[...BLOCK, "extra"], "schedules[0].week[0].extra"],
         [[...ROOM, "extra"], "rooms[0].extra"],
         [[...ROOM, "valves", 0, "extra"], "rooms[0].valves[0].extra"],
         [[...SENSORS, 0, "extra"], "rooms[0].sensors[0].extra"],
@@ -224,8 +235,9 @@ describe("validation", () => {
       it.each([
         [["schedules", 0, "id"], "schedules[0].id"],
         [["schedules", 0, "name"], "schedules[0].name"],
-        [["schedules", 0, "default_week"], "schedules[0].default_week"],
-        [[...MON, 0, "time"], "schedules[0].default_week.mon[0].time"],
+        [[...WEEK], "schedules[0].week"],
+        [[...DAYS], "schedules[0].week[0].days"],
+        [[...PLAN], "schedules[0].week[0].temperature"],
         [[...ROOM, "id"], "rooms[0].id"],
         [[...ROOM, "name"], "rooms[0].name"],
         [[...ROOM, "schedule_id"], "rooms[0].schedule_id"],
@@ -247,10 +259,10 @@ describe("validation", () => {
         ["a text in a preset", "presets.comfort"],
         ["schedules", "schedules"],
         ["a name", "schedules[0].name"],
-        ["a week", "schedules[0].default_week"],
-        ["a day", "schedules[0].default_week.mon"],
-        ["a set point", "schedules[0].default_week.mon[0]"],
-        ["a time", "schedules[0].default_week.mon[0].time"],
+        ["a week", "schedules[0].week"],
+        ["a block", "schedules[0].week[0]"],
+        ["days", "schedules[0].week[0].days"],
+        ["a day plan", "schedules[0].week[0].temperature"],
         ["rooms", "rooms"],
         ["a room id", "rooms[0].id"],
         ["an area", "rooms[0].area_id"],
@@ -284,78 +296,200 @@ describe("validation", () => {
       );
     });
 
-    describe("On a time that is not HH:MM", () => {
+    describe("On a day name or a plan value of the wrong type", () => {
+      it("throws type_invalid at that item", () => {
+        expectIssue(patched([...DAYS], [7]), "type_invalid", "schedules[0].week[0].days[0]");
+        expectIssue(
+          withPlan({ "00:00": true }),
+          "type_invalid",
+          "schedules[0].week[0].temperature.00:00",
+        );
+      });
+    });
+
+    describe("On a time key that is not HH:MM", () => {
       it.each(["7:00", "24:00", "07:60", "07:00:00", "0700", "", " 07:00"])(
         "throws ConfigError with code time_invalid (%j)",
         (time) => {
-          const raw = withMon([
-            { time: "00:00", preset: "eco" },
-            { time, preset: "comfort" },
-          ]);
-          expectIssue(raw, "time_invalid", "schedules[0].default_week.mon[1].time");
+          const raw = withPlan({ "00:00": "eco", [time]: "comfort" });
+          expectIssue(raw, "time_invalid", `schedules[0].week[0].temperature.${time}`);
         },
       );
     });
 
-    describe("On a set point with both preset and temperature, or neither", () => {
-      it("throws ConfigError with code set_point_ambiguous", () => {
-        expectIssue(
-          withMon([{ time: "00:00", preset: "eco", temperature: 18 }]),
-          "set_point_ambiguous",
-          "schedules[0].default_week.mon[0]",
-        );
-        expectIssue(
-          withMon([{ time: "00:00" }]),
-          "set_point_ambiguous",
-          "schedules[0].default_week.mon[0]",
-        );
+    describe("On an unquoted time key that YAML read as a number", () => {
+      it("throws time_invalid at that key and says to quote the time", () => {
+        const raw = withPlan({ "00:00": "eco", "420": 22 });
+        expectIssue(raw, "time_invalid", "schedules[0].week[0].temperature.420");
+        const issue = issuesOf(raw).find((i) => i.code === "time_invalid");
+        expect(issue?.message).toContain("quotes");
       });
     });
 
-    describe("On a day whose first set point is not 00:00", () => {
+    describe("On a plan without 00:00", () => {
       it("throws ConfigError with code first_set_point_not_midnight", () => {
         expectIssue(
-          withMon([{ time: "00:01", preset: "eco" }]),
+          withPlan({ "00:01": "eco" }),
           "first_set_point_not_midnight",
-          "schedules[0].default_week.mon[0].time",
+          "schedules[0].week[0].temperature.00:01",
         );
       });
     });
 
-    describe("On set point times not strictly ascending", () => {
-      it.each([
-        ["equal", "06:00", "06:00"],
-        ["descending", "06:00", "05:00"],
-      ])("throws ConfigError with code set_points_not_ascending (%s)", (_label, a, b) => {
-        const raw = withMon([
-          { time: "00:00", preset: "eco" },
-          { time: a, preset: "comfort" },
-          { time: b, preset: "eco" },
-        ]);
-        expectIssue(raw, "set_points_not_ascending", "schedules[0].default_week.mon[2].time");
+    describe("On times out of order in the file", () => {
+      it("sorts the set points by time", () => {
+        const config = validateConfig(
+          withPlan({ "22:00": 18, "00:00": "eco", "06:30": "comfort" }),
+        );
+        const times = config.schedules[0]?.defaultWeek.mon.map((p) => p.time.toString());
+        expect(times).toEqual(["00:00:00", "06:30:00", "22:00:00"]);
       });
     });
 
-    describe("On a day with 0 or 7 set points", () => {
+    describe("On a day plan with 0 or 7 set points", () => {
       it("throws ConfigError with code set_point_count", () => {
-        expectIssue(withMon([]), "set_point_count", "schedules[0].default_week.mon");
-        const seven = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00"].map(
-          (time) => ({
-            time,
-            preset: "eco",
-          }),
+        expectIssue(withPlan({}), "set_point_count", "schedules[0].week[0].temperature");
+        const seven = Object.fromEntries(
+          ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00"].map((t) => [t, "eco"]),
         );
-        expectIssue(withMon(seven), "set_point_count", "schedules[0].default_week.mon");
+        expectIssue(withPlan(seven), "set_point_count", "schedules[0].week[0].temperature");
       });
     });
 
-    describe("On a missing weekday", () => {
-      it("throws ConfigError with code day_missing", () => {
-        expectIssue(
-          removed(["schedules", 0, "default_week", "tue"]),
-          "day_missing",
-          "schedules[0].default_week.tue",
+    describe("On a week with blocks covering every day once", () => {
+      it("accepts it and gives each day its block's set points, sorted by time", () => {
+        const config = validateConfig(
+          withWeek([
+            { days: ["mon", "tue", "wed", "thu"], temperature: { "07:00": 20, "00:00": 16 } },
+            { days: ["fri", "sat", "sun"], temperature: ECO },
+          ]),
         );
+        const week = config.schedules[0]?.defaultWeek;
+        for (const day of ["mon", "tue", "wed", "thu"] as const) {
+          expect(week?.[day].map((p) => [p.time.toString(), p.temperature])).toEqual([
+            ["00:00:00", 16],
+            ["07:00:00", 20],
+          ]);
+        }
+        expect(week?.sun[0]?.preset).toBe("eco");
+      });
+    });
+
+    describe("On days: weekdays", () => {
+      it("gives mon to fri the block's set points", () => {
+        const week = validateConfig(validRaw()).schedules[0]?.defaultWeek;
+        for (const day of ["mon", "tue", "wed", "thu", "fri"] as const) {
+          expect(week?.[day]).toHaveLength(3);
+        }
+      });
+    });
+
+    describe("On days: weekend", () => {
+      it("gives sat and sun the block's set points", () => {
+        const week = validateConfig(validRaw()).schedules[0]?.defaultWeek;
+        expect(week?.sat.map((p) => p.preset)).toEqual(["eco"]);
+        expect(week?.sun.map((p) => p.preset)).toEqual(["eco"]);
+      });
+    });
+
+    describe("On days: all", () => {
+      it("gives every day the block's set points", () => {
+        const config = validateConfig(withWeek([{ days: "all", temperature: ECO }]));
+        const week = config.schedules[0]?.defaultWeek;
+        for (const day of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const) {
+          expect(week?.[day].map((p) => p.preset)).toEqual(["eco"]);
+        }
+      });
+    });
+
+    describe("On days: [all]", () => {
+      it("throws day_invalid at the list item", () => {
+        const rest = { days: ["tue", "wed", "thu", "fri", "sat", "sun"], temperature: ECO };
+        expectIssue(
+          withWeek([{ days: ["all"], temperature: ECO }, rest]),
+          "day_invalid",
+          "schedules[0].week[0].days[0]",
+        );
+      });
+    });
+
+    describe("On days: [weekdays, sat] and another block for sun", () => {
+      it("throws day_invalid at the list item", () => {
+        const raw = withWeek([
+          { days: ["weekdays", "sat"], temperature: ECO },
+          { days: ["sun"], temperature: ECO },
+        ]);
+        expectIssue(raw, "day_invalid", "schedules[0].week[0].days[0]");
+      });
+    });
+
+    describe("On days: mon (a bare day string)", () => {
+      it("throws day_invalid at days", () => {
+        const raw = withWeek([
+          { days: "mon", temperature: ECO },
+          { days: ["tue", "wed", "thu", "fri", "sat", "sun"], temperature: ECO },
+        ]);
+        expectIssue(raw, "day_invalid", "schedules[0].week[0].days");
+      });
+    });
+
+    describe("On an unknown day word", () => {
+      it("throws day_invalid at the list item", () => {
+        expectIssue(patched([...DAYS], ["funday"]), "day_invalid", "schedules[0].week[0].days[0]");
+      });
+    });
+
+    describe("On a day in two blocks", () => {
+      it("throws day_repeated at the later block's days", () => {
+        const raw = withWeek([
+          { days: "weekdays", temperature: ECO },
+          { days: ["fri", "sat", "sun"], temperature: ECO },
+        ]);
+        expectIssue(raw, "day_repeated", "schedules[0].week[1].days");
+      });
+    });
+
+    describe("On mon listed twice in one list", () => {
+      it("throws day_repeated at that block's days", () => {
+        const raw = withWeek([
+          { days: ["mon", "mon", "tue", "wed", "thu", "fri"], temperature: ECO },
+          { days: "weekend", temperature: ECO },
+        ]);
+        expectIssue(raw, "day_repeated", "schedules[0].week[0].days");
+      });
+    });
+
+    describe("On a weekday in no block", () => {
+      it("throws ConfigError with code day_missing at week", () => {
+        const raw = withWeek([
+          { days: ["mon", "tue", "thu", "fri"], temperature: ECO },
+          { days: "weekend", temperature: ECO },
+        ]);
+        expectIssue(raw, "day_missing", "schedules[0].week");
+        expect(issuesOf(raw).map((i) => i.message)).toContain('missing weekday "wed"');
+      });
+    });
+
+    describe("On an empty week or an empty days list", () => {
+      it("throws an issue at that path", () => {
+        expectIssue(withWeek([]), "week_empty", "schedules[0].week");
+        expectIssue(patched([...DAYS], []), "days_empty", "schedules[0].week[0].days");
+      });
+    });
+
+    describe("On a block key other than days and temperature", () => {
+      it("throws key_unknown at that key", () => {
+        expectIssue(patched([...BLOCK, "plan"], {}), "key_unknown", "schedules[0].week[0].plan");
+      });
+    });
+
+    describe("On temperature values as a number and as a preset name", () => {
+      it("accepts them and resolves the preset", () => {
+        const config = validateConfig(withPlan({ "00:00": 16.5, "08:00": "comfort" }));
+        expect(config.schedules[0]?.defaultWeek.mon).toEqual([
+          { time: Temporal.PlainTime.from("00:00"), preset: undefined, temperature: 16.5 },
+          { time: Temporal.PlainTime.from("08:00"), preset: "comfort", temperature: undefined },
+        ]);
       });
     });
 
@@ -364,9 +498,9 @@ describe("validation", () => {
         "throws ConfigError with code temperature_invalid (%j)",
         (t) => {
           expectIssue(
-            withMon([{ time: "00:00", temperature: t }]),
+            withPlan({ "00:00": t }),
             "temperature_invalid",
-            "schedules[0].default_week.mon[0].temperature",
+            "schedules[0].week[0].temperature.00:00",
           );
           expectIssue(patched(["presets", "eco"], t), "temperature_invalid", "presets.eco");
           expectIssue(
@@ -378,17 +512,27 @@ describe("validation", () => {
       );
 
       it.each([4, 35, 20.5])("accepts %j", (t) => {
-        expect(() => validateConfig(withMon([{ time: "00:00", temperature: t }]))).not.toThrow();
+        expect(() => validateConfig(withPlan({ "00:00": t }))).not.toThrow();
       });
     });
 
     describe("On an unknown preset name", () => {
-      it("throws ConfigError with code preset_unknown", () => {
+      it("throws ConfigError with code preset_unknown at that time", () => {
         expectIssue(
-          withMon([{ time: "00:00", preset: "party" }]),
+          withPlan({ "00:00": "party" }),
           "preset_unknown",
-          "schedules[0].default_week.mon[0].preset",
+          "schedules[0].week[0].temperature.00:00",
         );
+      });
+    });
+
+    describe("On a version 1 document", () => {
+      it("throws version_unsupported at version and says the week format changed", () => {
+        const issues = issuesOf({ ...validRaw(), version: 1 });
+        expect(issues).toEqual([
+          expect.objectContaining({ code: "version_unsupported", path: "version" }),
+        ]);
+        expect(issues[0]?.message).toContain("week format changed");
       });
     });
 
@@ -652,7 +796,7 @@ describe("validation", () => {
       it.each([
         [["rooms", 0], "rooms[0]"],
         [["schedules", 0], "schedules[0]"],
-        [[...MON, 0], "schedules[0].default_week.mon[0]"],
+        [[...BLOCK], "schedules[0].week[0]"],
         [[...ROOM, "valves", 0], "rooms[0].valves[0]"],
         [[...SENSORS, 0], "rooms[0].sensors[0]"],
       ] as const)("reports only type_invalid at %j", (path, expected) => {
@@ -752,6 +896,54 @@ describe("validation", () => {
       );
     });
 
+    describe("On a week with mon to fri equal and sat and sun equal", () => {
+      it("writes two blocks, weekdays and weekend", () => {
+        const raw = configToRaw(validateConfig(validRaw()));
+        expect(raw.schedules?.[0]?.week).toStrictEqual([
+          { days: "weekdays", temperature: { "00:00": "eco", "06:30": "comfort", "22:00": 18 } },
+          { days: "weekend", temperature: { "00:00": "eco" } },
+        ]);
+      });
+    });
+
+    describe("On a week with all seven days equal", () => {
+      it("writes one block with days: all", () => {
+        const raw = configToRaw(validateConfig(withWeek([{ days: "all", temperature: ECO }])));
+        expect(raw.schedules?.[0]?.week).toStrictEqual([{ days: "all", temperature: ECO }]);
+      });
+    });
+
+    describe("On a week with mon and wed equal and the rest different", () => {
+      it("writes a block days: [mon, wed], blocks in the order of their first day", () => {
+        const plan = (t: number): unknown => ({ "00:00": t });
+        const raw = configToRaw(
+          validateConfig(
+            withWeek([
+              { days: ["tue", "thu", "fri", "sat", "sun"], temperature: plan(18) },
+              { days: ["mon", "wed"], temperature: plan(20) },
+            ]),
+          ),
+        );
+        expect(raw.schedules?.[0]?.week).toStrictEqual([
+          { days: ["mon", "wed"], temperature: { "00:00": 20 } },
+          { days: ["tue", "thu", "fri", "sat", "sun"], temperature: { "00:00": 18 } },
+        ]);
+      });
+    });
+
+    describe("On a day plan with several set points", () => {
+      it("writes the times ascending", () => {
+        const raw = configToRaw(
+          validateConfig(withPlan({ "22:00": 18, "00:00": "eco", "06:30": "comfort" })),
+        );
+        expect(Object.keys(raw.schedules?.[0]?.week[0]?.temperature ?? {})).toEqual([
+          "00:00",
+          "06:30",
+          "22:00",
+        ]);
+      });
+    });
+
     describe("On a room with partial presets", () => {
       it("the output holds only the fields that were set", () => {
         const raw = configToRaw(validateConfig(validRaw()));
@@ -780,11 +972,82 @@ describe("validation", () => {
   });
 
   describe("migrateRaw", () => {
-    describe("With a version 1 document", () => {
+    describe("With a version 2 document", () => {
       it("returns an equal document", () => {
         const doc = validRaw() as unknown as Record<string, unknown>;
         expect(migrateRaw(doc)).toStrictEqual(doc);
-        expect(CONFIG_VERSION).toBe(1);
+        expect(CONFIG_VERSION).toBe(2);
+      });
+    });
+  });
+
+  describe("upgradeRawV1", () => {
+    const day = [
+      { time: "00:00", preset: "eco" },
+      { time: "06:30", temperature: 20 },
+    ];
+    const weekend = [{ time: "00:00", temperature: 17 }];
+    function v1(week: unknown): Record<string, unknown> {
+      const doc = structuredClone(validRaw()) as Record<string, unknown>;
+      doc.version = 1;
+      doc.schedules = [{ id: "default", name: "Default week", default_week: week }];
+      return doc;
+    }
+
+    describe("With a version 1 document", () => {
+      it("groups equal days into blocks and sets version 2", () => {
+        const doc = v1({
+          mon: day,
+          tue: day,
+          wed: day,
+          thu: day,
+          fri: day,
+          sat: weekend,
+          sun: weekend,
+        });
+        const upgraded = upgradeRawV1(doc) as Record<string, unknown>;
+        expect(upgraded.version).toBe(2);
+        expect(upgraded.schedules).toStrictEqual([
+          {
+            id: "default",
+            name: "Default week",
+            week: [
+              { days: "weekdays", temperature: { "00:00": "eco", "06:30": 20 } },
+              { days: "weekend", temperature: { "00:00": 17 } },
+            ],
+          },
+        ]);
+      });
+
+      it("keeps every day's set points", () => {
+        const doc = v1({
+          mon: day,
+          tue: weekend,
+          wed: day,
+          thu: weekend,
+          fri: day,
+          sat: day,
+          sun: day,
+        });
+        const config = validateConfig(upgradeRawV1(doc));
+        const week = config.schedules[0]?.defaultWeek;
+        expect(week?.mon).toEqual(week?.wed);
+        expect(week?.tue.map((p) => p.temperature)).toEqual([17]);
+        expect(week?.sun.map((p) => p.preset)).toEqual(["eco", undefined]);
+      });
+
+      it("leaves a malformed week as it is so that validation reports it", () => {
+        const doc = v1({ mon: "x" });
+        const upgraded = upgradeRawV1(doc) as { schedules: [Record<string, unknown>] };
+        expect(upgraded.schedules[0]).toHaveProperty("default_week");
+        expect(() => validateConfig(upgraded)).toThrow(ConfigError);
+      });
+    });
+
+    describe("With a version 2 document", () => {
+      it("returns it unchanged", () => {
+        const doc = validRaw();
+        expect(upgradeRawV1(doc)).toBe(doc);
       });
     });
   });

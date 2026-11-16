@@ -115,15 +115,12 @@ type RoomSpec = Readonly<{
 }>;
 
 function week(temperature = 20): NonNullable<RawConfig["schedules"]> {
-  const day = [
-    { time: "00:00", temperature: 16 },
-    { time: "07:00", temperature },
-  ];
+  const day = { "00:00": 16, "07:00": temperature };
   return [
     {
       id: "main",
       name: "Main",
-      default_week: { mon: day, tue: day, wed: day, thu: day, fri: day, sat: day, sun: day },
+      week: [{ days: "all", temperature: day }],
     },
   ];
 }
@@ -138,7 +135,7 @@ function raw(
 ): RawConfig {
   const timezone = options.timezone === undefined ? ZONE : options.timezone;
   return {
-    version: 1,
+    version: 2,
     settings: {
       hold_writes: options.hold ?? false,
       ...(timezone === null ? {} : { timezone }),
@@ -206,7 +203,7 @@ function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
     };
     writeFileSync(
       path.join(dataDir, "config.json"),
-      JSON.stringify({ version: 1, data: storedToRaw(stored) }),
+      JSON.stringify({ version: 2, data: storedToRaw(stored) }),
     );
   }
   if (seed.ledger === "unreadable") {

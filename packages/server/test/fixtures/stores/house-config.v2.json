@@ -1,0 +1,69 @@
+{
+  "version": 2,
+  "data": {
+    "revision": 3,
+    "releasing": {
+      "z2m:0x00124b00aaaaaaaa": "2023-11-14T22:13:20.000Z"
+    },
+    "config": {
+      "version": 2,
+      "settings": {
+        "external_write_interval_min": 10,
+        "sensor_stale_min": 30,
+        "hold_writes": false,
+        "timezone": "Europe/Amsterdam",
+        "language": "en"
+      },
+      "presets": {
+        "comfort": 21,
+        "eco": 18,
+        "frost": 8,
+        "boost": 24
+      },
+      "schedules": [
+        {
+          "id": "default",
+          "name": "Default week",
+          "week": [
+            {
+              "days": "weekdays",
+              "temperature": {
+                "00:00": "eco",
+                "06:30": "comfort",
+                "22:00": 18
+              }
+            },
+            {
+              "days": "weekend",
+              "temperature": {
+                "00:00": "eco"
+              }
+            }
+          ]
+        }
+      ],
+      "rooms": [
+        {
+          "id": "living",
+          "name": "Living room",
+          "area_id": "living_room",
+          "schedule_id": "default",
+          "valves": [
+            {
+              "id": "z2m:0x00124b0012345678"
+            }
+          ],
+          "sensors": [
+            {
+              "ref": "ha:sensor.living_temperature",
+              "weight": 2
+            }
+          ],
+          "presets": {
+            "comfort": 22
+          }
+        }
+      ]
+    }
+  }
+}

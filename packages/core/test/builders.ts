@@ -19,7 +19,6 @@ import type {
   Inbox,
   PresetName,
   RawConfig,
-  RawSetPoint,
   Readings,
   ResolvedDay,
   Room,
@@ -35,13 +34,8 @@ import type {
 
 /** A complete valid document: one schedule, one room with a valve and two ha sensors. */
 export function validRaw(): RawConfig {
-  const day = (): RawSetPoint[] => [
-    { time: "00:00", preset: "eco" as const },
-    { time: "06:30", preset: "comfort" as const },
-    { time: "22:00", temperature: 18 },
-  ];
   return {
-    version: 1,
+    version: 2,
     settings: {
       external_write_interval_min: 10,
       sensor_stale_min: 30,
@@ -54,15 +48,13 @@ export function validRaw(): RawConfig {
       {
         id: "default",
         name: "Default week",
-        default_week: {
-          mon: day(),
-          tue: day(),
-          wed: day(),
-          thu: day(),
-          fri: day(),
-          sat: [{ time: "00:00", preset: "eco" }],
-          sun: [{ time: "00:00", preset: "eco" }],
-        },
+        week: [
+          {
+            days: "weekdays",
+            temperature: { "00:00": "eco", "06:30": "comfort", "22:00": 18 },
+          },
+          { days: "weekend", temperature: { "00:00": "eco" } },
+        ],
       },
     ],
     rooms: [

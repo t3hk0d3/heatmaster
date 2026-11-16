@@ -147,14 +147,10 @@ function doc(
   rooms: readonly RawRoom[],
   options: { timezone?: string | undefined; eco?: number } = {},
 ): RawConfig {
-  const day = [
-    { time: "00:00", preset: "eco" as const },
-    { time: "06:30", preset: "comfort" as const },
-    { time: "22:00", preset: "eco" as const },
-  ];
+  const day = { "00:00": "eco", "06:30": "comfort", "22:00": "eco" } as const;
   const timezone = "timezone" in options ? options.timezone : BUILDER_NOW.timeZoneId;
   return {
-    version: 1,
+    version: 2,
     settings: {
       hold_writes: false,
       ...(timezone === undefined ? {} : { timezone }),
@@ -164,7 +160,7 @@ function doc(
       {
         id: BUILDER_SCHEDULE,
         name: "Default",
-        default_week: { mon: day, tue: day, wed: day, thu: day, fri: day, sat: day, sun: day },
+        week: [{ days: "all", temperature: day }],
       },
     ],
     rooms: [...rooms],
@@ -387,7 +383,7 @@ describe("change", () => {
     describe("With an invalid document", () => {
       it("throws ConfigError and returns nothing", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = { version: 1, presets: { eco: "warm" }, rooms: "none" };
+        const raw = { version: 2, presets: { eco: "warm" }, rooms: "none" };
         let caught: unknown;
         let result: ChangePlan | undefined;
         try {

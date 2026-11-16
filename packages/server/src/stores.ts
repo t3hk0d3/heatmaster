@@ -11,12 +11,14 @@ import {
   ledgerToRaw,
   storedFromRaw,
   storedToRaw,
+  upgradeRawV1,
 } from "@heatmaster/core";
 import type { ConfigState, Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
 import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
 
-export const CONFIG_FILE_VERSION = 1;
+/** Version 2 writes a schedule's week as blocks of days; version 1 wrote `default_week`. */
+export const CONFIG_FILE_VERSION = 2;
 export const LEDGER_FILE_VERSION = 1;
 export const PACING_FILE_VERSION = 1;
 export const COPY_FILE_VERSION = 1;
@@ -73,12 +75,17 @@ function migrateFile(file: File, current: number): File {
   }
   if (version < 1 || version > current)
     throw new Error(`unsupported file version ${String(version)}`);
-  // Version 1 is the only one; a later change of a file's shape adds its step here.
+  // A change of a file's shape adds its step to the file's own migrate function.
   return file;
 }
 
 export function migrateConfigFile(file: File): File {
-  return migrateFile(file, CONFIG_FILE_VERSION);
+  const migrated = migrateFile(file, CONFIG_FILE_VERSION);
+  if (migrated.version !== 1) return migrated;
+  // Version 1 holds a version 1 config document under `data.config`.
+  const data = migrated.data;
+  if (!isFile(data)) return { ...migrated, version: 2 };
+  return { ...migrated, version: 2, data: { ...data, config: upgradeRawV1(data.config) } };
 }
 
 export function migrateLedgerFile(file: File): File {

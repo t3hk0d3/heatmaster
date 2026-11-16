@@ -1,16 +1,10 @@
 import { validateConfig } from "@heatmaster/core";
 import type { Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
 
-const day = [
-  { time: "00:00", preset: "eco" },
-  { time: "06:30", preset: "comfort" },
-  { time: "22:00", temperature: 18 },
-];
-
 /** A small valid config document. */
 export function rawConfig(): Record<string, unknown> {
   return {
-    version: 1,
+    version: 2,
     settings: {
       external_write_interval_min: 10,
       sensor_stale_min: 30,
@@ -23,15 +17,13 @@ export function rawConfig(): Record<string, unknown> {
       {
         id: "default",
         name: "Default week",
-        default_week: {
-          mon: day,
-          tue: day,
-          wed: day,
-          thu: day,
-          fri: day,
-          sat: [{ time: "00:00", preset: "eco" }],
-          sun: [{ time: "00:00", preset: "eco" }],
-        },
+        week: [
+          {
+            days: "weekdays",
+            temperature: { "00:00": "eco", "06:30": "comfort", "22:00": 18 },
+          },
+          { days: "weekend", temperature: { "00:00": "eco" } },
+        ],
       },
     ],
     rooms: [

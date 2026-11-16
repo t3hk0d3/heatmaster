@@ -16,7 +16,7 @@ import type {
 } from "./model.ts";
 import { sensorId } from "./model.ts";
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 
 export type RawPresets = Readonly<{
   comfort?: number;
@@ -33,13 +33,16 @@ export type RawSettings = Readonly<{
   language?: "en" | "ru";
 }>;
 
-export type RawSetPoint = Readonly<
-  { time: string; preset: PresetName } | { time: string; temperature: number }
->;
+/** A day plan: "HH:MM" to a temperature or a preset name. */
+export type RawDayPlan = Readonly<Record<string, number | PresetName>>;
 
-export type RawWeek = Readonly<Record<Weekday, readonly RawSetPoint[]>>;
+/** A list of weekday names, or the single string `all`, `weekdays` or `weekend`. */
+export type RawDays = string | readonly string[];
 
-export type RawSchedule = Readonly<{ id: string; name: string; default_week: RawWeek }>;
+/** Days that share one day plan. */
+export type RawWeekBlock = Readonly<{ days: RawDays; temperature: RawDayPlan }>;
+
+export type RawSchedule = Readonly<{ id: string; name: string; week: readonly RawWeekBlock[] }>;
 
 export type RawSensor = Readonly<{ ref: string; weight?: number }>;
 
@@ -54,7 +57,7 @@ export type RawRoom = Readonly<{
 }>;
 
 export type RawConfig = Readonly<{
-  version: 1;
+  version: 2;
   settings?: RawSettings;
   presets?: RawPresets;
   schedules?: readonly RawSchedule[];
@@ -76,17 +79,112 @@ const MAX_SENSORS = 16;
 const MAX_NAME_LENGTH = 64;
 const MAX_SENSOR_WEIGHT = 10;
 const MAX_DAY_SET_POINTS = 6;
+const WEEKDAY_WORDS: readonly Weekday[] = WEEKDAYS;
+const ALIASES: Readonly<Record<string, readonly Weekday[]>> = {
+  all: WEEKDAYS,
+  weekdays: ["mon", "tue", "wed", "thu", "fri"],
+  weekend: ["sat", "sun"],
+};
 const MS_PER_MINUTE = 60 * 1000;
 const MIDNIGHT = Temporal.PlainTime.from("00:00");
 
 type Report = (path: string, code: string, message: string) => void;
 
 /**
- * Brings an older document up to CONFIG_VERSION. With only version 1 it returns the document
- * unchanged.
+ * Brings an older document up to CONFIG_VERSION. Version 2 is the current one, so it returns the
+ * document unchanged; a version 1 document is refused by `validateConfig`, and only the stored
+ * file is upgraded (`upgradeRawV1`).
  */
 export function migrateRaw(raw: Readonly<Record<string, unknown>>): Record<string, unknown> {
   return { ...raw };
+}
+
+type DayGroup = Readonly<{ days: readonly Weekday[] }>;
+
+/** Groups the weekdays that share a key, in the order of each group's first day. */
+function groupDays(keys: Readonly<Record<Weekday, string>>): readonly DayGroup[] {
+  const groups = new Map<string, Weekday[]>();
+  for (const day of WEEKDAYS) {
+    const key = keys[day];
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [day]);
+    else group.push(day);
+  }
+  return [...groups.values()].map((days) => ({ days }));
+}
+
+/** The `days` of a block: `all`, `weekdays`, `weekend`, or the day names in week order. */
+function daysToRaw(days: readonly Weekday[]): RawDays {
+  const same = (names: readonly Weekday[]): boolean =>
+    days.length === names.length && names.every((name, i) => days[i] === name);
+  if (same(WEEKDAYS)) return "all";
+  if (same(ALIASES.weekdays ?? [])) return "weekdays";
+  if (same(ALIASES.weekend ?? [])) return "weekend";
+  return days;
+}
+
+function dayPlanKey(plan: readonly [string, number | PresetName][]): string {
+  return JSON.stringify(plan);
+}
+
+/** A raw version 1 day as sorted `[time, value]` pairs; undefined when it is not well formed. */
+function v1DayPlan(day: unknown): [string, number | PresetName][] | undefined {
+  if (!isList(day)) return undefined;
+  const plan: [string, number | PresetName][] = [];
+  for (const item of day) {
+    if (!isRecord(item) || typeof item.time !== "string") return undefined;
+    const { temperature, preset } = item;
+    let value: number | PresetName;
+    if (typeof temperature === "number" && preset === undefined) value = temperature;
+    else if (typeof preset === "string" && temperature === undefined) {
+      const known = PRESET_NAMES.find((name) => name === preset);
+      if (known === undefined) return undefined;
+      value = known;
+    } else return undefined;
+    if (plan.some(([time]) => time === item.time)) return undefined;
+    plan.push([item.time, value]);
+  }
+  return plan.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function v1WeekToBlocks(week: unknown): readonly RawWeekBlock[] | undefined {
+  if (!isRecord(week)) return undefined;
+  const plans = new Map<Weekday, [string, number | PresetName][]>();
+  for (const day of WEEKDAYS) {
+    const plan = v1DayPlan(week[day]);
+    if (plan === undefined) return undefined;
+    plans.set(day, plan);
+  }
+  const plan = (day: Weekday): [string, number | PresetName][] => plans.get(day) ?? [];
+  const keys = Object.fromEntries(WEEKDAYS.map((day) => [day, dayPlanKey(plan(day))])) as Record<
+    Weekday,
+    string
+  >;
+  return groupDays(keys).map((group) => ({
+    days: daysToRaw(group.days),
+    temperature: Object.fromEntries(plan(group.days[0] ?? "mon")),
+  }));
+}
+
+/**
+ * Upgrades a stored version 1 config document (a week per schedule under `default_week`) to
+ * version 2 (blocks of days under `week`). A schedule that is not well formed is left as it is, so
+ * that validation reports it; any other document is returned unchanged.
+ */
+export function upgradeRawV1(raw: unknown): unknown {
+  if (!isRecord(raw) || raw.version !== 1) return raw;
+  const schedules = isList(raw.schedules)
+    ? raw.schedules.map((schedule: unknown) => {
+        if (!isRecord(schedule) || !Object.hasOwn(schedule, "default_week")) return schedule;
+        const blocks = v1WeekToBlocks(schedule.default_week);
+        if (blocks === undefined) return schedule;
+        return {
+          ...Object.fromEntries(Object.entries(schedule).filter(([key]) => key !== "default_week")),
+          week: blocks,
+        };
+      })
+    : raw.schedules;
+  return { ...raw, version: 2, ...(schedules === undefined ? {} : { schedules }) };
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -293,82 +391,154 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
   };
 }
 
-function parseSetPoint(report: Report, path: string, value: unknown): SetPoint | undefined {
-  const obj = asObject(report, path, value, ["time", "preset", "temperature"]);
-  const rawTime = requiredKey(report, path, obj, "time");
-  let time: Temporal.PlainTime | undefined;
-  if (typeof rawTime === "string") {
-    if (TIME_PATTERN.test(rawTime)) time = Temporal.PlainTime.from(rawTime);
-    else report(at(path, "time"), "time_invalid", 'a time is "HH:MM"');
-  } else if (rawTime !== undefined) typeInvalid(report, at(path, "time"), "a text");
-
-  const rawPreset = read(obj, "preset");
-  let preset: PresetName | undefined;
-  if (typeof rawPreset === "string") {
-    const known = PRESET_NAMES.find((name) => name === rawPreset);
-    if (known === undefined) report(at(path, "preset"), "preset_unknown", "unknown preset name");
-    else preset = known;
-  } else if (rawPreset !== undefined) typeInvalid(report, at(path, "preset"), "a text");
-
-  const rawTemperature = read(obj, "temperature");
-  const temperature =
-    rawTemperature === undefined
-      ? undefined
-      : parseTemperature(report, at(path, "temperature"), rawTemperature);
-
-  if (!NOT_AN_OBJECT.has(obj) && (rawPreset === undefined) === (rawTemperature === undefined)) {
-    report(path, "set_point_ambiguous", "a set point has either a preset or a temperature");
-  }
-  if (time === undefined) return undefined;
-  return { time, preset, temperature };
+function timeKeyMessage(key: string): string {
+  return /^\d+$/.test(key)
+    ? `the key "${key}" is not a time; an unquoted 07:00 is read as a number, write "HH:MM" in quotes`
+    : 'a time is "HH:MM"';
 }
 
-function parseDay(report: Report, path: string, value: unknown): readonly SetPoint[] {
-  if (!isList(value)) {
-    typeInvalid(report, path, "a list");
+function parseDayPlan(report: Report, path: string, value: unknown): readonly SetPoint[] {
+  if (value === undefined) return [];
+  if (!isRecord(value)) {
+    typeInvalid(report, path, 'an object of "HH:MM" times');
     return [];
   }
-  if (value.length < 1 || value.length > MAX_DAY_SET_POINTS) {
+  const keys = Object.keys(value);
+  if (keys.length < 1 || keys.length > MAX_DAY_SET_POINTS) {
     report(path, "set_point_count", "a day has 1 to 6 set points");
   }
   const points: SetPoint[] = [];
-  let previous: Temporal.PlainTime | undefined;
-  value.forEach((item, index) => {
-    const itemPath = atIndex(path, index);
-    const point = parseSetPoint(report, itemPath, item);
-    if (point === undefined) return;
-    if (index === 0 && !point.time.equals(MIDNIGHT)) {
-      report(at(itemPath, "time"), "first_set_point_not_midnight", "the first set point is 00:00");
+  let timesValid = true;
+  for (const key of keys) {
+    const keyPath = at(path, key);
+    if (!TIME_PATTERN.test(key)) {
+      report(keyPath, "time_invalid", timeKeyMessage(key));
+      timesValid = false;
+      continue;
     }
-    if (previous !== undefined && Temporal.PlainTime.compare(point.time, previous) <= 0) {
-      report(at(itemPath, "time"), "set_points_not_ascending", "set point times must ascend");
-    }
-    previous = point.time;
-    points.push(point);
-  });
+    const time = Temporal.PlainTime.from(key);
+    const item = value[key];
+    if (typeof item === "number") {
+      points.push({
+        time,
+        preset: undefined,
+        temperature: parseTemperature(report, keyPath, item),
+      });
+    } else if (typeof item === "string") {
+      const known = PRESET_NAMES.find((name) => name === item);
+      if (known === undefined) report(keyPath, "preset_unknown", "unknown preset name");
+      else points.push({ time, preset: known, temperature: undefined });
+    } else typeInvalid(report, keyPath, "a number or a preset name");
+  }
+  points.sort((a, b) => Temporal.PlainTime.compare(a.time, b.time));
+  const first = points[0];
+  if (timesValid && first !== undefined && !first.time.equals(MIDNIGHT)) {
+    report(
+      at(path, first.time.toString({ smallestUnit: "minute" })),
+      "first_set_point_not_midnight",
+      "the first set point is 00:00",
+    );
+  }
   return points;
 }
 
-function parseWeek(report: Report, path: string, value: unknown): Week {
-  if (value === undefined) return { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
-  const obj = asObject(report, path, value, WEEKDAYS);
-  const day = (name: Weekday): readonly SetPoint[] => {
-    const item = read(obj, name);
-    if (item === undefined) {
-      if (isRecord(value)) report(at(path, name), "day_missing", `missing weekday "${name}"`);
-      return [];
+/**
+ * The weekdays a `days` value names, in the order written: a list of day names, or the single
+ * string `all`, `weekdays` or `weekend`. Undefined when it is not usable.
+ */
+function parseDays(report: Report, path: string, value: unknown): readonly Weekday[] | undefined {
+  if (isList(value)) {
+    if (value.length < 1) {
+      report(path, "days_empty", "a block needs at least one day");
+      return undefined;
     }
-    return parseDay(report, at(path, name), item);
+    const days: Weekday[] = [];
+    const state = { usable: true };
+    value.forEach((item, index) => {
+      const itemPath = atIndex(path, index);
+      if (typeof item !== "string") {
+        typeInvalid(report, itemPath, "a day name");
+        state.usable = false;
+        return;
+      }
+      const day = WEEKDAY_WORDS.find((name) => name === item);
+      if (day === undefined) {
+        report(itemPath, "day_invalid", `unknown day "${item}"; use mon to sun`);
+        state.usable = false;
+      } else days.push(day);
+    });
+    return state.usable ? days : undefined;
+  }
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    typeInvalid(report, path, "a list of day names, all, weekdays or weekend");
+    return undefined;
+  }
+  const alias = Object.hasOwn(ALIASES, value) ? ALIASES[value] : undefined;
+  if (alias === undefined) {
+    report(
+      path,
+      "day_invalid",
+      `"${value}" is not all, weekdays or weekend; list single days as [mon, tue, ...]`,
+    );
+    return undefined;
+  }
+  return alias;
+}
+
+function parseWeek(report: Report, path: string, value: unknown): Week {
+  const week: Record<Weekday, readonly SetPoint[]> = {
+    mon: [],
+    tue: [],
+    wed: [],
+    thu: [],
+    fri: [],
+    sat: [],
+    sun: [],
   };
-  return {
-    mon: day("mon"),
-    tue: day("tue"),
-    wed: day("wed"),
-    thu: day("thu"),
-    fri: day("fri"),
-    sat: day("sat"),
-    sun: day("sun"),
-  };
+  if (value === undefined) return week;
+  if (!isList(value)) {
+    typeInvalid(report, path, "a list");
+    return week;
+  }
+  if (value.length < 1) {
+    report(path, "week_empty", "a week needs at least one block of days");
+    return week;
+  }
+  const covered = new Set<Weekday>();
+  const state = { complete: true };
+  value.forEach((item, index) => {
+    const blockPath = atIndex(path, index);
+    const obj = asObject(report, blockPath, item, ["days", "temperature"]);
+    const daysPath = at(blockPath, "days");
+    const rawDays = requiredKey(report, blockPath, obj, "days");
+    const days = parseDays(report, daysPath, rawDays);
+    const plan = parseDayPlan(
+      report,
+      at(blockPath, "temperature"),
+      requiredKey(report, blockPath, obj, "temperature"),
+    );
+    if (days === undefined) {
+      state.complete = false;
+      return;
+    }
+    const repeated = days.filter((day, i) => covered.has(day) || days.indexOf(day) !== i);
+    if (repeated.length > 0) {
+      const names = [...new Set(repeated)].join(", ");
+      report(daysPath, "day_repeated", `already in a block of days: ${names}`);
+      state.complete = false;
+    }
+    for (const day of days) {
+      covered.add(day);
+      week[day] = plan;
+    }
+  });
+  if (state.complete) {
+    for (const day of WEEKDAYS) {
+      if (!covered.has(day)) report(path, "day_missing", `missing weekday "${day}"`);
+    }
+  }
+  return week;
 }
 
 function parseList(report: Report, path: string, value: unknown, max: number): readonly unknown[] {
@@ -391,7 +561,7 @@ function parseSchedules(
   let complete = isList(value) || value === undefined;
   const schedules = list.map((item, index): Schedule => {
     const itemPath = atIndex(path, index);
-    const obj = asObject(report, itemPath, item, ["id", "name", "default_week"]);
+    const obj = asObject(report, itemPath, item, ["id", "name", "week"]);
     const rawId = requiredKey(report, itemPath, obj, "id");
     const id = parseId(report, at(itemPath, "id"), rawId);
     if (typeof rawId !== "string") complete = false;
@@ -405,8 +575,8 @@ function parseSchedules(
     );
     const defaultWeek = parseWeek(
       report,
-      at(itemPath, "default_week"),
-      requiredKey(report, itemPath, obj, "default_week"),
+      at(itemPath, "week"),
+      requiredKey(report, itemPath, obj, "week"),
     );
     return { id, name, defaultWeek };
   });
@@ -563,7 +733,10 @@ export function validateConfig(raw: unknown): Config {
       {
         path: "version",
         code: "version_unsupported",
-        message: `the document version must be ${String(CONFIG_VERSION)}`,
+        message:
+          doc.version === 1
+            ? "the document version must be 2: the week format changed, write each schedule's week as blocks of days"
+            : `the document version must be ${String(CONFIG_VERSION)}`,
       },
     ]);
   }
@@ -589,24 +762,30 @@ export function validateConfig(raw: unknown): Config {
   return { settings, presets, schedules, rooms };
 }
 
-function setPointToRaw(point: SetPoint): RawSetPoint {
-  const time = point.time.toString({ smallestUnit: "minute" });
-  if (point.temperature !== undefined) return { time, temperature: point.temperature };
+function setPointValue(point: SetPoint): number | PresetName {
+  if (point.temperature !== undefined) return point.temperature;
   if (point.preset === undefined) throw new Error("a set point holds a preset or a temperature");
-  return { time, preset: point.preset };
+  return point.preset;
 }
 
-function weekToRaw(week: Week): RawWeek {
-  const day = (name: Weekday): readonly RawSetPoint[] => week[name].map(setPointToRaw);
-  return {
-    mon: day("mon"),
-    tue: day("tue"),
-    wed: day("wed"),
-    thu: day("thu"),
-    fri: day("fri"),
-    sat: day("sat"),
-    sun: day("sun"),
-  };
+function weekToRaw(week: Week): readonly RawWeekBlock[] {
+  const plans = Object.fromEntries(
+    WEEKDAYS.map((day) => [
+      day,
+      week[day].map((point): [string, number | PresetName] => [
+        point.time.toString({ smallestUnit: "minute" }),
+        setPointValue(point),
+      ]),
+    ]),
+  ) as Record<Weekday, [string, number | PresetName][]>;
+  const keys = Object.fromEntries(WEEKDAYS.map((day) => [day, dayPlanKey(plans[day])])) as Record<
+    Weekday,
+    string
+  >;
+  return groupDays(keys).map((group) => ({
+    days: daysToRaw(group.days),
+    temperature: Object.fromEntries(plans[group.days[0] ?? "mon"]),
+  }));
 }
 
 function presetsToRaw(presets: Readonly<Record<PresetName, number | undefined>>): RawPresets {
@@ -651,7 +830,7 @@ export function configToRaw(config: Config): RawConfig {
     schedules: config.schedules.map((schedule) => ({
       id: schedule.id,
       name: schedule.name,
-      default_week: weekToRaw(schedule.defaultWeek),
+      week: weekToRaw(schedule.defaultWeek),
     })),
     rooms: config.rooms.map(roomToRaw),
   };

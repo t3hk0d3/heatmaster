@@ -158,10 +158,30 @@ describe("ConfigStore", () => {
       });
     });
 
-    describe("With the fixture house-config.v1.json", () => {
-      it("returns state ok and the expected StoredConfig", async () => {
+    describe("With the fixture house-config.v1.json (a stored version 1 config)", () => {
+      it("returns state ok and a StoredConfig whose schedules equal the version 1 days", async () => {
         const w = world();
         put(w.file("config.json"), fixtureText("house-config.v1.json"));
+        expect(await w.config.load()).toEqual({ state: "ok", stored: sampleStored() });
+      });
+
+      it("the next save writes the current file version in the week-block form", async () => {
+        const w = world();
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
+        const { stored } = await w.config.load();
+        if (stored === undefined) throw new Error("the fixture loads");
+        await w.config.save(stored);
+        const file = jsonOf(w.file("config.json"));
+        expect(file.version).toBe(2);
+        expect(file.data).toEqual(jsonOf(path.join(FIXTURES, "house-config.v2.json")).data);
+        expect(JSON.stringify(file)).not.toContain("default_week");
+      });
+    });
+
+    describe("With the fixture house-config.v2.json", () => {
+      it("returns state ok and the expected StoredConfig, unchanged", async () => {
+        const w = world();
+        put(w.file("config.json"), fixtureText("house-config.v2.json"));
         expect(await w.config.load()).toEqual({ state: "ok", stored: sampleStored() });
       });
     });
@@ -169,13 +189,13 @@ describe("ConfigStore", () => {
 
   describe("save", () => {
     describe("After a load with no file", () => {
-      it("the file holds version 1 and the stored document, and a second load returns an equal value", async () => {
+      it("the file holds version 2 and the stored document, and a second load returns an equal value", async () => {
         const w = world();
         await w.config.load();
         await w.config.save(sampleStored());
         const file = jsonOf(w.file("config.json"));
-        expect(file.version).toBe(1);
-        expect(file.data).toEqual(jsonOf(path.join(FIXTURES, "house-config.v1.json")).data);
+        expect(file.version).toBe(2);
+        expect(file.data).toEqual(jsonOf(path.join(FIXTURES, "house-config.v2.json")).data);
         expect((await w.config.load()).stored).toEqual(sampleStored());
       });
 
@@ -788,7 +808,7 @@ describe("LedgerStore", () => {
 
 describe("migrations", () => {
   describe("migrateConfigFile / migrateLedgerFile / migrateCopyFile", () => {
-    const migrations = [migrateConfigFile, migrateLedgerFile, migrateCopyFile];
+    const migrations = [migrateLedgerFile, migrateCopyFile];
 
     describe("With a version 1 file", () => {
       it("returns an equal document", () => {
@@ -803,6 +823,24 @@ describe("migrations", () => {
           expect(() => migrate({ version: 2, data: {} })).toThrow();
           expect(() => migrate({ data: {} })).toThrow();
         }
+      });
+    });
+
+    describe("migrateConfigFile", () => {
+      it("turns a version 1 file's default_week into week blocks and sets version 2", () => {
+        const file = jsonOf(path.join(FIXTURES, "house-config.v1.json"));
+        const migrated = migrateConfigFile(file);
+        expect(migrated).toEqual({ ...jsonOf(path.join(FIXTURES, "house-config.v2.json")) });
+      });
+
+      it("returns a version 2 file unchanged", () => {
+        const file = jsonOf(path.join(FIXTURES, "house-config.v2.json"));
+        expect(migrateConfigFile(file)).toEqual(file);
+      });
+
+      it("throws on version 3 or no version", () => {
+        expect(() => migrateConfigFile({ version: 3, data: {} })).toThrow();
+        expect(() => migrateConfigFile({ data: {} })).toThrow();
       });
     });
   });
