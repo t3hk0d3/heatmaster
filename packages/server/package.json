@@ -7,10 +7,12 @@
     "start": "node src/main.ts"
   },
   "dependencies": {
+    "@fastify/websocket": "11.3.7",
     "@heatmaster/core": "workspace:*",
     "fastify": "5.12.8",
     "home-assistant-js-websocket": "9.8.1",
-    "mqtt": "5.16.1"
+    "mqtt": "5.16.1",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/ws": "8.18.2",

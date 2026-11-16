@@ -1,9 +1,10 @@
-import Fastify, { type FastifyBaseLogger } from "fastify";
+import type { FastifyBaseLogger } from "fastify";
 import pkg from "../package.json" with { type: "json" };
+import { buildApi, startApi, type ApiRuntime } from "./api.ts";
 import { systemClock, type Clock } from "./clock.ts";
 import { buildHaLink, type HaLog } from "./ha-link.ts";
-import { createMqttClient } from "./mqtt.ts";
-import { API_HOST, loadOptions, type Options } from "./options.ts";
+import { createMqttClient, type MqttClient } from "./mqtt.ts";
+import { loadOptions, type Options } from "./options.ts";
 import { createRuntime, type HeatmasterRuntime, type RuntimeLog } from "./runtime.ts";
 import { createConfigStore, createLedgerStore } from "./stores.ts";
 import { buildTransports } from "./z2m.ts";
@@ -25,26 +26,54 @@ function runtimeLog(logger: FastifyBaseLogger): RuntimeLog & HaLog {
   };
 }
 
+/** The API's view of a runtime that does not exist yet: every call goes to it once it does. */
+function lateRuntime(current: () => HeatmasterRuntime): ApiRuntime {
+  return {
+    snapshot: () => current().snapshot(),
+    subscribe: (listener) => current().subscribe(listener),
+    apply: (raw, options) => current().apply(raw, options),
+    preview: (raw, options) => current().preview(raw, options),
+    exportConfig: () => current().exportConfig(),
+    resync: (roomId) => current().resync(roomId),
+    refreshValve: (valveId) => current().refreshValve(valveId),
+    restoreValve: (valveId) => current().restoreValve(valveId),
+    forgetValve: (valveId) => current().forgetValve(valveId),
+    importOriginals: (acceptEmpty) => current().importOriginals(acceptEmpty),
+    setHold: (on) => current().setHold(on),
+    diagnostics: () => current().diagnostics(),
+  };
+}
+
 /**
- * Starts the API, then the MQTT client, the transports, the Home Assistant link, the stores and
- * the runtime. `logger` false silences Fastify's logger (tests).
+ * Starts the API, with `ready` false, then the MQTT client, the transports, the Home Assistant
+ * link, the stores and the runtime; `ready` turns true when all of that has started. `logger`
+ * false silences Fastify's logger (tests).
  */
 export async function start(
   options: Options,
   clock: Clock = systemClock,
   logger = true,
 ): Promise<Running> {
-  const app = Fastify({ logger });
-  app.get("/api/health", () => ({ status: "ok", version: pkg.version }));
-  try {
-    await app.listen({ host: API_HOST, port: options.port });
-  } catch (error) {
-    await app.close();
-    throw error;
-  }
+  let ready = false;
+  // Set once the API listens: the API is built before the things it will talk to.
+  const late: { mqtt?: MqttClient; runtime?: HeatmasterRuntime } = {};
+  const app = buildApi(
+    {
+      runtime: lateRuntime(() => {
+        if (late.runtime === undefined) throw new Error("the runtime has not been built yet");
+        return late.runtime;
+      }),
+      ready: () => ready,
+      mqttFault: () => late.mqtt?.fault(),
+      version: pkg.version,
+    },
+    logger,
+  );
+  await startApi(app, options.port);
   const log = runtimeLog(app.log);
   // The MQTT client and the Zigbee2MQTT transport take no logger; they write to console.error.
   const mqtt = createMqttClient(options.mqtt, clock);
+  late.mqtt = mqtt;
   const runtime = createRuntime({
     configStore: createConfigStore(options.dataDir, clock),
     ledgerStore: createLedgerStore(
@@ -58,7 +87,9 @@ export async function start(
     processTimeZone: Temporal.Now.timeZoneId(),
     log,
   });
+  late.runtime = runtime;
   const shutdown = async (): Promise<void> => {
+    ready = false;
     try {
       await runtime.stop();
     } finally {
@@ -72,6 +103,8 @@ export async function start(
   try {
     await mqtt.connect();
     await runtime.start();
+    // Task 20: start the discovery publisher here, after the runtime and before `ready`.
+    ready = true;
   } catch (error) {
     await shutdown();
     throw error;

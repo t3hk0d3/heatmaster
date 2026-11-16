@@ -879,7 +879,10 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const found = listed(valveId);
     if (found === undefined) throw new HeatmasterError("valve_unknown", { valveId });
     const profile = findProfile(found.info.modelId, found.transport.key);
-    if (profile === undefined) throw new HeatmasterError("valve_unsupported", { valveId });
+    // A name that holds + or # cannot be addressed, and the valve is not followed (see refollow).
+    if (profile === undefined || unaddressable(found.info)) {
+      throw new HeatmasterError("valve_unsupported", { valveId });
+    }
     if (found.transport.fault() !== undefined || !found.transport.linkUp()) {
       throw new HeatmasterError("transport_unusable", { valveId });
     }

@@ -4,14 +4,17 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { WebSocket } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { startFakeHa, type FakeHa } from "../test/fake-ha.ts";
 import { startFakeZ2m, type FakeZ2m, type Received } from "../test/fake-z2m.ts";
 import { createManualClock, type ManualClock } from "../test/manual-clock.ts";
+import { startRawBroker } from "../test/raw-broker.ts";
 import { API_HOST, type Options } from "./options.ts";
 import { systemClock } from "./clock.ts";
 import { start, type Running } from "./main.ts";
 import type { DeviceSnapshot } from "./runtime.ts";
+import { stateView } from "./views.ts";
 
 const SERVER_DIR = path.resolve(import.meta.dirname, "..");
 const MAIN = path.join(SERVER_DIR, "src/main.ts");
@@ -149,12 +152,30 @@ describe("main", () => {
   describe("start", () => {
     describe("With a free port", () => {
       it("resolves, and GET /api/health on 127.0.0.1 at that port answers 200 with status ok and the server package's version", async () => {
+        const fake = await startFakeZ2m();
         const port = await freePort();
-        const running = await start(optionsFor(port), systemClock, false);
+        const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
+        const running = await start(liveOptions(port, fake, undefined, dirs), systemClock, false);
         try {
           const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
           expect(response.status).toBe(200);
           expect(await response.json()).toEqual({ status: "ok", version: VERSION });
+        } finally {
+          await running.stop();
+          await fake.stop();
+        }
+      });
+
+      it("with no broker at the address, GET /api/health answers 503 with code mqtt_fault", async () => {
+        const port = await freePort();
+        const running = await start(optionsFor(port), systemClock, false);
+        try {
+          const response = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
+          expect(response.status).toBe(503);
+          expect(await response.json()).toMatchObject({
+            code: "mqtt_fault",
+            data: { reason: "mqtt_unavailable" },
+          });
         } finally {
           await running.stop();
         }
@@ -388,6 +409,74 @@ describe("main (runtime)", () => {
       });
     });
 
+    describe("While start has not resolved yet (the raw broker with withholdConnack on)", () => {
+      it("GET /api/health answers 503 with code not_ready", async () => {
+        const broker = await startRawBroker();
+        live.push(() => broker.stop());
+        broker.withholdConnack(true);
+        const port = await freePort();
+        const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
+        const starting = start(
+          {
+            ...optionsFor(port),
+            ...dirs,
+            mqtt: {
+              url: broker.url,
+              username: undefined,
+              password: undefined,
+              clientId: undefined,
+            },
+          },
+          createManualClock(T),
+          false,
+        );
+        let answer: Response | undefined;
+        try {
+          await vi.waitFor(async () => {
+            answer = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
+          }, WAIT);
+          expect(answer?.status).toBe(503);
+          expect(await answer?.json()).toMatchObject({ code: "not_ready" });
+        } finally {
+          // MQTT.js's connect timeout runs on real time, so start only resolves once it is let in.
+          broker.withholdConnack(false);
+        }
+        const running = await starting;
+        live.push(() => running.stop());
+      });
+    });
+
+    describe("After it resolved", () => {
+      it("GET /api/health answers 200 and GET /api/state answers the state of the runtime", async () => {
+        const broker = await startRawBroker();
+        live.push(() => broker.stop());
+        const port = await freePort();
+        const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
+        const running = await start(
+          {
+            ...optionsFor(port),
+            ...dirs,
+            mqtt: {
+              url: broker.url,
+              username: undefined,
+              password: undefined,
+              clientId: undefined,
+            },
+          },
+          createManualClock(T),
+          false,
+        );
+        live.push(() => running.stop());
+        const health = await fetch(`http://127.0.0.1:${String(port)}/api/health`);
+        expect(health.status).toBe(200);
+        const state = await fetch(`http://127.0.0.1:${String(port)}/api/state`);
+        expect(state.status).toBe(200);
+        expect(await state.json()).toEqual(
+          JSON.parse(JSON.stringify(stateView(running.runtime.snapshot()))),
+        );
+      });
+    });
+
     describe("With no broker at the address", () => {
       it("resolves; the runtime's snapshot has transportFaults.z2m mqtt_unavailable and one tick has run", async () => {
         const running = await start(optionsFor(await freePort()), createManualClock(T), false);
@@ -429,6 +518,32 @@ describe("main (runtime)", () => {
 
   describe("stop", () => {
     describe("Always", () => {
+      it("every socket of /api/events is closed and the port no longer accepts connections", async () => {
+        const fake = await startFakeZ2m();
+        live.push(() => fake.stop());
+        const port = await freePort();
+        const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
+        const running = await start(
+          liveOptions(port, fake, undefined, dirs),
+          createManualClock(T),
+          false,
+        );
+        const socket = new WebSocket(`ws://127.0.0.1:${String(port)}/api/events`);
+        const opened = new Promise<void>((resolve, reject) => {
+          socket.once("open", () => {
+            resolve();
+          });
+          socket.once("error", reject);
+        });
+        const closed = new Promise<number>((resolve) => {
+          socket.once("close", resolve);
+        });
+        await opened;
+        await running.stop();
+        expect(await closed).toBe(1001);
+        expect(await accepts(port)).toBe(false);
+      });
+
       it('"offline" is published on heatmaster/status, no timer remains and the port no longer accepts connections', async () => {
         const fake = await startFakeZ2m();
         live.push(() => fake.stop());

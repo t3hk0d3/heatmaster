@@ -2542,6 +2542,14 @@ describe("runtime", () => {
       });
     });
 
+    describe("With a valve whose friendly name holds + or #", () => {
+      it("rejects with HeatmasterError valve_unsupported and nothing is sent", async () => {
+        const rig = await boot({ devices: [{ ...trvzb(A), name: "hall/valve+1" }] });
+        expect(codeOf(await rejectionOf(rig.rt.refreshValve(A)))).toBe("valve_unsupported");
+        expect(rig.z2m.attempts()).toEqual([]);
+      });
+    });
+
     describe("With the transport's link down, or the transport faulty", () => {
       it("rejects with HeatmasterError transport_unusable and nothing is sent", async () => {
         const rig = await boot();
