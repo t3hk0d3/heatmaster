@@ -110,6 +110,11 @@ It overwrites the valve's schedule, and sends it again at every start, after a r
 Zigbee2MQTT restart and once a day. **The valve's old schedule is not saved and not put back.**
 The sensor source (and on TRV-ZBT the active group) is saved and put back on release.
 
+Heatmaster limits how often it writes to a valve: a bucket of 6 writes per valve, one more every 30
+minutes. The time the bucket is full again is kept in `/data/pacing.json`, so a restart, or a
+restart loop, does not refill it. If that file cannot be read, every valve starts with an empty
+bucket and the page shows a problem.
+
 TRV-ZBT: Heatmaster uses schedule group 3 and does not save what it held. A valve whose active
 group is already 3 can join; its group 3 is overwritten. After a release the active group is back;
 Zigbee2MQTT's "group to edit" stays 3.
@@ -121,7 +126,7 @@ Then uninstall.
 
 ## What uninstall deletes and keeps
 
-- `/data` (the config and the saved originals) is deleted.
+- `/data` (the config, the saved originals and `pacing.json`) is deleted.
 - The public folder (`/config`) with `originals.json` and its four older copies stays.
 - The devices in Home Assistant stay until they are deleted there.
 - A valve that was not released keeps Heatmaster's schedule and falls back to its own sensor when
