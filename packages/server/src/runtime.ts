@@ -1330,8 +1330,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       started = true;
       stopping = false;
       // Nothing waits for Home Assistant or for a replay. After a restart a valve is left alone
-      // until its first message; the tick asks it to report. The feed gap this leaves is reasoned
-      // in docs/reviews/review6-safety.md, "Feed gap after a Heatmaster restart": with sensors
+      // until its first message; the tick asks it to report. The feed gap this leaves: with sensors
       // through Home Assistant, a room is fresh as soon as the link is up and the sensor's newest
       // report is under the 120-min staleness, so the gap is 30 min since the last heartbeat push
       // plus the downtime plus the time until the valve answers.
