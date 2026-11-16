@@ -101,6 +101,47 @@ export function newValveMemory(spec: ValveSpec, nowMs: number): ValveMemory {
   };
 }
 
+function notAfter(at: number, nowMs: number): number;
+function notAfter(at: number | undefined, nowMs: number): number | undefined;
+function notAfter(at: number | undefined, nowMs: number): number | undefined {
+  return at === undefined ? undefined : Math.min(at, nowMs);
+}
+
+/**
+ * Brings every stamp later than `nowMs` back to `nowMs`; earlier stamps are kept. For a wall clock
+ * that was set back: without it, spacing, refills, backoff and holds would wait for the clock.
+ */
+export function clampToNow(vm: ValveMemory, nowMs: number): ValveMemory {
+  const clamped = mapGroups(vm, (_group, gm) => ({
+    ...gm,
+    writes: gm.writes.map((w) => (w.at > nowMs ? { ...w, at: nowMs } : w)),
+    mark:
+      gm.mark === undefined
+        ? undefined
+        : {
+            at: notAfter(gm.mark.at, nowMs),
+            askedAt: notAfter(gm.mark.askedAt, nowMs),
+            writtenAt: notAfter(gm.mark.writtenAt, nowMs),
+          },
+    assertedAt: notAfter(gm.assertedAt, nowMs),
+  }));
+  return {
+    ...clamped,
+    tokensAt: notAfter(vm.tokensAt, nowMs),
+    lastWriteAt: notAfter(vm.lastWriteAt, nowMs),
+    asks: vm.asks.map((at) => notAfter(at, nowMs)),
+    feedAt: notAfter(vm.feedAt, nowMs),
+    lastPushAt: notAfter(vm.lastPushAt, nowMs),
+    feedLostSince: notAfter(vm.feedLostSince, nowMs),
+    equalSince: notAfter(vm.equalSince, nowMs),
+  };
+}
+
+/** The same for a room: a `freshSince` later than `nowMs` becomes `nowMs`. */
+export function clampRoomToNow(rm: RoomMemory, nowMs: number): RoomMemory {
+  return { freshSince: notAfter(rm.freshSince, nowMs) };
+}
+
 /**
  * Sets a fresh mark on each named group that has none, or whose mark was acted on (asked or
  * written). A mark not acted on yet is kept. Groups the memory does not hold are skipped.

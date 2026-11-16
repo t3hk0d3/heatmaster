@@ -487,10 +487,16 @@ function runValve(
     const settled = canRead && cands.length === 0 && !markedDesired;
     const equalSince = settled ? (vm.equalSince ?? nowMs) : undefined;
     vm = { ...vm, equalSince };
-    const holdPassed = equalSince !== undefined && nowMs - equalSince >= RELEASE_HOLD_MS;
+    // Counted from the later of the two, so an order stamped by a clock that ran ahead cannot
+    // leave an earlier equalSince short of it forever.
+    const holdFrom =
+      equalSince === undefined || orderedAt === undefined
+        ? undefined
+        : Math.max(equalSince, orderedAt);
+    const holdPassed = holdFrom !== undefined && nowMs - holdFrom >= RELEASE_HOLD_MS;
     const heardSince =
-      equalSince !== undefined && state.heardAt !== undefined && state.heardAt >= equalSince;
-    finished = holdPassed && orderedAt !== undefined && equalSince >= orderedAt && heardSince;
+      holdFrom !== undefined && state.heardAt !== undefined && state.heardAt >= holdFrom;
+    finished = holdPassed && heardSince;
     if (
       holdPassed &&
       !heardSince &&

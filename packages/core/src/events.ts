@@ -1,4 +1,11 @@
-import { clearMarks, mark, newValveMemory, noteHeard } from "./memory.ts";
+import {
+  clampRoomToNow,
+  clampToNow,
+  clearMarks,
+  mark,
+  newValveMemory,
+  noteHeard,
+} from "./memory.ts";
 import type { GroupMemory, Memory, ValveMemory } from "./memory.ts";
 import { stopped } from "./feed.ts";
 import {
@@ -85,6 +92,20 @@ function deviceMessage(
   return returned ? markValves(result, [deviceId], specs, nowMs) : result;
 }
 
+/**
+ * Memory stamped later than now, after a wall clock was set back (the shell turns that into
+ * link_up): the transport's valves and every room are brought back to now.
+ */
+function clampMemory(memory: Memory, transport: string, nowMs: number): Memory {
+  const prefix = `${transport}:`;
+  const valves = new Map(memory.valves);
+  for (const [id, vm] of memory.valves) {
+    if (id.startsWith(prefix)) valves.set(id, clampToNow(vm, nowMs));
+  }
+  const rooms = new Map([...memory.rooms].map(([id, rm]) => [id, clampRoomToNow(rm, nowMs)]));
+  return { valves, rooms };
+}
+
 function linkUp(inbox: Inbox, transport: string, specs: Specs, nowMs: number): Inbox {
   const prefix = `${transport}:`;
   let states = inbox.states;
@@ -93,7 +114,8 @@ function linkUp(inbox: Inbox, transport: string, specs: Specs, nowMs: number): I
     if (states === inbox.states) states = new Map(inbox.states);
     (states as Map<string, DeviceState>).set(id, onLinkUp(state, nowMs));
   }
-  return markValves({ ...inbox, states }, valvesOf(specs, transport), specs, nowMs);
+  const memory = clampMemory(inbox.memory, transport, nowMs);
+  return markValves({ states, memory }, valvesOf(specs, transport), specs, nowMs);
 }
 
 function pushFailed(inbox: Inbox, valveId: string): Inbox {

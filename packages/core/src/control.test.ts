@@ -2083,6 +2083,31 @@ describe("control", () => {
         expect(saves(result)).toHaveLength(3);
       });
     });
+    describe("With a release ordered under a clock 1 h fast, the clock then corrected, and the valve equal since", () => {
+      /** Ordered at T + 1 h; ticked every 15 min from T until the order, heard 1 min after it. */
+      function aheadOrder(ms: number): World {
+        const base = equalWorld();
+        const orderedAt = nowOf(base) + HOUR_MS;
+        const world = released(base, orderedAt);
+        let current = world;
+        while (nowOf(current) < orderedAt) {
+          const result = tick(current);
+          current = next(current, result, 15 * MINUTE_MS);
+        }
+        const heardWorld = hear(current, {}, orderedAt + MINUTE_MS);
+        return { ...heardWorld, now: atTime(orderedAt + ms) };
+      }
+      it("nothing is saved before the hold has passed from the order", () => {
+        expect(saves(tick(aheadOrder(5 * MINUTE_MS)))).toEqual([]);
+      });
+      it("the release finishes once the hold has passed from the order", () => {
+        expect(kindsOf(saves(tick(aheadOrder(RELEASE_HOLD_MS))))).toEqual([
+          "saveLedger",
+          "writeOriginalsCopy",
+          "saveConfig",
+        ]);
+      });
+    });
     describe("With a valve releasing for 7 h", () => {
       it("a release_stalled problem", () => {
         const base = equalWorld();
@@ -2133,6 +2158,60 @@ describe("control", () => {
         const finished = tick(heldFifteen()).effects.find((e) => e.kind === "saveConfig");
         if (finished?.kind !== "saveConfig") throw new Error("expected saveConfig");
         expect(finished.stored.revision).toBe(storedOf(heldFifteen()).revision);
+      });
+    });
+  });
+
+  describe("tick — clock set back", () => {
+    /** Applies link_up for z2m at the world's now, as the shell does when the clock was set. */
+    function linkUp(world: World): World {
+      const specs = new Map<string, ValveSpec>();
+      for (const [id, view] of world.devices) if (view.spec !== undefined) specs.set(id, view.spec);
+      const states = new Map<string, DeviceState>();
+      for (const [id, view] of world.devices) {
+        if (view.state !== undefined) states.set(id, view.state);
+      }
+      const event: Event = { kind: "link_up", transport: "z2m" };
+      const inbox = applyEvent({ states, memory: world.memory }, event, specs, nowOf(world));
+      const view = viewOf(world);
+      return withView({ ...world, memory: inbox.memory }, { ...view, state: inbox.states.get(V) });
+    }
+    /**
+     * A fed TRVZB with one day differing that wrote and pushed under a clock 2 h fast; the clock is
+     * then set back by 2 h and link_up is applied. The world is 30 s (one tick) after the link_up.
+     */
+    function setBack(): World {
+      const base = withValues(fedWorld(), { [DAY_KEYS.mon]: OTHER_DAY });
+      // Heard during the fast period, so the valve stays live.
+      const heard = hear(hear(base, {}, nowOf(base) + HOUR_MS), {}, nowOf(base) + 2 * HOUR_MS);
+      const fast = later(heard, 2 * HOUR_MS);
+      const ahead = tick(withSensor(fast, freshReading(fast, 20)));
+      expect(kindsOf(valveEffects(ahead))).toEqual(["pushTemperature", "publish"]);
+      const back = later(linkUp({ ...base, memory: ahead.memory }), 30 * SECOND_MS);
+      return withSensor(back, freshReading(back, 20));
+    }
+    describe("With memory stamped 2 h ahead and link_up applied after the clock was set back by 2 h", () => {
+      it("the next tick sends a refresh", () => {
+        expect(valveEffects(tick(setBack()))).toContainEqual({ kind: "refresh", valveId: V });
+      });
+      it("after the answer, the differing day is published again once its backoff has passed from the link_up", () => {
+        const world = setBack();
+        const first = tick(world);
+        const answered = hear({ ...world, memory: first.memory }, {}, nowOf(world) + SECOND_MS);
+        // Two writes of this week are recorded in the window, so the backoff is 10 min.
+        const [, effects] = drive(later(answered, 10 * MINUTE_MS), 2, 30 * SECOND_MS);
+        expect(publishes(effects).some((v) => DAY_KEYS.mon in v)).toBe(true);
+      });
+      it("a changed room temperature is pushed once the push interval has passed from the link_up", () => {
+        const world = setBack();
+        const first = tick(world);
+        const due = next(world, first, DEFAULT_SETTINGS.externalWriteIntervalMs);
+        const warm = withSensor(due, freshReading(due, 21));
+        expect(valveEffects(tick(warm))).toContainEqual({
+          kind: "pushTemperature",
+          valveId: V,
+          celsius: 21,
+        });
       });
     });
   });

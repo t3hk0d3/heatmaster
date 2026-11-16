@@ -414,6 +414,100 @@ describe("events", () => {
       });
     });
 
+    describe("With link_up for z2m after the wall clock was set back, memory stamped after now", () => {
+      const now = T0;
+      const ahead = T0 + 2 * 60 * 60 * SECOND_MS;
+      const earlier = T0 - 60 * SECOND_MS;
+      /**
+       * A valve memory whose every stamp is `at`: schedule written and marked (asked and written),
+       * sensor_source marked and not acted on, active_group unmarked.
+       */
+      function stampedAt(at: number): ValveMemory {
+        const vm = newValveMemory(SPEC, at);
+        const group = (
+          mark: Mark | undefined,
+          writes: GroupMemory["writes"] = [],
+        ): GroupMemory => ({
+          desiredKey: undefined,
+          writes,
+          mark,
+          assertedAt: at,
+        });
+        return {
+          ...vm,
+          groups: {
+            schedule: group({ at, askedAt: at, writtenAt: at }, [{ at, marked: true }]),
+            active_group: group(undefined),
+            sensor_source: group(fresh(at)),
+          },
+          lastWriteAt: at,
+          asks: [at],
+          feedValue: 20,
+          feedAt: at,
+          lastPushAt: at,
+          feedLostSince: at,
+          equalSince: at,
+        };
+      }
+      const other = stampedAt(ahead);
+      const base = inboxOf(
+        [[Z1, live(earlier)]],
+        [
+          [Z1, stampedAt(ahead)],
+          [Z2, stampedAt(earlier)],
+          [OTHER, other],
+        ],
+      );
+      const withRooms: Inbox = {
+        ...base,
+        memory: {
+          ...base.memory,
+          rooms: new Map([
+            ["ahead", { freshSince: ahead }],
+            ["earlier", { freshSince: earlier }],
+          ]),
+        },
+      };
+      const out = apply(withRooms, { kind: "link_up", transport: "z2m" }, now);
+      const vm = valve(out, Z1);
+      it("lastWriteAt, tokensAt, feedAt, lastPushAt, feedLostSince and equalSince are now", () => {
+        expect([
+          vm.lastWriteAt,
+          vm.tokensAt,
+          vm.feedAt,
+          vm.lastPushAt,
+          vm.feedLostSince,
+          vm.equalSince,
+        ]).toEqual([now, now, now, now, now, now]);
+      });
+      it("every write record, every ask and every assertedAt is now", () => {
+        expect(vm.groups.schedule?.writes).toEqual([{ at: now, marked: true }]);
+        expect(vm.asks).toEqual([now]);
+        for (const group of GROUPS) expect(vm.groups[group]?.assertedAt).toBe(now);
+      });
+      it("an acted-on mark is replaced by a fresh mark at now; a mark not acted on keeps its place, at now", () => {
+        expect(markAt("schedule", vm)).toEqual(fresh(now));
+        expect(markAt("sensor_source", vm)).toEqual(fresh(now));
+      });
+      it("stamps at or before now are unchanged", () => {
+        const kept = valve(out, Z2);
+        expect([kept.lastWriteAt, kept.tokensAt, kept.lastPushAt, kept.equalSince]).toEqual([
+          earlier,
+          earlier,
+          earlier,
+          earlier,
+        ]);
+        expect(kept.groups.schedule?.writes).toEqual([{ at: earlier, marked: true }]);
+      });
+      it("every room's freshSince after now is now, an earlier one is unchanged", () => {
+        expect(out.memory.rooms.get("ahead")).toEqual({ freshSince: now });
+        expect(out.memory.rooms.get("earlier")).toEqual({ freshSince: earlier });
+      });
+      it("valves of another transport keep their stamps", () => {
+        expect(valve(out, OTHER)).toBe(other);
+      });
+    });
+
     describe("With link_up for a transport that has no device states and no valves", () => {
       const base = inboxOf([[Z1, live(T0)]], [[Z1, unmarked()]]);
       it("the inbox is unchanged", () => {
