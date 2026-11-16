@@ -77,7 +77,9 @@ rooms:
       - ref: ha:sensor.living_temperature
 ```
 
-A schedule's `week` is a list of blocks; every weekday is in exactly one block. `days` is a list
+A schedule's `week` is a list of blocks, applied in order; every weekday must be in at least one block. A
+later block replaces the whole day plan of each day it names, so `all` followed by `[fri]` gives
+friday its own plan; a block whose days are all overridden later is refused. `days` is a list
 of day names (`[mon, wed]`), or one of `all`, `weekdays` (mon to fri) and `weekend` (sat, sun).
 `temperature` maps each time, in quotes, to a temperature or a preset name, and holds `"00:00"`.
 Documents of version 1 (a `default_week` with a list per day) are refused; a stored config of

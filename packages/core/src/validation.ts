@@ -506,6 +506,8 @@ function parseWeek(report: Report, path: string, value: unknown): Week {
     return week;
   }
   const covered = new Set<Weekday>();
+  const owner = new Map<Weekday, number>();
+  const blocks: { path: string; days: readonly Weekday[] }[] = [];
   const state = { complete: true };
   value.forEach((item, index) => {
     const blockPath = atIndex(path, index);
@@ -522,15 +524,22 @@ function parseWeek(report: Report, path: string, value: unknown): Week {
       state.complete = false;
       return;
     }
-    const repeated = days.filter((day, i) => covered.has(day) || days.indexOf(day) !== i);
+    const repeated = days.filter((day, i) => days.indexOf(day) !== i);
     if (repeated.length > 0) {
       const names = [...new Set(repeated)].join(", ");
-      report(daysPath, "day_repeated", `already in a block of days: ${names}`);
+      report(daysPath, "day_repeated", `listed twice in this block: ${names}`);
       state.complete = false;
     }
+    blocks.push({ path: blockPath, days });
     for (const day of days) {
       covered.add(day);
+      owner.set(day, blocks.length - 1);
       week[day] = plan;
+    }
+  });
+  blocks.forEach((block, index) => {
+    if (block.days.every((day) => owner.get(day) !== index)) {
+      report(block.path, "block_unused", "later blocks override every day of this block");
     }
   });
   if (state.complete) {

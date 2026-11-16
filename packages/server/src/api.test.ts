@@ -667,6 +667,29 @@ describe("api", () => {
     });
   });
 
+  describe("POST /api/config/preview with a repeated time key", () => {
+    describe("With YAML text holding 07:00 twice in one block", () => {
+      it("answers 400 yaml_invalid naming the duplicate key", async () => {
+        const { app, stub: runtime } = await rig();
+        const yaml = [
+          "schedules:",
+          "  - week:",
+          "      - days: [mon]",
+          "        temperature:",
+          '          "00:00": 17',
+          '          "07:00": 21',
+          '          "07:00": 22',
+          "",
+        ].join("\n");
+        const response = await post(app, "/api/config/preview", { yaml });
+        expect(response.statusCode).toBe(400);
+        expect(response.body).toContain("yaml_invalid");
+        expect(response.body).toContain("07:00");
+        expect(runtime.preview).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe("POST /api/config", () => {
     describe("With a valid document", () => {
       it("apply is called once with that document, and preview is not called", async () => {

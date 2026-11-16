@@ -180,11 +180,11 @@ type ParsedConfig =
   | Readonly<{ ok: true; config: Readonly<Record<string, unknown>> }>
   | Readonly<{ ok: false; failure: Failure }>;
 
-function yamlFailure(data: Readonly<Record<string, unknown>> = {}): ParsedConfig {
-  return {
-    ok: false,
-    failure: failure(400, "yaml_invalid", "the YAML text cannot be used as a config", data),
-  };
+function yamlFailure(
+  data: Readonly<Record<string, unknown>> = {},
+  message = "the YAML text cannot be used as a config",
+): ParsedConfig {
+  return { ok: false, failure: failure(400, "yaml_invalid", message, data) };
 }
 
 /** The document of an apply request: `config` as it is, or `yaml` read with the YAML 1.2 core schema. */
@@ -200,7 +200,13 @@ function configOf(body: ApplyRequest): ParsedConfig {
   const first = document.errors[0];
   if (first !== undefined) {
     const position = first.linePos?.[0];
-    return yamlFailure(position === undefined ? {} : { line: position.line, column: position.col });
+    const where = position === undefined ? {} : { line: position.line, column: position.col };
+    if (first.code === "DUPLICATE_KEY") {
+      const rest = (body.yaml ?? "").slice(first.pos[0]);
+      const key = /^(?:"[^"\n]*"|'[^'\n]*'|[^\s:]+)/.exec(rest)?.[0] ?? "";
+      return yamlFailure({ ...where, key }, `the YAML text repeats the key ${key}`);
+    }
+    return yamlFailure(where);
   }
   let value: unknown;
   try {

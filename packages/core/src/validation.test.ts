@@ -446,13 +446,59 @@ describe("validation", () => {
       });
     });
 
-    describe("On a day in two blocks", () => {
-      it("throws day_repeated at the later block's days", () => {
+    describe("On days: all then days: [fri]", () => {
+      it("gives fri the second block's set points and the other days the first", () => {
+        const week = validateConfig(
+          withWeek([
+            { days: "all", temperature: { "00:00": 16, "07:00": 22 } },
+            { days: ["fri"], temperature: { "00:00": 18 } },
+          ]),
+        ).schedules[0]?.defaultWeek;
+        expect(week?.fri.map((p) => p.temperature)).toEqual([18]);
+        for (const day of ["mon", "tue", "wed", "thu", "sat", "sun"] as const) {
+          expect(week?.[day].map((p) => p.temperature)).toEqual([16, 22]);
+        }
+      });
+    });
+
+    describe("On weekdays, then [mon], then weekend", () => {
+      it("gives mon the [mon] block, tue to fri weekdays, sat and sun weekend", () => {
+        const week = validateConfig(
+          withWeek([
+            { days: "weekdays", temperature: { "00:00": 16 } },
+            { days: ["mon"], temperature: { "00:00": 17 } },
+            { days: "weekend", temperature: { "00:00": 18 } },
+          ]),
+        ).schedules[0]?.defaultWeek;
+        const temperatures = (day: "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun") =>
+          week?.[day].map((p) => p.temperature);
+        expect(temperatures("mon")).toEqual([17]);
+        for (const day of ["tue", "wed", "thu", "fri"] as const) {
+          expect(temperatures(day)).toEqual([16]);
+        }
+        expect(temperatures("sat")).toEqual([18]);
+        expect(temperatures("sun")).toEqual([18]);
+      });
+    });
+
+    describe("On a later block naming a day an earlier block also names", () => {
+      it("does not throw day_repeated", () => {
         const raw = withWeek([
           { days: "weekdays", temperature: ECO },
           { days: ["fri", "sat", "sun"], temperature: ECO },
         ]);
-        expectIssue(raw, "day_repeated", "schedules[0].week[1].days");
+        expect(() => validateConfig(raw)).not.toThrow();
+      });
+    });
+
+    describe("On days: [fri] then days: all", () => {
+      it("throws block_unused at the [fri] block", () => {
+        const raw = withWeek([
+          { days: ["fri"], temperature: ECO },
+          { days: "all", temperature: ECO },
+        ]);
+        expectIssue(raw, "block_unused", "schedules[0].week[0]");
+        expect(codesOf(raw)).not.toContain("day_repeated");
       });
     });
 
@@ -910,6 +956,23 @@ describe("validation", () => {
           { days: "weekdays", temperature: { "00:00": "eco", "06:30": "comfort", "22:00": 18 } },
           { days: "weekend", temperature: { "00:00": "eco" } },
         ]);
+      });
+    });
+
+    describe("On a week built from overrides", () => {
+      it("writes disjoint blocks and round-trips unchanged", () => {
+        const config = validateConfig(
+          withWeek([
+            { days: "all", temperature: { "00:00": 16, "07:00": 22 } },
+            { days: ["fri"], temperature: { "00:00": 16, "07:00": 22, "23:00": 18 } },
+          ]),
+        );
+        const blocks = configToRaw(config).schedules?.[0]?.week ?? [];
+        const days = blocks.flatMap((block) =>
+          block.days === "all" ? ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] : block.days,
+        );
+        expect(new Set(days).size).toBe(days.length);
+        expect(validateConfig(configToRaw(config))).toEqual(config);
       });
     });
 
