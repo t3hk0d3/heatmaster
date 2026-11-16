@@ -4,7 +4,7 @@
  * service and is never used for valves.
  */
 
-import type { SensorInfo } from "@heatmaster/core";
+import type { HaArea, HaEntity, HaSnapshot, SensorInfo } from "@heatmaster/core";
 import {
   createConnection,
   createLongLivedTokenAuth,
@@ -30,7 +30,10 @@ export type HaSensor = Readonly<{
   observable: boolean;
 }>;
 export type HaEvent =
-  Readonly<{ kind: "link_up" }> | Readonly<{ kind: "link_down" }> | Readonly<{ kind: "changed" }>;
+  | Readonly<{ kind: "link_up" }>
+  | Readonly<{ kind: "link_down" }>
+  | Readonly<{ kind: "changed" }>
+  | Readonly<{ kind: "registries_changed" }>;
 
 export type HaLog = Readonly<{
   warn(message: string, data?: Readonly<Record<string, unknown>>): void;
@@ -48,6 +51,8 @@ export type HaLink = Readonly<{
   sensorInfo(entityId: string, valveAddresses: ReadonlySet<string>): SensorInfo;
   entityName(entityId: string): string | undefined;
   areaName(areaId: string): string | undefined;
+  /** Areas, device areas and labels as loaded; undefined before `ready()`, the last value while down. */
+  snapshot(): HaSnapshot | undefined;
 }>;
 
 const consoleLog: HaLog = {
@@ -60,11 +65,17 @@ type Raw = Readonly<Record<string, unknown>>;
 
 type EntityEntry = Readonly<{
   deviceId: string | undefined;
+  areaId: string | undefined;
+  labels: readonly string[];
   disabled: boolean;
   name: string | undefined;
   originalName: string | undefined;
 }>;
-type DeviceEntry = Readonly<{ identifiers: readonly (readonly [string, string])[] }>;
+type DeviceEntry = Readonly<{
+  identifiers: readonly (readonly [string, string])[];
+  areaId: string | undefined;
+}>;
+type AreaEntry = HaArea;
 type StateRecord = Readonly<{
   state: string;
   unit: string | undefined;
@@ -73,13 +84,14 @@ type StateRecord = Readonly<{
   reportedAt: number | undefined;
 }>;
 type Kept = Readonly<{ celsius: number | undefined; lastReportedAt: number | undefined }>;
-type RegistryKind = "config" | "entities" | "devices" | "areas";
+type RegistryKind = "config" | "entities" | "devices" | "areas" | "labels";
 
 const EVENT_TYPES: readonly [string, RegistryKind | "state"][] = [
   ["state_changed", "state"],
   ["entity_registry_updated", "entities"],
   ["device_registry_updated", "devices"],
   ["area_registry_updated", "areas"],
+  ["label_registry_updated", "labels"],
   ["core_config_updated", "config"],
 ];
 
@@ -87,6 +99,7 @@ const REGISTRY_COMMANDS: Readonly<Record<Exclude<RegistryKind, "config">, string
   entities: "config/entity_registry/list",
   devices: "config/device_registry/list",
   areas: "config/area_registry/list",
+  labels: "config/label_registry/list",
 };
 
 function isRecord(value: unknown): value is Raw {
@@ -100,6 +113,12 @@ function text(value: unknown): string | undefined {
 function list(value: unknown, what: string): readonly unknown[] {
   if (!Array.isArray(value)) throw new Error(`${what} is not a list`);
   return value as unknown[];
+}
+
+function strings(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? (value as unknown[]).filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function parseConfig(raw: unknown): HaHouse {
@@ -120,6 +139,8 @@ function parseEntities(raw: unknown): ReadonlyMap<string, EntityEntry> {
     if (id === undefined) continue;
     map.set(id, {
       deviceId: text(item.device_id),
+      areaId: text(item.area_id),
+      labels: strings(item.labels),
       disabled: typeof item.disabled_by === "string",
       name: text(item.name),
       originalName: text(item.original_name),
@@ -142,20 +163,70 @@ function parseDevices(raw: unknown): ReadonlyMap<string, DeviceEntry> {
         if (typeof a === "string" && typeof b === "string") identifiers.push([a, b]);
       }
     }
-    map.set(id, { identifiers });
+    map.set(id, { identifiers, areaId: text(item.area_id) });
   }
   return map;
 }
 
-function parseAreas(raw: unknown): ReadonlyMap<string, string> {
-  const map = new Map<string, string>();
+function parseAreas(raw: unknown): ReadonlyMap<string, AreaEntry> {
+  const map = new Map<string, AreaEntry>();
   for (const item of list(raw, "the area registry")) {
     if (!isRecord(item)) continue;
     const id = text(item.area_id);
     const name = text(item.name);
+    if (id !== undefined && name !== undefined) map.set(id, { name, labels: strings(item.labels) });
+  }
+  return map;
+}
+
+function parseLabels(raw: unknown): ReadonlyMap<string, string> {
+  const map = new Map<string, string>();
+  for (const item of list(raw, "the label registry")) {
+    if (!isRecord(item)) continue;
+    const id = text(item.label_id);
+    const name = text(item.name);
     if (id !== undefined && name !== undefined) map.set(id, name);
   }
   return map;
+}
+
+/** `z2m:<address>` for a device that Zigbee2MQTT announced to Home Assistant. */
+function valveIdOf(device: DeviceEntry): string | undefined {
+  for (const [domain, value] of device.identifiers) {
+    if (domain === "mqtt" && value.startsWith(Z2M_IDENTIFIER_PREFIX)) {
+      return `z2m:${value.slice(Z2M_IDENTIFIER_PREFIX.length)}`;
+    }
+  }
+  return undefined;
+}
+
+function buildSnapshot(
+  entities: ReadonlyMap<string, EntityEntry>,
+  devices: ReadonlyMap<string, DeviceEntry>,
+  areas: ReadonlyMap<string, AreaEntry>,
+  labels: ReadonlyMap<string, string>,
+): HaSnapshot {
+  const valveAreas = new Map<string, string | null>();
+  for (const device of devices.values()) {
+    const valveId = valveIdOf(device);
+    if (valveId !== undefined) valveAreas.set(valveId, device.areaId ?? null);
+  }
+  const held = new Map<string, HaEntity>();
+  for (const [id, entry] of entities) {
+    const deviceArea =
+      entry.deviceId === undefined ? undefined : devices.get(entry.deviceId)?.areaId;
+    held.set(id, { areaId: entry.areaId ?? deviceArea, labels: entry.labels });
+  }
+  return { areas, valveAreas, entities: held, labels };
+}
+
+function snapshotKey(value: HaSnapshot): string {
+  return JSON.stringify([
+    [...value.areas],
+    [...value.valveAreas],
+    [...value.entities],
+    [...value.labels],
+  ]);
 }
 
 function parseTime(value: unknown): number | undefined {
@@ -227,7 +298,10 @@ export function createHaLink(
   let house: HaHouse | undefined;
   let entities: ReadonlyMap<string, EntityEntry> = new Map();
   let devices: ReadonlyMap<string, DeviceEntry> = new Map();
-  let areas: ReadonlyMap<string, string> = new Map();
+  let areas: ReadonlyMap<string, AreaEntry> = new Map();
+  let labels: ReadonlyMap<string, string> = new Map();
+  let current: HaSnapshot | undefined;
+  let snapshotSeen = "";
   let byDevice: ReadonlyMap<string, readonly string[]> = new Map();
   // Private and changed in place: one websocket event must not copy the whole house.
   let states = new Map<string, StateRecord>();
@@ -248,6 +322,10 @@ export function createHaLink(
 
   function emit(event: HaEvent): void {
     if (!stopped) listener?.(event);
+  }
+
+  function registriesChanged(): void {
+    if (state === "up") emit({ kind: "registries_changed" });
   }
 
   function changed(): void {
@@ -420,6 +498,8 @@ export function createHaLink(
         return JSON.stringify([...devices]);
       case "areas":
         return JSON.stringify([...areas]);
+      case "labels":
+        return JSON.stringify([...labels]);
     }
   }
 
@@ -455,6 +535,14 @@ export function createHaLink(
           areas = value;
         };
       }
+      case "labels": {
+        const value = parseLabels(
+          await conn.sendMessagePromise<unknown>({ type: REGISTRY_COMMANDS.labels }),
+        );
+        return () => {
+          labels = value;
+        };
+      }
     }
   }
 
@@ -464,11 +552,17 @@ export function createHaLink(
       const apply = await fetchRegistry(conn, kind);
       if (stale(id) || state !== "up") return;
       const before = snapshot(kind);
+      const keyBefore = snapshotSeen;
       apply();
       if (snapshot(kind) === before) return;
       reindex();
       refresh();
-      changed();
+      const held = buildSnapshot(entities, devices, areas, labels);
+      const key = snapshotKey(held);
+      current = held;
+      snapshotSeen = key;
+      if (key === keyBefore) changed();
+      else registriesChanged();
     } catch (error) {
       if (!stale(id)) log.warn("a registry reload failed", { kind, error: String(error) });
     }
@@ -516,6 +610,8 @@ export function createHaLink(
       if (stale(id)) return;
       const applyAreas = await fetchRegistry(conn, "areas");
       if (stale(id)) return;
+      const applyLabels = await fetchRegistry(conn, "labels");
+      if (stale(id)) return;
       const raw = list(
         await conn.sendMessagePromise<unknown>({ type: "get_states" }),
         "get_states",
@@ -530,6 +626,9 @@ export function createHaLink(
       applyEntities();
       applyDevices();
       applyAreas();
+      applyLabels();
+      current = buildSnapshot(entities, devices, areas, labels);
+      snapshotSeen = snapshotKey(current);
       states = loaded;
       reindex();
       refresh();
@@ -679,7 +778,8 @@ export function createHaLink(
         entities.get(entityId)?.originalName
       );
     },
-    areaName: (areaId) => areas.get(areaId),
+    areaName: (areaId) => areas.get(areaId)?.name,
+    snapshot: () => current,
   };
 }
 

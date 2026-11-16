@@ -8,15 +8,25 @@ export type FakeEntityEntry = Readonly<{
   disabled_by?: string | null;
   name?: string | null;
   original_name?: string | null;
+  area_id?: string | null;
+  labels?: readonly string[];
 }>;
 
 export type FakeDeviceEntry = Readonly<{
   id: string;
   identifiers: readonly (readonly [string, string])[];
   name?: string | null;
+  area_id?: string | null;
+  labels?: readonly string[];
 }>;
 
-export type FakeAreaEntry = Readonly<{ area_id: string; name: string }>;
+export type FakeAreaEntry = Readonly<{
+  area_id: string;
+  name: string;
+  labels?: readonly string[];
+}>;
+
+export type FakeLabelEntry = Readonly<{ label_id: string; name: string }>;
 
 export type FakeHa = Readonly<{
   /** For `HaOptions`: the base address, without a path. */
@@ -37,6 +47,10 @@ export type FakeHa = Readonly<{
   setEntity(entry: FakeEntityEntry): void;
   setDevice(entry: FakeDeviceEntry): void;
   setArea(entry: FakeAreaEntry): void;
+  /** Stores a label and sends `label_registry_updated`. */
+  setLabel(entry: FakeLabelEntry): void;
+  /** Removes a label and sends `label_registry_updated`. */
+  removeLabel(labelId: string): void;
   /** The type of every message received after the handshake began, in order (`auth` included). */
   commands(): readonly string[];
   /** The method and path of every REST request, as "GET /api/states/x". */
@@ -95,6 +109,7 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
   const entities = new Map<string, FakeEntityEntry>();
   const devices = new Map<string, FakeDeviceEntry>();
   const areas = new Map<string, FakeAreaEntry>();
+  const labels = new Map<string, FakeLabelEntry>();
   const subscriptions: Subscription[] = [];
   const received: string[] = [];
   const requested: string[] = [];
@@ -200,6 +215,10 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
     }
     if (type === "config/area_registry/list") {
       result(socket, id, [...areas.values()]);
+      return;
+    }
+    if (type === "config/label_registry/list") {
+      result(socket, id, [...labels.values()]);
       return;
     }
     if (type === "subscribe_events") {
@@ -324,6 +343,14 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
     setArea(entry) {
       areas.set(entry.area_id, entry);
       emit("area_registry_updated", { action: "update", area_id: entry.area_id });
+    },
+    setLabel(entry) {
+      labels.set(entry.label_id, entry);
+      emit("label_registry_updated", { action: "update", label_id: entry.label_id });
+    },
+    removeLabel(labelId) {
+      labels.delete(labelId);
+      emit("label_registry_updated", { action: "remove", label_id: labelId });
     },
     commands: () => received,
     requests: () => requested,

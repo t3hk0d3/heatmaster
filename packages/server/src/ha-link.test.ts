@@ -24,6 +24,7 @@ const LOAD_COMMANDS = [
   "config/entity_registry/list",
   "config/device_registry/list",
   "config/area_registry/list",
+  "config/label_registry/list",
   "get_states",
 ];
 
@@ -295,6 +296,7 @@ describe("ha-link", () => {
             "core_config_updated",
             "device_registry_updated",
             "entity_registry_updated",
+            "label_registry_updated",
             "state_changed",
           ]);
         },
@@ -1033,7 +1035,268 @@ describe("ha-link", () => {
         await until(() => {
           expect(w.link.areaName("bath")).toBe("Spa");
         });
+        expect(w.kinds()).toEqual(["link_up", "registries_changed"]);
+      });
+    });
+  });
+
+  describe("snapshot", () => {
+    const VALVE = "z2m:0x00124b0000000001";
+    const withValve = (area: string | null, extra?: (ha: FakeHa) => void) => (ha: FakeHa) => {
+      seed(ha);
+      ha.setArea({ area_id: "office", name: "Office", labels: ["heatmaster_ignore"] });
+      ha.setArea({ area_id: "kitchen", name: "Kitchen" });
+      ha.setDevice({
+        id: "dv",
+        identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+        area_id: area,
+      });
+      extra?.(ha);
+    };
+
+    describe("Before the first loading has finished", () => {
+      it("returns undefined", async () => {
+        const w = await world({ start: false });
+        expect(w.link.snapshot()).toBeUndefined();
+      });
+    });
+
+    describe('With an area "office" named "Office" carrying heatmaster_ignore', () => {
+      it("areas holds office with that name and label", async () => {
+        const w = await world({ seed: withValve("office") });
+        expect(w.link.snapshot()?.areas.get("office")).toEqual({
+          name: "Office",
+          labels: ["heatmaster_ignore"],
+        });
+      });
+    });
+
+    describe('With a device with identifier ("mqtt", "zigbee2mqtt_0x00124b0000000001") in area office', () => {
+      it("valveAreas maps z2m:0x00124b0000000001 to office", async () => {
+        const w = await world({ seed: withValve("office") });
+        expect(w.link.snapshot()?.valveAreas.get(VALVE)).toBe("office");
+      });
+    });
+
+    describe("With that device without an area", () => {
+      it("valveAreas maps it to null", async () => {
+        const w = await world({ seed: withValve(null) });
+        expect(w.link.snapshot()?.valveAreas.get(VALVE)).toBeNull();
+      });
+    });
+
+    describe("With a device without a Zigbee2MQTT identifier", () => {
+      it("valveAreas has no entry for it", async () => {
+        const w = await world({
+          seed: withValve("office", (ha) => {
+            ha.setDevice({ id: "other", identifiers: [["hue", "abc"]], area_id: "office" });
+          }),
+        });
+        expect([...(w.link.snapshot()?.valveAreas.keys() ?? [])].sort()).toEqual([
+          VALVE,
+          "z2m:0xaaa",
+        ]);
+      });
+    });
+
+    describe("With an entity whose own area is kitchen, on a device in office", () => {
+      it("its areaId is kitchen", async () => {
+        const w = await world({
+          seed: withValve("office", (ha) => {
+            ha.setEntity({ entity_id: "sensor.a", device_id: "dv", area_id: "kitchen" });
+          }),
+        });
+        expect(w.link.snapshot()?.entities.get("sensor.a")?.areaId).toBe("kitchen");
+      });
+    });
+
+    describe("With an entity without an area, on a device in office", () => {
+      it("its areaId is office", async () => {
+        const w = await world({
+          seed: withValve("office", (ha) => {
+            ha.setEntity({ entity_id: "sensor.a", device_id: "dv", area_id: null });
+          }),
+        });
+        expect(w.link.snapshot()?.entities.get("sensor.a")?.areaId).toBe("office");
+      });
+    });
+
+    describe("With an entity without an area and without a device", () => {
+      it("its areaId is undefined", async () => {
+        const w = await world({
+          seed: withValve("office", (ha) => {
+            ha.setEntity({ entity_id: "sensor.a" });
+          }),
+        });
+        const entity = w.link.snapshot()?.entities.get("sensor.a");
+        expect(entity).toBeDefined();
+        expect(entity?.areaId).toBeUndefined();
+      });
+    });
+
+    describe("With an entity labelled heatmaster_temp_sensor", () => {
+      it("its labels hold heatmaster_temp_sensor", async () => {
+        const w = await world({
+          seed: withValve("office", (ha) => {
+            ha.setEntity({ entity_id: "sensor.a", labels: ["heatmaster_temp_sensor"] });
+          }),
+        });
+        expect(w.link.snapshot()?.entities.get("sensor.a")?.labels).toEqual([
+          "heatmaster_temp_sensor",
+        ]);
+      });
+    });
+
+    describe('With the label heatmaster_schedule_day named "Heatmaster: Day"', () => {
+      it('labels maps heatmaster_schedule_day to "Heatmaster: Day"', async () => {
+        const w = await world({
+          seed: withValve("office", (ha) => {
+            ha.setLabel({ label_id: "heatmaster_schedule_day", name: "Heatmaster: Day" });
+          }),
+        });
+        expect(w.link.snapshot()?.labels.get("heatmaster_schedule_day")).toBe("Heatmaster: Day");
+      });
+    });
+
+    describe("While the link is down after a load", () => {
+      it("returns the last loaded snapshot", async () => {
+        const w = await world({ seed: withValve("office") });
+        const before = w.link.snapshot();
+        w.ha.refuseConnections(true);
+        w.ha.dropConnections();
+        await until(() => {
+          expect(w.link.state()).toBe("down");
+        });
+        expect(w.link.snapshot()).toBe(before);
+      });
+    });
+  });
+
+  describe("loading", () => {
+    describe("On every connection", () => {
+      it("config/label_registry/list is sent after the area registry list and before get_states", async () => {
+        const w = await world();
+        const order = w.ha.commands().filter((type) => LOAD_COMMANDS.includes(type));
+        const at = (type: string): number => order.indexOf(type);
+        expect(at("config/label_registry/list")).toBeGreaterThan(at("config/area_registry/list"));
+        expect(at("config/label_registry/list")).toBeLessThan(at("get_states"));
+      });
+
+      it("label_registry_updated is subscribed", async () => {
+        const w = await world();
+        expect(w.ha.subscriptions()).toContain("label_registry_updated");
+      });
+    });
+  });
+
+  describe("registry events", () => {
+    const place = (ha: FakeHa): void => {
+      seed(ha);
+      ha.setArea({ area_id: "office", name: "Office" });
+      ha.setArea({ area_id: "kitchen", name: "Kitchen" });
+      ha.setDevice({
+        id: "dv",
+        identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+        area_id: "office",
+      });
+    };
+
+    describe("When a device moves to another area", () => {
+      async function moved(): Promise<World> {
+        const w = await world({ seed: place, probe: true });
+        w.ha.setDevice({
+          id: "dv",
+          identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+          area_id: "kitchen",
+        });
+        await until(() => {
+          expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("kitchen");
+        });
+        await w.sync();
+        return w;
+      }
+
+      it("snapshot shows the new area", async () => {
+        const w = await moved();
+        expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("kitchen");
+      });
+
+      it("registries_changed is sent once", async () => {
+        const w = await moved();
+        expect(w.kinds().filter((kind) => kind === "registries_changed")).toHaveLength(1);
+      });
+
+      it("changed is not sent", async () => {
+        const w = await moved();
+        expect(w.changedCount()).toBe(0);
+      });
+    });
+
+    describe("When a label is created", () => {
+      it("the label registry is reloaded and registries_changed is sent", async () => {
+        const w = await world({ seed: place });
+        w.ha.setLabel({ label_id: "heatmaster_schedule_day", name: "Heatmaster: Day" });
+        await until(() => {
+          expect(w.link.snapshot()?.labels.get("heatmaster_schedule_day")).toBe("Heatmaster: Day");
+        });
+        expect(
+          w.ha.commands().filter((type) => type === "config/label_registry/list"),
+        ).toHaveLength(2);
+        expect(w.kinds()).toEqual(["link_up", "registries_changed"]);
+      });
+    });
+
+    describe("When an entity registry update changes nothing the link keeps", () => {
+      it("no event is sent", async () => {
+        const w = await world({ seed: place, probe: true });
+        w.ha.setEntity({ entity_id: HUM, device_id: "d1" });
+        await until(() => {
+          expect(
+            w.ha.commands().filter((type) => type === "config/entity_registry/list"),
+          ).toHaveLength(2);
+        });
+        await w.sync();
         expect(w.kinds()).toEqual(["link_up", "changed"]);
+        expect(w.changedCount()).toBe(0);
+      });
+    });
+
+    describe("When an entity registry update changes only data snapshot does not hold", () => {
+      async function renamed(): Promise<World> {
+        const w = await world({ seed: place });
+        w.ha.setEntity({ entity_id: HUM, device_id: "d1", name: "Humidity" });
+        await until(() => {
+          expect(w.link.entityName(HUM)).toBe("Humidity");
+        });
+        return w;
+      }
+
+      it("changed is sent", async () => {
+        const w = await renamed();
+        expect(w.kinds()).toContain("changed");
+      });
+
+      it("registries_changed is not sent", async () => {
+        const w = await renamed();
+        expect(w.kinds()).not.toContain("registries_changed");
+      });
+    });
+
+    describe("When a registry reload fails", () => {
+      it("snapshot keeps the previous value and no event is sent", async () => {
+        const w = await world({ seed: place });
+        const before = w.link.snapshot();
+        w.ha.failNext("config/device_registry/list");
+        w.ha.setDevice({
+          id: "dv",
+          identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+          area_id: "kitchen",
+        });
+        await until(() => {
+          expect(w.warnings).toContain("a registry reload failed");
+        });
+        expect(w.link.snapshot()).toBe(before);
+        expect(w.kinds()).toEqual(["link_up"]);
       });
     });
   });
@@ -1054,6 +1317,10 @@ describe("ha-link", () => {
         await until(() => {
           expect(w.link.areaName("a")).toBe("A");
         });
+        w.ha.setLabel({ label_id: "l", name: "L" });
+        await until(() => {
+          expect(w.link.snapshot()?.labels.get("l")).toBe("L");
+        });
         return w;
       }
 
@@ -1070,6 +1337,7 @@ describe("ha-link", () => {
           "config/entity_registry/list",
           "config/device_registry/list",
           "config/area_registry/list",
+          "config/label_registry/list",
         ]);
         expect(w.ha.commands().filter((type) => !allowed.has(type))).toEqual([]);
       });

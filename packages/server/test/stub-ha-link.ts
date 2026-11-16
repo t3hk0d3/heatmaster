@@ -65,6 +65,7 @@ export function createStubHaLink(): StubHaLink {
     },
     entityName: (entityId) => names.get(entityId),
     areaName: (areaId) => areas.get(areaId),
+    snapshot: () => undefined,
     setState(next) {
       state = next;
     },
