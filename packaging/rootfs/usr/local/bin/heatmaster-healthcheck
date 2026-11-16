@@ -1,17 +1,16 @@
 #!/bin/bash
-# Healthy while the server answers and is not stopped for good. A broker that cannot be reached
-# (down, or refusing the login) is retried by the server itself and no restart can fix it, so it
-# does not make the container unhealthy: a watchdog would otherwise restart Heatmaster in a loop
-# while the broker is down at boot. A second instance that took over (another_instance) does.
+# Unhealthy only when the server does not answer, or still answers not_ready after the start
+# period (a wedged start). Every MQTT fault keeps the container healthy: a broker that is down or
+# refuses the login is retried by the server itself, and an instance that another instance took
+# over (another_instance) is stopped for good until a person restarts it. A watchdog restart
+# would let it take the broker session back, write the valves again and ping-pong with the other
+# instance. /api/health still answers 503 with the reason, and the page says so.
 port="${HEATMASTER_PORT:-3000}"
 answer=$(curl -sS --max-time 5 -w '\n%{http_code}' "http://127.0.0.1:${port}/api/health") || exit 1
 code="${answer##*$'\n'}"
 body="${answer%$'\n'*}"
 [ "$code" = "200" ] && exit 0
 if [ "$code" = "503" ]; then
-  reason=$(jq -r 'select(.code == "mqtt_fault") | .data.reason // empty' <<<"$body" 2>/dev/null)
-  case "$reason" in
-    mqtt_unavailable | mqtt_auth_failed) exit 0 ;;
-  esac
+  [ "$(jq -r '.code // empty' <<<"$body" 2>/dev/null)" = "mqtt_fault" ] && exit 0
 fi
 exit 1

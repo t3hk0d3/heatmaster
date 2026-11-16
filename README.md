@@ -139,7 +139,7 @@ wanted are forgotten afterwards, valve by valve.
 
 Two Heatmasters on one broker would both write. The one started last wins; the other stops writing
 and says so. The instance that stopped stays stopped until it is restarted, also after the other
-one is gone; its health check fails meanwhile, and its valves get no temperature. Three broker
+one is gone; `/api/health` answers 503 and the page says so, and its valves get no temperature. The container stays healthy on purpose: a watchdog restart would let it take the broker session back, write the valves again and fight the other instance. Three broker
 restarts within 30 seconds look the same to Heatmaster and stop it too; restart Heatmaster after
 such an outage. On an MQTT 3.1.1 broker this count of dropped connections is the only sign of a
 second instance, so an MQTT 5 broker, which names a takeover, is recommended.
@@ -150,8 +150,9 @@ Anyone who can publish on the MQTT broker can change what Heatmaster believes ab
 can stop it. Give the broker a login and keep it off untrusted networks. A wrong MQTT password is
 tried again only every 30 seconds, and the page names it.
 
-A broker that is down, or that refuses the login, does not make the container unhealthy: the
-server keeps trying by itself, and a restart would not help. The page and `GET /api/health` (503,
+No MQTT fault makes the container unhealthy (a broker that is down, a refused login, a second
+instance): the server keeps trying by itself or stays stopped for good, and a restart would not
+help or would do harm. Only a server that does not answer does. The page and `GET /api/health` (503,
 code `mqtt_fault`) show it.
 
 ## When the app halts
