@@ -18,7 +18,7 @@ import Fastify from "fastify";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { AddressInfo } from "node:net";
 import type { WebSocket } from "ws";
-import { parseDocument, stringify } from "yaml";
+import { type Document, isScalar, parseDocument, stringify, visit } from "yaml";
 import { HeatmasterError } from "./errors.ts";
 import { API_HOST } from "./options.ts";
 import type { ApplyOptions, HeatmasterRuntime, Snapshot } from "./runtime.ts";
@@ -187,6 +187,22 @@ function yamlFailure(
   return { ok: false, failure: failure(400, "yaml_invalid", message, data) };
 }
 
+/** The text of the key node that starts at `offset`, read from the parsed document. */
+function duplicateKeyName(document: Document, offset: number): string | undefined {
+  let name: string | undefined;
+  visit(document, {
+    Pair(_, pair) {
+      const key = pair.key;
+      if (isScalar(key) && key.range?.[0] === offset) {
+        name = String(key.value);
+        return visit.BREAK;
+      }
+      return undefined;
+    },
+  });
+  return name;
+}
+
 /** The document of an apply request: `config` as it is, or `yaml` read with the YAML 1.2 core schema. */
 function configOf(body: ApplyRequest): ParsedConfig {
   if ((body.config === undefined) === (body.yaml === undefined)) {
@@ -202,9 +218,9 @@ function configOf(body: ApplyRequest): ParsedConfig {
     const position = first.linePos?.[0];
     const where = position === undefined ? {} : { line: position.line, column: position.col };
     if (first.code === "DUPLICATE_KEY") {
-      const rest = (body.yaml ?? "").slice(first.pos[0]);
-      const key = /^(?:"[^"\n]*"|'[^'\n]*'|[^\s:]+)/.exec(rest)?.[0] ?? "";
-      return yamlFailure({ ...where, key }, `the YAML text repeats the key ${key}`);
+      const key = duplicateKeyName(document, first.pos[0]);
+      if (key === undefined) return yamlFailure(where, "the YAML text repeats a key in one block");
+      return yamlFailure({ ...where, key }, `the YAML text repeats the key ${JSON.stringify(key)}`);
     }
     return yamlFailure(where);
   }

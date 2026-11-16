@@ -502,6 +502,18 @@ describe("validation", () => {
       });
     });
 
+    describe("On weekdays, then [mon, tue, wed], then [thu, fri]", () => {
+      it("throws block_unused at the weekdays block, jointly overridden", () => {
+        const raw = withWeek([
+          { days: "weekdays", temperature: ECO },
+          { days: ["mon", "tue", "wed"], temperature: ECO },
+          { days: ["thu", "fri"], temperature: ECO },
+          { days: "weekend", temperature: ECO },
+        ]);
+        expectIssue(raw, "block_unused", "schedules[0].week[0]");
+      });
+    });
+
     describe("On mon listed twice in one list", () => {
       it("throws day_repeated at that block's days", () => {
         const raw = withWeek([

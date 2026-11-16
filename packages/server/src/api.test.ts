@@ -667,24 +667,35 @@ describe("api", () => {
     });
   });
 
-  describe("POST /api/config/preview with a repeated time key", () => {
-    describe("With YAML text holding 07:00 twice in one block", () => {
-      it("answers 400 yaml_invalid naming the duplicate key", async () => {
+  describe("POST /api/config/preview with a repeated key", () => {
+    const yamlWith = (first: string, second: string): string =>
+      [
+        "schedules:",
+        "  - week:",
+        "      - days: [mon]",
+        "        temperature:",
+        '          "00:00": 17',
+        `          ${first}: 21`,
+        `          ${second}: 22`,
+        "",
+      ].join("\n");
+
+    describe.each([
+      ["a quoted time", '"07:00"', '"07:00"', "07:00"],
+      ["an unquoted time", "07:00", "07:00", "07:00"],
+      ["a key with a space", "foo bar", "foo bar", "foo bar"],
+      ["a double-quoted key with an escaped quote", '"a\\"b"', '"a\\"b"', 'a"b'],
+      ["a single-quoted key with a doubled quote", "'it''s'", "'it''s'", "it's"],
+    ])("With %s twice in one block", (_name, first, second, key) => {
+      it("answers 400 yaml_invalid naming that key and does not preview", async () => {
         const { app, stub: runtime } = await rig();
-        const yaml = [
-          "schedules:",
-          "  - week:",
-          "      - days: [mon]",
-          "        temperature:",
-          '          "00:00": 17',
-          '          "07:00": 21',
-          '          "07:00": 22',
-          "",
-        ].join("\n");
-        const response = await post(app, "/api/config/preview", { yaml });
+        const response = await post(app, "/api/config/preview", { yaml: yamlWith(first, second) });
         expect(response.statusCode).toBe(400);
-        expect(response.body).toContain("yaml_invalid");
-        expect(response.body).toContain("07:00");
+        expect(response.json()).toMatchObject({
+          code: "yaml_invalid",
+          message: `the YAML text repeats the key ${JSON.stringify(key)}`,
+          data: { key },
+        });
         expect(runtime.preview).not.toHaveBeenCalled();
       });
     });
