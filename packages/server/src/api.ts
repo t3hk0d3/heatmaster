@@ -168,6 +168,12 @@ const SCHEMAS = {
   },
 } as const;
 
+const VALVE_PARAMS = {
+  type: "object",
+  required: ["id"],
+  properties: { id: { type: "string", minLength: 1 } },
+} as const;
+
 // ---- requests ------------------------------------------------------------------------------------
 
 type ParsedConfig =
@@ -222,6 +228,18 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
   const app = Fastify({
     logger,
     routerOptions: { maxParamLength: 200 },
+    // URL faults Fastify finds before any hook runs are answered here, in the API's own shape.
+    frameworkErrors: (error, _request, reply) => {
+      void reply.header("cache-control", "no-store");
+      void send(
+        reply,
+        error.code === "FST_ERR_BAD_URL"
+          ? failure(400, "body_invalid", "the URL cannot be used", {
+              issues: [{ path: "", message: error.message }],
+            })
+          : failure(404, "not_found", "there is no such route"),
+      );
+    },
     // Unknown fields are refused, not removed; nothing is converted to another type.
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } },
   });
@@ -263,9 +281,13 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
     }
   }
 
-  app.addHook("onRequest", async (_request, reply) => {
-    if (!deps.ready()) send(reply, failure(503, "not_ready", "Heatmaster is still starting"));
-    await Promise.resolve();
+  app.addHook("onRequest", (_request, reply, done) => {
+    if (deps.ready()) {
+      done();
+      return;
+    }
+    // Answering from a callback hook: the reply is sent and `done` is not called.
+    send(reply, failure(503, "not_ready", "Heatmaster is still starting"));
   });
 
   app.addHook("onSend", (_request, reply, payload, done) => {
@@ -325,7 +347,7 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
 
     routes.get("/api/config", (): ConfigView => {
       const { revision, config } = runtime.exportConfig();
-      return { revision, config, yaml: stringify(config) };
+      return { revision, config, yaml: stringify(config, { version: "1.1" }) };
     });
 
     for (const applied of [false, true]) {
@@ -370,7 +392,7 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
     for (const [action, run] of Object.entries(valveActions)) {
       routes.post<{ Params: { id: string } }>(
         `/api/valves/:id/${action}`,
-        { schema: { body: NO_FIELDS } },
+        { schema: { body: NO_FIELDS, params: VALVE_PARAMS } },
         async (request, reply) => {
           await run(request.params.id);
           return noContent(reply);

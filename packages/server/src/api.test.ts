@@ -7,8 +7,8 @@ import type { ApiError, ChangePlan, EventMessage, PlanView, StateView } from "@h
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
 import { parse } from "yaml";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { startFakeZ2m } from "../test/fake-z2m.ts";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { startFakeZ2m, type FakeZ2m } from "../test/fake-z2m.ts";
 import { createManualClock } from "../test/manual-clock.ts";
 import {
   EVENTS_BUFFER_LIMIT,
@@ -400,6 +400,38 @@ describe("api", () => {
       });
     });
 
+    describe("With a path whose percent-encoding is bad", () => {
+      it("answers 400 with code body_invalid and no-store, and calls no runtime method", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/valves/%E0/refresh", {});
+        expect(response.statusCode).toBe(400);
+        expect(errorOf(response).code).toBe("body_invalid");
+        expect(response.headers["cache-control"]).toBe("no-store");
+        expect(runtime.calls()).toEqual([]);
+      });
+    });
+
+    describe("With a path parameter over 200 characters", () => {
+      it("answers 404 with code not_found and no-store, and calls no runtime method", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, `/api/valves/${"a".repeat(250)}/refresh`, {});
+        expect(response.statusCode).toBe(404);
+        expect(errorOf(response)).toMatchObject({ code: "not_found", data: {} });
+        expect(response.headers["cache-control"]).toBe("no-store");
+        expect(runtime.calls()).toEqual([]);
+      });
+    });
+
+    describe("With an empty valve id", () => {
+      it("answers 400 with code body_invalid and calls no runtime method", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/valves//refresh", {});
+        expect(response.statusCode).toBe(400);
+        expect(errorOf(response).code).toBe("body_invalid");
+        expect(runtime.calls()).toEqual([]);
+      });
+    });
+
     describe("With a POST that has no body at all", () => {
       it("answers 400 with code body_invalid", async () => {
         const { app, stub: runtime } = await rig();
@@ -515,7 +547,8 @@ describe("api", () => {
 
       it("no key named releasing appears anywhere in the answer", async () => {
         const { app, stub: runtime } = await rig();
-        runtime.exportConfig.mockReturnValue({ revision: 5, config });
+        // A runtime that leaked its stored shape would carry `releasing` next to the document.
+        runtime.exportConfig.mockReturnValue({ revision: 5, config, releasing: {} } as never);
         const response = await app.inject({ method: "GET", url: "/api/config" });
         expect(response.body).not.toContain("releasing");
       });
@@ -533,6 +566,25 @@ describe("api", () => {
         }>();
         const back = parse(body.yaml, { version: "1.2", schema: "core" }) as typeof config;
         expect(back.schedules[0]?.default_week.mon[0]?.time).toBe("06:30");
+      });
+    });
+
+    describe("With a 21:00 set point and a room named off", () => {
+      const config = {
+        rooms: [{ id: "off", name: "off" }],
+        schedules: [{ default_week: { mon: [{ time: "21:00", temperature: 20 }] } }],
+      };
+
+      it("the YAML text quotes both, and reads back equal under YAML 1.1 and 1.2 core", async () => {
+        const { app, stub: runtime } = await rig();
+        runtime.exportConfig.mockReturnValue({ revision: 1, config });
+        const body = (await app.inject({ method: "GET", url: "/api/config" })).json<{
+          yaml: string;
+        }>();
+        expect(body.yaml).toContain('"21:00"');
+        expect(body.yaml).toContain('"off"');
+        expect(parse(body.yaml, { version: "1.1" })).toEqual(config);
+        expect(parse(body.yaml, { version: "1.2", schema: "core" })).toEqual(config);
       });
     });
 
@@ -1140,12 +1192,9 @@ describe("api", () => {
   });
 
   describe("end to end (the real runtime, on fake-z2m)", () => {
+    const world = {} as { app: FastifyInstance; fake: FakeZ2m };
     const folders: string[] = [];
     const stops: (() => Promise<void>)[] = [];
-    afterEach(async () => {
-      for (const stop of stops.splice(0).reverse()) await stop();
-      for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
-    });
 
     const IEEE = "0xa1";
     const TRVZB_STATE = {
@@ -1185,86 +1234,105 @@ describe("api", () => {
       ],
     };
 
-    describe("With one TRVZB on the fake bridge that has reported", () => {
-      it("lists it, previews, applies, and then shows the room and the valve as managed", async () => {
-        const fake = await startFakeZ2m();
-        stops.push(() => fake.stop());
-        fake.addDevice({ ieee: IEEE, name: "living/valve", modelId: "TRVZB" }, TRVZB_STATE);
-        const dataDir = mkdtempSync(path.join(os.tmpdir(), "heatmaster-api-"));
-        const publicDir = mkdtempSync(path.join(os.tmpdir(), "heatmaster-api-"));
-        folders.push(dataDir, publicDir);
-        const clock = createManualClock(Date.UTC(2026, 10, 16, 9, 0, 0));
-        const mqtt = createMqttClient(
-          { url: fake.url, username: undefined, password: undefined, clientId: undefined },
-          clock,
-        );
-        const runtime = createRuntime({
-          configStore: createConfigStore(dataDir, clock),
-          ledgerStore: createLedgerStore({ dataDir, publicDir }, clock, "test"),
-          transports: buildTransports(mqtt, { baseTopic: "zigbee2mqtt" }),
-          ha: undefined,
-          clock,
-          processTimeZone: "Europe/Amsterdam",
-          log: { info: () => undefined, warn: () => undefined, error: () => undefined },
-        });
-        const app = buildApi({
-          runtime,
-          ready: () => true,
-          mqttFault: () => mqtt.fault(),
-          version: "t",
-        });
-        apps.push(app);
-        await app.ready();
-        await mqtt.connect();
-        await runtime.start();
-        stops.push(async () => {
-          await runtime.stop();
-          await mqtt.end();
-        });
-        fake.speak(IEEE);
-        await vi.waitFor(
-          async () => {
-            const state = (
-              await app.inject({ method: "GET", url: "/api/state" })
-            ).json<StateView>();
-            if (!state.unassigned.some((valve) => valve.observed)) fake.republish(IEEE);
-            expect(state.unassigned.some((valve) => valve.observed)).toBe(true);
-          },
-          { timeout: 10 * 1000, interval: 5 },
-        );
+    const state = async (): Promise<StateView> =>
+      (await world.app.inject({ method: "GET", url: "/api/state" })).json<StateView>();
 
-        const listed = (await app.inject({ method: "GET", url: "/api/state" })).json<StateView>();
-        const valve = listed.valves.find((v) => v.valveId === `z2m:${IEEE}`);
+    beforeAll(async () => {
+      const fake = await startFakeZ2m();
+      stops.push(() => fake.stop());
+      fake.addDevice({ ieee: IEEE, name: "living/valve", modelId: "TRVZB" }, TRVZB_STATE);
+      const dataDir = mkdtempSync(path.join(os.tmpdir(), "heatmaster-api-"));
+      const publicDir = mkdtempSync(path.join(os.tmpdir(), "heatmaster-api-"));
+      folders.push(dataDir, publicDir);
+      const clock = createManualClock(Date.UTC(2026, 10, 16, 9, 0, 0));
+      const mqtt = createMqttClient(
+        { url: fake.url, username: undefined, password: undefined, clientId: undefined },
+        clock,
+      );
+      const runtime = createRuntime({
+        configStore: createConfigStore(dataDir, clock),
+        ledgerStore: createLedgerStore({ dataDir, publicDir }, clock, "test"),
+        transports: buildTransports(mqtt, { baseTopic: "zigbee2mqtt" }),
+        ha: undefined,
+        clock,
+        processTimeZone: "Europe/Amsterdam",
+        log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      const app = buildApi({
+        runtime,
+        ready: () => true,
+        mqttFault: () => mqtt.fault(),
+        version: "t",
+      });
+      await app.ready();
+      stops.push(() => app.close());
+      await mqtt.connect();
+      await runtime.start();
+      stops.push(async () => {
+        await runtime.stop();
+        await mqtt.end();
+      });
+      world.app = app;
+      world.fake = fake;
+      fake.speak(IEEE);
+      await vi.waitFor(
+        async () => {
+          const current = await state();
+          if (!current.unassigned.some((valve) => valve.observed)) fake.republish(IEEE);
+          expect(current.unassigned.some((valve) => valve.observed)).toBe(true);
+        },
+        { timeout: 10 * 1000, interval: 5 },
+      );
+    });
+
+    afterAll(async () => {
+      for (const stop of stops.splice(0).reverse()) await stop();
+      for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
+    });
+
+    describe("With one TRVZB on the fake bridge that has reported", () => {
+      it("GET /api/state lists it with supported true and no roomId", async () => {
+        const valve = (await state()).valves.find((v) => v.valveId === `z2m:${IEEE}`);
         expect(valve).toMatchObject({ supported: true, name: "living/valve" });
         expect(Object.hasOwn(valve ?? {}, "roomId")).toBe(false);
+      });
 
-        const preview = await post(app, "/api/config/preview", { config: document });
-        expect(preview.statusCode).toBe(200);
-        const planned = preview.json<PlanView>();
+      it("POST /api/config/preview with a room for it answers one joining valve and its planned writes", async () => {
+        const response = await post(world.app, "/api/config/preview", { config: document });
+        expect(response.statusCode).toBe(200);
+        const planned = response.json<PlanView>();
         expect(planned.applied).toBe(false);
         expect(planned.joining.map((j) => j.valveId)).toEqual([`z2m:${IEEE}`]);
         expect(planned.writes.length).toBeGreaterThan(0);
+      });
 
-        const applied = await post(app, "/api/config", { config: document });
-        expect(applied.statusCode).toBe(200);
-        expect(applied.json<PlanView>()).toMatchObject({ applied: true, revision: 1 });
+      it("POST /api/config with the same body answers applied true and revision 1", async () => {
+        const response = await post(world.app, "/api/config", { config: document });
+        expect(response.statusCode).toBe(200);
+        expect(response.json<PlanView>()).toMatchObject({ applied: true, revision: 1 });
+      });
 
-        const after = (await app.inject({ method: "GET", url: "/api/state" })).json<StateView>();
+      it("GET /api/state then shows the room and the valve as managed", async () => {
+        const after = await state();
         expect(after.rooms.map((room) => room.roomId)).toEqual(["living"]);
         expect(after.valves.find((v) => v.valveId === `z2m:${IEEE}`)).toMatchObject({
           roomId: "living",
           membership: "managed",
         });
+      });
 
-        const exported = (await app.inject({ method: "GET", url: "/api/config" })).json<{
-          revision: number;
-          config: Record<string, unknown>;
-        }>();
+      it("GET /api/config returns the applied document, and no key named releasing", async () => {
+        const response = await world.app.inject({ method: "GET", url: "/api/config" });
+        const exported = response.json<{ revision: number; config: Record<string, unknown> }>();
         expect(exported.revision).toBe(1);
         expect(exported.config).toMatchObject({
-          rooms: [{ id: "living", name: "Living" }],
           settings: { timezone: "Europe/Amsterdam" },
+          rooms: [{ id: "living", name: "Living", valves: [{ id: `z2m:${IEEE}` }] }],
+          schedules: [
+            { id: "main", name: "Main", default_week: document.schedules[0]?.default_week },
+          ],
         });
+        expect(response.body).not.toContain("releasing");
       });
     });
   });
