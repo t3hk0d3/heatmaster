@@ -271,6 +271,19 @@ describe("discovery", () => {
           sync: "sensor.heatmaster_a_sync",
         });
       });
+      it("a hyphen in the room id becomes an underscore", () => {
+        const config = parse(
+          configMessages(view({ rooms: [room("living-room")] }), OPTIONS).get(
+            roomConfigTopic("homeassistant", "living-room"),
+          ),
+        );
+        expect(config.components.temperature.default_entity_id).toBe(
+          "sensor.heatmaster_living_room_temperature",
+        );
+        expect(config.components.problem.default_entity_id).toBe(
+          "binary_sensor.heatmaster_living_room_problem",
+        );
+      });
       it("each system component has <platform>.heatmaster_<key>", () => {
         const config = parse(
           configMessages(view(), OPTIONS).get(systemConfigTopic("homeassistant")),

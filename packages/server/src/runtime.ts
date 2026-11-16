@@ -1030,8 +1030,11 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const payload = profile.binding.encodeRefresh();
     if (payload === undefined) return;
     directAsks.set(valveId, [...recent, nowMs]);
+    // Stamped before the send, so a tick that runs while the read is awaited already waits; a
+    // failed read only delays the core by the spacing.
+    applyCore({ kind: "asked_directly", valveId, at: nowMs }, nowMs);
     await found.transport.read(valveId, payload);
-    // It went out: the core's next request to this valve waits for the spacing after it.
+    // And again once it went out, so the spacing is measured from the end of a slow send.
     applyCore({ kind: "asked_directly", valveId, at: clock.nowMs() }, clock.nowMs());
   }
 

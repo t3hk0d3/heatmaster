@@ -75,11 +75,14 @@ function origin(options: DiscoveryOptions): Record<string, string> {
   return { name: "Heatmaster", sw_version: options.version, support_url: SUPPORT_URL };
 }
 
-/** The suggested entity id: ASCII, from ids only, so a room's name never reaches it. */
+/**
+ * The suggested entity id: ASCII, from ids only, so a room's name never reaches it. Home Assistant
+ * entity ids allow only a-z, 0-9 and `_`, so the `-` a room id may hold becomes `_`.
+ */
 function entityId(platform: string, roomId: string | undefined, key: string): string {
   return roomId === undefined
     ? `${platform}.${DISCOVERY_NODE}_${key}`
-    : `${platform}.${DISCOVERY_NODE}_${roomId}_${key}`;
+    : `${platform}.${DISCOVERY_NODE}_${roomId.replaceAll("-", "_")}_${key}`;
 }
 
 function template(key: string): string {

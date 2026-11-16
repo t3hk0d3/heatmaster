@@ -86,6 +86,10 @@ version 1 is upgraded when it is loaded.
 Home Assistant gets, through MQTT discovery, one device per room (temperature, target
 temperature, problem and sync entities) and one "Heatmaster" device (problem, problem count,
 writes held, and the "Stop writing" button). There is no thermostat entity in this version.
+Their entity ids are `<platform>.heatmaster_<room id>_<kind>` (for example
+`sensor.heatmaster_living_room_temperature`); this needs Home Assistant 2025.10 or newer, which
+reads the discovery key `default_entity_id`. Older releases ignore it and name the entities from
+their names.
 
 ## First run
 

@@ -2585,11 +2585,31 @@ describe("runtime", () => {
         expect(reads(rig)).toBe(before);
       });
 
-      it("a refresh follows at the next tick", async () => {
+      it("a refresh follows at the next tick, and not before the tick at 150 s", async () => {
         const rig = await askedBeforeTick();
+        await rig.advance(1000);
         const before = reads(rig);
-        await rig.advance(TICK_INTERVAL_MS + 1000);
+        await rig.advance(TICK_INTERVAL_MS - 1000);
+        expect(reads(rig)).toBe(before);
+        await rig.advance(1000);
         expect(reads(rig)).toBe(before + 1);
+      });
+
+      it("a tick that runs while the ask's read is still awaited sends nothing to that valve", async () => {
+        const rig = await boot({ seed: silent });
+        await rig.advance(119 * 1000);
+        const release = rig.z2m.holdSends(A);
+        const before = rig.z2m.attempts().length;
+        const asking = rig.rt.refreshValve(A);
+        await vi.waitFor(() => {
+          expect(rig.z2m.attempts().length).toBe(before + 1);
+        });
+        rig.clock.advance(1000);
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        expect(rig.z2m.attempts().length).toBe(before + 1);
+        release();
+        await asking;
+        await rig.rt.settled();
       });
     });
 

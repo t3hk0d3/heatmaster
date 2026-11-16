@@ -584,7 +584,7 @@ describe("events", () => {
 
     describe("With a direct ask to a valve at t", () => {
       const t = T0 + 10 * SECOND_MS;
-      const before = { ...unmarked(), tokens: 4, tokensAt: t, asks: [T0 - 1] };
+      const before = { ...unmarked(), tokens: 4, tokensAt: t, asks: [t - 10 * 60 * SECOND_MS] };
       const base = inboxOf([[Z1, live(T0)]], [[Z1, before]]);
       const out = apply(base, { kind: "asked_directly", valveId: Z1, at: t }, T0 + 1);
       it("no refresh or setpoint write is allowed before t + SPACING_MS", () => {
@@ -592,14 +592,30 @@ describe("events", () => {
         expect(mayAsk(after, t + SPACING_MS - 1)).toBe(false);
         expect(maySpend(after, t + SPACING_MS - 1)).toBe(false);
       });
-      it("a refresh is allowed at t + SPACING_MS", () => {
-        expect(maySpend(valve(out, Z1), t + SPACING_MS)).toBe(true);
-      });
-      it("tokens and asks are unchanged", () => {
+      it("a refresh is allowed at t + SPACING_MS, which it was not one ms before", () => {
         const after = valve(out, Z1);
-        expect(after.tokens).toBe(before.tokens);
-        expect(after.tokensAt).toBe(before.tokensAt);
-        expect(after.asks).toEqual(before.asks);
+        expect(mayAsk(after, t + SPACING_MS - 1)).toBe(false);
+        expect(mayAsk(after, t + SPACING_MS)).toBe(true);
+        expect(maySpend(after, t + SPACING_MS - 1)).toBe(false);
+        expect(maySpend(after, t + SPACING_MS)).toBe(true);
+      });
+      it("tokens and asks are unchanged, and only lastWriteAt differs", () => {
+        const after = valve(out, Z1);
+        expect(after.lastWriteAt).toBe(t);
+        expect(after).toEqual({ ...before, lastWriteAt: t });
+      });
+    });
+
+    describe("With a direct ask earlier than the valve's last request", () => {
+      const t = T0 + 10 * SECOND_MS;
+      const later = { ...unmarked(), lastWriteAt: t + 5 * SECOND_MS };
+      const out = apply(
+        inboxOf([[Z1, live(T0)]], [[Z1, later]]),
+        { kind: "asked_directly", valveId: Z1, at: t },
+        T0 + 1,
+      );
+      it("lastWriteAt is not lowered", () => {
+        expect(valve(out, Z1).lastWriteAt).toBe(t + 5 * SECOND_MS);
       });
     });
 
