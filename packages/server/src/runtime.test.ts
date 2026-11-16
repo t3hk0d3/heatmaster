@@ -2,10 +2,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  BUCKET,
   ChangeRefused,
   ConfigError,
   EMPTY_CONFIG,
   EMPTY_LEDGER,
+  REFILL_MS,
   configToRaw,
   findProfile,
   ledgerToRaw,
@@ -42,8 +44,10 @@ import {
 import {
   createConfigStore,
   createLedgerStore,
+  createPacingStore,
   type ConfigStore,
   type LedgerStore,
+  type PacingStore,
 } from "./stores.ts";
 import type { DeviceInfo } from "./transport.ts";
 
@@ -182,6 +186,8 @@ function folder(): string {
 }
 
 type Seed = Readonly<{
+  /** A pacing file: valve id to bucketFullAt, or one that cannot be read. */
+  pacing?: Readonly<Record<string, number>> | "unreadable";
   config?: RawConfig | "unreadable";
   revision?: number;
   releasing?: Readonly<Record<string, number>>;
@@ -211,6 +217,14 @@ function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
       JSON.stringify({ version: 1, data: ledgerToRaw(ledgerOf(seed.ledger)) }),
     );
   }
+  if (seed.pacing === "unreadable") {
+    writeFileSync(path.join(dataDir, "pacing.json"), "{ not json");
+  } else if (seed.pacing !== undefined) {
+    const valves = Object.fromEntries(
+      Object.entries(seed.pacing).map(([id, bucketFullAt]) => [id, { bucketFullAt }]),
+    );
+    writeFileSync(path.join(dataDir, "pacing.json"), JSON.stringify({ version: 1, valves }));
+  }
   if (seed.copy !== undefined) {
     writeFileSync(
       path.join(publicDir, "originals.json"),
@@ -237,7 +251,9 @@ interface StoreControl {
   sendsSoFar: () => number;
   expected: boolean[];
   overwrite: boolean[];
-  fail: { config: number; ledger: number; copy: number };
+  fail: { config: number; ledger: number; copy: number; pacing: number };
+  /** One entry per save of the pacing file that reached it, with the sends made so far. */
+  pacingSaves: number[];
   /** While set, the ledger store's save or copyRecords waits for it; `reached` notes the call. */
   gates: { ledgerSave?: Promise<void>; copyRecords?: Promise<void> };
   reached: string[];
@@ -266,6 +282,20 @@ function wrapConfig(store: ConfigStore, control: StoreControl): ConfigStore {
       note(control, "config.save");
     },
     remove: () => store.remove(),
+  };
+}
+
+function wrapPacing(store: PacingStore, control: StoreControl): PacingStore {
+  return {
+    load: () => store.load(),
+    async save(stamps) {
+      if (control.fail.pacing > 0) {
+        control.fail.pacing -= 1;
+        throw failure();
+      }
+      await store.save(stamps);
+      control.pacingSaves.push(control.sendsSoFar());
+    },
   };
 }
 
@@ -344,12 +374,15 @@ async function boot(
     processTimeZone?: string;
     /** The transport's start waits for this. */
     gate?: Promise<void>;
+    /** A restart: the same folders and clock as this earlier rig, which is stopped first. */
+    after?: Rig;
   }> = {},
 ): Promise<Rig> {
-  const dataDir = folder();
-  const publicDir = folder();
-  seedFiles(dataDir, publicDir, options.seed ?? {});
-  const clock = createManualClock(T);
+  if (options.after !== undefined) await options.after.rt.stop();
+  const dataDir = options.after?.dataDir ?? folder();
+  const publicDir = options.after?.publicDir ?? folder();
+  if (options.after === undefined) seedFiles(dataDir, publicDir, options.seed ?? {});
+  const clock = options.after?.clock ?? createManualClock(T);
   const z2m = createStubTransport("z2m");
   const stores: StoreControl = {
     calls: [],
@@ -357,7 +390,8 @@ async function boot(
     sendsSoFar: () => z2m.attempts().length,
     expected: [],
     overwrite: [],
-    fail: { config: 0, ledger: 0, copy: 0 },
+    fail: { config: 0, ledger: 0, copy: 0, pacing: 0 },
+    pacingSaves: [],
     gates: {},
     reached: [],
   };
@@ -372,6 +406,7 @@ async function boot(
   const rt = createRuntime({
     configStore: wrapConfig(createConfigStore(dataDir, clock), stores),
     ledgerStore: wrapLedger(createLedgerStore({ dataDir, publicDir }, clock, "test"), stores),
+    pacingStore: wrapPacing(createPacingStore(dataDir), stores),
     transports: {
       z2m:
         options.gate === undefined
@@ -3070,6 +3105,135 @@ describe("runtime", () => {
         expect(error).toBeInstanceOf(HeatmasterError);
         expect(codeOf(error)).toBe("not_started");
         expect(() => after.rt.exportConfig()).toThrow(HeatmasterError);
+      });
+    });
+  });
+
+  describe("pacing.json", () => {
+    const requests = (rig: Rig): number => sends(rig, A).length;
+    const stampOf = (rig: Rig): number | undefined => {
+      const file = readJson(path.join(rig.dataDir, "pacing.json")) as {
+        valves: Record<string, { bucketFullAt: number }>;
+      };
+      return file.valves[A]?.bucketFullAt;
+    };
+
+    describe("On start with stamps saved by a previous run", () => {
+      it("a valve whose bucket was empty makes no write until its token refills", async () => {
+        const rig = await boot({
+          seed: { ...managedSeed([A]), pacing: { [A]: T + BUCKET * REFILL_MS } },
+        });
+        await rig.advance(REFILL_MS - 2 * MINUTE);
+        expect(requests(rig)).toBe(0);
+        expect(rig.z2m.attempts()).toEqual([]);
+        await rig.advance(3 * MINUTE);
+        expect(requests(rig)).toBe(1);
+      });
+    });
+
+    describe("Restart loop (start, ask until empty, stop, start again, repeat)", () => {
+      it("total requests to one valve over 24 h of simulated time <= BUCKET + 24 h / REFILL_MS", async () => {
+        let rig = await boot({ seed: managedSeed([A]) });
+        await rig.advance(14 * MINUTE);
+        for (let run = 1; run < (24 * HOUR) / (15 * MINUTE); run++) {
+          rig = await boot({ after: rig });
+          await rig.advance(14 * MINUTE);
+        }
+        const total = rigs.reduce((sum, each) => sum + requests(each), 0);
+        expect(total).toBeLessThanOrEqual(BUCKET + (24 * HOUR) / REFILL_MS);
+        // Not vacuous: the valve did use its budget.
+        expect(total).toBeGreaterThanOrEqual(BUCKET);
+      }, 120_000);
+    });
+
+    describe("On a tick that charged a valve", () => {
+      it("pacing.json is saved once, with the time the bucket is full again", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        // The start tick asked the valve to report: one token of a full bucket.
+        expect(rig.stores.pacingSaves).toHaveLength(1);
+        expect(stampOf(rig)).toBe(T + REFILL_MS);
+        // The second ask waits for its 2 min backoff, then is the next charge.
+        await rig.advance(2 * MINUTE);
+        expect(requests(rig)).toBe(2);
+        expect(rig.stores.pacingSaves).toHaveLength(2);
+      });
+    });
+
+    describe("On a tick that charged nothing", () => {
+      it("pacing.json is not written", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        const saved = rig.stores.pacingSaves.length;
+        const before = readFileSync(path.join(rig.dataDir, "pacing.json"), "utf8");
+        await rig.advance(TICK_INTERVAL_MS);
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(requests(rig)).toBe(1);
+        expect(rig.stores.pacingSaves).toHaveLength(saved);
+        expect(readFileSync(path.join(rig.dataDir, "pacing.json"), "utf8")).toBe(before);
+      });
+    });
+
+    describe("On start with an unreadable pacing.json", () => {
+      it("a pacing_unreadable problem is shown", async () => {
+        const rig = await boot({ seed: { ...managedSeed([A]), pacing: "unreadable" } });
+        expect(problemKinds(rig.rt.snapshot())).toContain("pacing_unreadable");
+      });
+      it("no valve write goes out before REFILL_MS", async () => {
+        const rig = await boot({ seed: { ...managedSeed([A]), pacing: "unreadable" } });
+        await rig.advance(REFILL_MS - MINUTE);
+        expect(rig.z2m.attempts()).toEqual([]);
+        await rig.advance(2 * MINUTE);
+        expect(requests(rig)).toBe(1);
+      });
+      it("the file is rewritten with the empty buckets", async () => {
+        const rig = await boot({ seed: { ...managedSeed([A]), pacing: "unreadable" } });
+        expect(stampOf(rig)).toBe(T + BUCKET * REFILL_MS);
+      });
+    });
+
+    describe("On a failing pacing save", () => {
+      it("a store_write_failed problem for pacing is shown and control continues", async () => {
+        const rig = await boot({ seed: managedSeed([A]), start: false });
+        rig.stores.fail.pacing = 1;
+        await rig.rt.start();
+        await rig.rt.settled();
+        const problem = rig.rt.snapshot().problems.find((p) => p.kind === "store_write_failed");
+        expect(problem?.data).toEqual({ store: "pacing" });
+        expect(requests(rig)).toBe(1);
+        await rig.advance(2 * MINUTE);
+        expect(requests(rig)).toBe(2);
+      });
+      it("the next tick saves again and the problem goes", async () => {
+        const rig = await boot({ seed: managedSeed([A]), start: false });
+        rig.stores.fail.pacing = 1;
+        await rig.rt.start();
+        await rig.rt.settled();
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("store_write_failed");
+        expect(stampOf(rig)).toBe(T + REFILL_MS);
+      });
+    });
+
+    describe("With an entry for a valve that is no longer configured", () => {
+      it("it is dropped on the next save", async () => {
+        const rig = await boot({
+          seed: { ...managedSeed([A]), pacing: { "z2m:0xgone": T + 3 * REFILL_MS } },
+        });
+        const file = readJson(path.join(rig.dataDir, "pacing.json")) as {
+          valves: Record<string, unknown>;
+        };
+        expect(Object.keys(file.valves)).toEqual([A]);
+      });
+    });
+
+    describe("With a stamp later than a whole empty bucket away", () => {
+      it("it counts as an empty bucket: the first token comes after REFILL_MS", async () => {
+        const rig = await boot({
+          seed: { ...managedSeed([A]), pacing: { [A]: T + 100 * REFILL_MS } },
+        });
+        await rig.advance(REFILL_MS - MINUTE);
+        expect(requests(rig)).toBe(0);
+        await rig.advance(2 * MINUTE);
+        expect(requests(rig)).toBe(1);
       });
     });
   });

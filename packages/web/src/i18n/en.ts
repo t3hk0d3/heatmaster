@@ -198,6 +198,8 @@ export const en = {
     "The Heatmaster configuration cannot be read. Valves are left as they are",
   "problem.ledger_unreadable":
     "The saved original valve settings cannot be read. Valves are left as they are",
+  "problem.pacing_unreadable":
+    "The saved record of how many writes each valve may still receive cannot be read. Heatmaster starts every valve with an empty budget and writes as it refills, one write per valve every 30 minutes",
   "problem.transport_unusable": "Heatmaster cannot use {transport}: {reason}",
   "problem.link_down": "The connection to {name} is down",
   "problem.valve_not_adopted":

@@ -7,6 +7,7 @@ import {
   problemFeedLost,
   problemId,
   problemLedgerUnreadable,
+  problemPacingUnreadable,
   problemLinkDown,
   problemReleaseStalled,
   problemRoomNoTemperature,
@@ -227,6 +228,7 @@ describe("status", () => {
         const table: readonly [Problem, ProblemKind, SubjectKind, Severity, readonly string[]][] = [
           [problemConfigUnreadable(), "config_unreadable", "system", "error", []],
           [problemLedgerUnreadable(), "ledger_unreadable", "system", "error", []],
+          [problemPacingUnreadable(), "pacing_unreadable", "system", "warning", []],
           [problemLinkDown("ha"), "link_down", "system", "error", ["link"]],
           [
             problemTransportUnusable("z2m", "bridge_unknown"),
@@ -269,7 +271,7 @@ describe("status", () => {
           [problemStoreWriteFailed("config"), "store_write_failed", "system", "error", ["store"]],
           [problemTickFailed(), "tick_failed", "system", "error", []],
         ];
-        expect(new Set(table.map((row) => row[1])).size).toBe(19);
+        expect(new Set(table.map((row) => row[1])).size).toBe(20);
         for (const [problem, kind, subjectKind, severity, dataKeys] of table) {
           expect(problem.kind).toBe(kind);
           expect(problem.subject.kind).toBe(subjectKind);

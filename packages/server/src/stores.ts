@@ -1,4 +1,4 @@
-/** The config file, the ledger file and the readable copy of the originals. */
+/** The config file, the ledger file, the pacing file and the readable copy of the originals. */
 
 import { constants, copyFile, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +18,7 @@ import { HeatmasterError } from "./errors.ts";
 
 export const CONFIG_FILE_VERSION = 1;
 export const LEDGER_FILE_VERSION = 1;
+export const PACING_FILE_VERSION = 1;
 export const COPY_FILE_VERSION = 1;
 /** The readable copy and the four before it. */
 export const COPY_GENERATIONS = 5;
@@ -37,6 +38,18 @@ export type LedgerStore = Readonly<{
   importCopy(acceptEmpty?: boolean): Promise<Ledger>;
   copyRecords(): Promise<number>;
   remove(): Promise<void>;
+}>;
+
+/** Per valve, when its token bucket is full again (epoch ms); see `exportBucket` in core. */
+export type PacingStamps = ReadonlyMap<string, number>;
+
+/**
+ * `load` never rejects: no file gives no stamps, a file that cannot be read gives `unreadable`.
+ * `save` replaces the whole file.
+ */
+export type PacingStore = Readonly<{
+  load(): Promise<Readonly<{ state: "ok" | "unreadable"; stamps: PacingStamps }>>;
+  save(stamps: PacingStamps): Promise<void>;
 }>;
 
 /** A store that failed to load, or was never loaded, refuses to write. */
@@ -70,6 +83,10 @@ export function migrateConfigFile(file: File): File {
 
 export function migrateLedgerFile(file: File): File {
   return migrateFile(file, LEDGER_FILE_VERSION);
+}
+
+export function migratePacingFile(file: File): File {
+  return migrateFile(file, PACING_FILE_VERSION);
 }
 
 export function migrateCopyFile(file: File): File {
@@ -381,6 +398,48 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
         if (errnoCode(error) !== "ENOENT") throw error;
       });
       holdsRecords = false;
+    },
+  };
+}
+
+function stampsFromData(data: unknown): PacingStamps {
+  if (!isFile(data)) throw new Error("the valves are not an object");
+  const stamps = new Map<string, number>();
+  for (const [valveId, entry] of Object.entries(data)) {
+    if (
+      !isFile(entry) ||
+      typeof entry.bucketFullAt !== "number" ||
+      !Number.isFinite(entry.bucketFullAt)
+    ) {
+      throw new Error(`the entry of ${valveId} has no bucketFullAt`);
+    }
+    stamps.set(valveId, entry.bucketFullAt);
+  }
+  return stamps;
+}
+
+export function createPacingStore(dataDir: string): PacingStore {
+  const file = path.join(dataDir, "pacing.json");
+  return {
+    async load() {
+      const read = await readJson(file);
+      if (read.kind === "missing") return { state: "ok", stamps: new Map() };
+      if (read.kind === "ok") {
+        try {
+          return { state: "ok", stamps: stampsFromData(migratePacingFile(read.file).valves) };
+        } catch {
+          // fall through: unreadable
+        }
+      }
+      return { state: "unreadable", stamps: new Map() };
+    },
+
+    async save(stamps) {
+      const valves: Record<string, { bucketFullAt: number }> = {};
+      for (const valveId of [...stamps.keys()].sort()) {
+        valves[valveId] = { bucketFullAt: stamps.get(valveId) ?? 0 };
+      }
+      await writeAtomic(file, render({ version: PACING_FILE_VERSION, valves }));
     },
   };
 }

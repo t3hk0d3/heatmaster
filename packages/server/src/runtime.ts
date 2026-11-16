@@ -5,15 +5,18 @@
  */
 
 import {
+  BUCKET,
   ChangeRefused,
   EMPTY_CONFIG,
   EMPTY_MEMORY,
   EMPTY_READINGS,
+  REFILL_MS,
   SETTING_KEYS,
   VALVE_SILENT_AFTER_MS,
   applyEvent,
   configToRaw,
   describeValue,
+  exportBucket,
   findProfile,
   forgetValve as coreForgetValve,
   ledgerToRaw,
@@ -22,6 +25,7 @@ import {
   newState,
   planChange,
   preview as previewWrites,
+  problemPacingUnreadable,
   problemStoreWriteFailed,
   problemTickFailed,
   restoreValve as coreRestoreValve,
@@ -34,6 +38,7 @@ import {
 } from "@heatmaster/core";
 import type {
   Binding,
+  BucketStart,
   ChangeOptions,
   ChangePlan,
   Config,
@@ -47,6 +52,7 @@ import type {
   Inbox,
   Ledger,
   Liveness,
+  Memory,
   Membership,
   Problem,
   RoomStatus,
@@ -61,7 +67,7 @@ import type {
 import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
 import type { HaLink } from "./ha-link.ts";
-import type { ConfigStore, LedgerStore } from "./stores.ts";
+import type { ConfigStore, LedgerStore, PacingStamps, PacingStore } from "./stores.ts";
 import type { DeviceInfo, RawEvent, Transport } from "./transport.ts";
 
 const SECOND_MS = 1000;
@@ -88,6 +94,7 @@ export type RuntimeLog = Readonly<{
 export type RuntimeDeps = Readonly<{
   configStore: ConfigStore;
   ledgerStore: LedgerStore;
+  pacingStore: PacingStore;
   transports: Readonly<Record<string, Transport>>;
   ha: HaLink | undefined;
   clock: Clock;
@@ -194,7 +201,7 @@ export type EffectContext = Readonly<{
   onSent: (valveId: string, what: "refresh" | "publish") => void;
 }>;
 
-type StoreName = "config" | "ledger" | "copy";
+type StoreName = "config" | "ledger" | "copy" | "pacing";
 
 export type EffectOutcome = Readonly<{
   error: unknown;
@@ -349,7 +356,7 @@ type TickRecord = Readonly<{
 
 type Profiled = Readonly<{ spec: ValveSpec; binding: Binding }>;
 
-const STORE_NAMES: readonly StoreName[] = ["config", "ledger", "copy"];
+const STORE_NAMES: readonly StoreName[] = ["config", "ledger", "copy", "pacing"];
 
 function zoneAccepted(zone: string | undefined): zone is string {
   if (zone === undefined || zone === "") return false;
@@ -420,6 +427,15 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   const warnedTopics = new Set<string>();
   let lastTick: TickRecord | undefined;
   const storeFailed: Partial<Record<StoreName, boolean>> = {};
+  /**
+   * The write budget. `buckets` is what a valve with no memory starts with: the stamps known for
+   * the valves, and the stamp of a valve with none (full, or empty after a file that could not be
+   * read). `persisted` is what `pacing.json` holds, undefined when it holds nothing usable.
+   * `pacingUnreadableUntil` keeps the problem shown while the made-up empty buckets refill.
+   */
+  let buckets: BucketStart = { stamps: new Map(), fallback: 0 };
+  let persisted: PacingStamps | undefined = new Map();
+  let pacingUnreadableUntil: number | undefined;
   /** The error of the last timed or event tick, while it keeps failing; undefined once one runs. */
   let tickError: string | undefined;
   const directAsks = new Map<string, number[]>();
@@ -627,6 +643,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       sensors,
       unobservableSensors: unobservable,
       memory: inbox.memory,
+      buckets,
       now: Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(zone()),
     };
   }
@@ -828,12 +845,14 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   async function execute(
     effects: readonly Effect[],
     overwriteUnreadable: boolean,
+    before?: () => Promise<void>,
   ): Promise<EffectOutcome> {
     // Events stay queued until every await of this function is done: one that skipped the
     // queue would be applied before older ones and before the failed-send rule.
     executing = true;
     let outcome: EffectOutcome;
     try {
+      await before?.();
       outcome = await executeEffects(effects, effectContext(overwriteUnreadable));
       if (outcome.stores.ledger === true || outcome.stores.copy === true) {
         copyRecords = await deps.ledgerStore.copyRecords().catch((error: unknown) => {
@@ -865,6 +884,50 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return outcome;
   }
 
+  /** The buckets that are not full, by valve: a full bucket has no entry. */
+  function pacingStamps(memory: Memory, nowMs: number): PacingStamps {
+    const kinds = currentMemberships();
+    const next = new Map<string, number>();
+    for (const [valveId, vm] of memory.valves) {
+      const stamp = exportBucket(vm, nowMs);
+      if (stamp > nowMs) next.set(valveId, stamp);
+    }
+    // A valve that has no memory yet (its device is not listed yet) keeps what was known of it,
+    // while it is configured; with an unreadable config nothing is dropped.
+    for (const [valveId, stamp] of buckets.stamps) {
+      if (next.has(valveId) || stamp <= nowMs) continue;
+      const kind = kinds.get(valveId);
+      const configured = kind === "managed" || kind === "releasing" || kind === "frozen";
+      if (configState !== "ok" || configured) {
+        next.set(valveId, Math.min(stamp, nowMs + BUCKET * REFILL_MS));
+      }
+    }
+    return next;
+  }
+
+  /**
+   * Saves the buckets when one of them changed. A failure is logged and shown as a problem; the
+   * next tick tries again.
+   */
+  async function savePacing(memory: Memory, nowMs: number): Promise<void> {
+    const next = pacingStamps(memory, nowMs);
+    buckets = { stamps: next, fallback: buckets.fallback };
+    const changed =
+      persisted === undefined ||
+      [...next].some(([valveId, stamp]) => persisted?.get(valveId) !== stamp);
+    if (!changed) return;
+    try {
+      await deps.pacingStore.save(next);
+      persisted = next;
+      storeFailed.pacing = false;
+    } catch (error) {
+      if (storeFailed.pacing !== true) {
+        log.error("saving the write budget failed", { error: errorText(error) });
+      }
+      storeFailed.pacing = true;
+    }
+  }
+
   async function runTick(): Promise<void> {
     if (!started || stopping) return;
     const nowMs = clock.nowMs();
@@ -878,7 +941,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       timeZone: world.now.timeZoneId,
       tickedAt: nowMs,
     };
-    const outcome = await execute(result.effects, false);
+    // The budget is saved before anything is sent: a crash after a send never loses a charge.
+    const outcome = await execute(result.effects, false, () => savePacing(result.memory, nowMs));
     if (outcome.stores.config === true || outcome.stores.ledger === true) refollow();
     tickError = undefined;
     notify();
@@ -1088,6 +1152,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       problems: [
         ...(lastTick?.problems ?? []),
         ...storeProblems(),
+        ...(pacingUnreadableUntil !== undefined && clock.nowMs() < pacingUnreadableUntil
+          ? [problemPacingUnreadable()]
+          : []),
         ...(tickError === undefined ? [] : [problemTickFailed()]),
       ],
       memberships: membershipRecord,
@@ -1210,6 +1277,15 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
             stored.releasing.size > 0));
       ledger = await deps.ledgerStore.load(expected);
       copyRecords = await deps.ledgerStore.copyRecords();
+      // Before the first tick: what a valve may still be sent comes from the last run.
+      const pacing = await deps.pacingStore.load();
+      const startedAt = clock.nowMs();
+      const unreadable = pacing.state === "unreadable";
+      const emptyAt = startedAt + BUCKET * REFILL_MS;
+      buckets = { stamps: pacing.stamps, fallback: unreadable ? emptyAt : 0 };
+      persisted = unreadable ? undefined : pacing.stamps;
+      pacingUnreadableUntil = unreadable ? emptyAt : undefined;
+      if (unreadable) log.error("the saved write budget cannot be read; every valve starts empty");
       started = true;
       stopping = false;
       // Nothing waits for Home Assistant or for a replay. After a restart a valve is left alone

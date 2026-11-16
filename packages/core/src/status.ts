@@ -15,6 +15,7 @@ export type Severity = "warning" | "error" | "critical";
 export type ProblemKind =
   | "config_unreadable"
   | "ledger_unreadable"
+  | "pacing_unreadable"
   | "link_down"
   | "transport_unusable"
   | "valve_not_adopted"
@@ -236,7 +237,12 @@ export function problemValveNotAuto(valveId: string, mode: ValveMode): Problem {
   return problem("valve_not_auto", "valve", valveId, "warning", { mode });
 }
 
-/** Raised by the runtime, never by `tick`. `store` is `config`, `ledger` or `copy`. */
+/** Raised by the runtime, never by `tick`: the saved write budget could not be read. */
+export function problemPacingUnreadable(): Problem {
+  return problem("pacing_unreadable", "system", SYSTEM_ID, "warning");
+}
+
+/** Raised by the runtime, never by `tick`. `store` is `config`, `ledger`, `copy` or `pacing`. */
 export function problemStoreWriteFailed(store: string): Problem {
   return problem("store_write_failed", "system", SYSTEM_ID, "error", { store });
 }

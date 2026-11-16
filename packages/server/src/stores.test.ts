@@ -27,6 +27,7 @@ import {
   StoreLocked,
   createConfigStore,
   createLedgerStore,
+  createPacingStore,
   migrateConfigFile,
   migrateCopyFile,
   migrateLedgerFile,
@@ -802,6 +803,88 @@ describe("migrations", () => {
           expect(() => migrate({ data: {} })).toThrow();
         }
       });
+    });
+  });
+});
+
+describe("stores — pacing.json", () => {
+  const STAMPS = new Map([
+    ["z2m:a", START_MS + 3_600_000],
+    ["z2m:b", START_MS + 7_200_000],
+  ]);
+  describe("load", () => {
+    describe("With no file", () => {
+      it("returns no entries (all buckets full)", async () => {
+        const w = world();
+        const loaded = await createPacingStore(w.dataDir).load();
+        expect(loaded.state).toBe("ok");
+        expect(loaded.stamps.size).toBe(0);
+      });
+    });
+    describe("With an invalid file", () => {
+      it.each([
+        ["not JSON", "{ not json"],
+        ["not an object", "[1]"],
+        ["no valves", { version: 1 }],
+        ["an entry without bucketFullAt", { version: 1, valves: { a: {} } }],
+        [
+          "a bucketFullAt that is not a number",
+          { version: 1, valves: { a: { bucketFullAt: "x" } } },
+        ],
+        [
+          "a bucketFullAt that is not finite",
+          { version: 1, valves: { a: { bucketFullAt: null } } },
+        ],
+      ])(
+        "reports unreadable (%s); the caller starts with empty buckets",
+        async (_name, content) => {
+          const w = world();
+          put(w.file("pacing.json"), content);
+          const loaded = await createPacingStore(w.dataDir).load();
+          expect(loaded.state).toBe("unreadable");
+          expect(loaded.stamps.size).toBe(0);
+        },
+      );
+    });
+    describe("With version other than 1", () => {
+      it.each([0, 2, "1"])("reports unreadable (version %s)", async (version) => {
+        const w = world();
+        put(w.file("pacing.json"), { version, valves: { a: { bucketFullAt: START_MS } } });
+        expect((await createPacingStore(w.dataDir).load()).state).toBe("unreadable");
+      });
+    });
+  });
+
+  describe("save", () => {
+    it("writes atomically: the file holds the document and no .tmp file remains", async () => {
+      const w = world();
+      await createPacingStore(w.dataDir).save(STAMPS);
+      expect(jsonOf(w.file("pacing.json"))).toEqual({
+        version: 1,
+        valves: {
+          "z2m:a": { bucketFullAt: START_MS + 3_600_000 },
+          "z2m:b": { bucketFullAt: START_MS + 7_200_000 },
+        },
+      });
+      expect(names(w.dataDir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+    });
+    it("with a directory standing where pacing.json.tmp must be written, rejects and leaves the old file", async () => {
+      const w = world();
+      const store = createPacingStore(w.dataDir);
+      await store.save(STAMPS);
+      const before = readFileSync(w.file("pacing.json"), "utf8");
+      mkdirSync(w.file("pacing.json.tmp"));
+      const error = await rejectionOf(store.save(new Map([["z2m:c", START_MS]])));
+      expect((error as NodeJS.ErrnoException).code).toBe("EISDIR");
+      expect(readFileSync(w.file("pacing.json"), "utf8")).toBe(before);
+    });
+    it("round trip save -> load returns the same stamps", async () => {
+      const w = world();
+      const store = createPacingStore(w.dataDir);
+      await store.save(STAMPS);
+      const loaded = await createPacingStore(w.dataDir).load();
+      expect(loaded.state).toBe("ok");
+      expect(new Map(loaded.stamps)).toEqual(STAMPS);
     });
   });
 });

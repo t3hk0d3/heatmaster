@@ -110,6 +110,8 @@ export {
   WINDOW_MS,
   charge,
   chargeAsk,
+  exportBucket,
+  importBucket,
   mayAsk,
   maySpend,
   mayWrite,
@@ -144,6 +146,7 @@ export {
   problemSensorOutOfRange,
   problemSensorStale,
   problemSettingNotHolding,
+  problemPacingUnreadable,
   problemStoreWriteFailed,
   problemTickFailed,
   problemTransportUnusable,
@@ -178,7 +181,15 @@ export {
   transportOf,
   transportUsable,
 } from "./control.ts";
-export type { DeviceView, Effect, PlannedWrite, Selection, TickResult, World } from "./control.ts";
+export type {
+  BucketStart,
+  DeviceView,
+  Effect,
+  PlannedWrite,
+  Selection,
+  TickResult,
+  World,
+} from "./control.ts";
 export {
   ChangeRefused,
   capture,

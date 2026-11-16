@@ -28,6 +28,23 @@ function tokenMs(vm: ValveMemory, nowMs: number): number {
   );
 }
 
+/**
+ * The time the bucket is full again: the one stamp kept across a restart. It carries the level
+ * exactly, `BUCKET - max(0, stamp - t) / REFILL_MS` tokens at `t`; a full bucket gives `nowMs`.
+ */
+export function exportBucket(vm: ValveMemory, nowMs: number): number {
+  return nowMs + BUCKET * REFILL_MS - tokenMs(vm, nowMs);
+}
+
+/**
+ * Sets the bucket from a stamp made by `exportBucket`. A stamp later than a whole empty bucket
+ * away (the clock went back) counts as exactly that far; one not after `nowMs` is a full bucket.
+ */
+export function importBucket(vm: ValveMemory, bucketFullAt: number, nowMs: number): ValveMemory {
+  const missing = Math.min(BUCKET * REFILL_MS, Math.max(0, bucketFullAt - nowMs));
+  return { ...vm, tokens: (BUCKET * REFILL_MS - missing) / REFILL_MS, tokensAt: nowMs };
+}
+
 function hasToken(vm: ValveMemory, nowMs: number): boolean {
   return tokenMs(vm, nowMs) >= REFILL_MS;
 }

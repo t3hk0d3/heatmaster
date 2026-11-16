@@ -7,7 +7,7 @@ import { createDiscovery, type Discovery } from "./discovery.ts";
 import { createMqttClient, DEFAULT_TUNING, type MqttClient } from "./mqtt.ts";
 import { loadOptions, OptionsError, redactOptions, type Options } from "./options.ts";
 import { createRuntime, type HeatmasterRuntime, type RuntimeLog } from "./runtime.ts";
-import { createConfigStore, createLedgerStore } from "./stores.ts";
+import { createConfigStore, createLedgerStore, createPacingStore } from "./stores.ts";
 import { stateView } from "./views.ts";
 import { buildTransports } from "./z2m.ts";
 
@@ -82,6 +82,7 @@ export async function start(
   late.mqtt = mqtt;
   const runtime = createRuntime({
     configStore: createConfigStore(options.dataDir, clock),
+    pacingStore: createPacingStore(options.dataDir),
     ledgerStore: createLedgerStore(
       { dataDir: options.dataDir, publicDir: options.publicDir },
       clock,

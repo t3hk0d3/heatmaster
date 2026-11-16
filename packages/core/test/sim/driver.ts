@@ -275,6 +275,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       sensors: sensorReadings(),
       unobservableSensors: new Set(),
       memory: inbox.memory,
+      buckets: undefined,
       now: nowZoned(),
     };
   };

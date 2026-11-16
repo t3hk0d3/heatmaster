@@ -15,6 +15,7 @@ import {
   mayAsk,
   maySpend,
   mayWrite,
+  importBucket,
   noteDesired,
   notHolding,
   spend,
@@ -81,6 +82,12 @@ export type DeviceView = Readonly<{
 }>;
 
 /**
+ * The buckets a valve starts with when the tick finds no memory for it: `stamps` holds a valve's
+ * `bucketFullAt` (see `importBucket`), `fallback` is the stamp of a valve with none.
+ */
+export type BucketStart = Readonly<{ stamps: ReadonlyMap<string, number>; fallback: number }>;
+
+/**
  * Everything one tick reads. `ledger` undefined: the ledger could not be read. `links` holds one
  * entry per transport (and `ha` when configured); a transport with no entry counts as down.
  * `transportFaults` maps a transport key to why it is unusable. `sensors` and
@@ -96,6 +103,7 @@ export type World = Readonly<{
   sensors: ReadonlyMap<string, SensorReading>;
   unobservableSensors: ReadonlySet<string>;
   memory: Memory;
+  buckets: BucketStart | undefined;
   now: Temporal.ZonedDateTime;
 }>;
 
@@ -353,6 +361,15 @@ function valveLiveness(
   return liveness(state, nowMs, VALVE_SILENT_AFTER_MS);
 }
 
+/** A valve's first memory: with the bucket the world says it starts with, when it says. */
+function startMemory(world: World, valveId: string, spec: ValveSpec): ValveMemory {
+  const nowMs = world.now.epochMilliseconds;
+  const fresh = newValveMemory(spec, nowMs);
+  const buckets = world.buckets;
+  if (buckets === undefined) return fresh;
+  return importBucket(fresh, buckets.stamps.get(valveId) ?? buckets.fallback, nowMs);
+}
+
 /** Runs a managed or releasing valve that has a spec (and, when managed, a planned room). */
 function runValve(
   ctx: Context,
@@ -365,7 +382,11 @@ function runValve(
   const { world, nowMs, held } = ctx;
   const state = view.state;
   const live: Liveness = valveLiveness(world, valveId, state, nowMs);
-  let vm = markByAge(world.memory.valves.get(valveId) ?? newValveMemory(spec, nowMs), spec, nowMs);
+  let vm = markByAge(
+    world.memory.valves.get(valveId) ?? startMemory(world, valveId, spec),
+    spec,
+    nowMs,
+  );
   vm = kind === "managed" ? { ...vm, equalSince: undefined } : { ...vm, nudgeDue: false };
   const canRead = transportUsable(world, view, valveId) && live !== "silent";
   const canAct = canRead && !held;

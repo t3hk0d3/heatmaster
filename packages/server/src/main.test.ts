@@ -873,6 +873,10 @@ describe("main (runtime)", () => {
           // days are published, so the link stays down and the sensor pending.
           world.ha.refuseConnections(true);
           await world.running.stop();
+          // This story is about what the first start sequence sends. The budget a restart keeps
+          // (pacing.json) is tested in runtime.test.ts; here the file is removed, as if the hours
+          // the story skips had passed.
+          rmSync(path.join(dirs.dataDir, "pacing.json"), { force: true });
           begin();
           restartedAt = world.clock.nowMs();
           world.running = await start(world.options, world.clock, false);

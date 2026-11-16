@@ -148,6 +148,8 @@ export const ru: Dictionary = {
     "Не удаётся прочитать конфигурацию Heatmaster. Клапаны оставлены как есть",
   "problem.ledger_unreadable":
     "Не удаётся прочитать сохранённые исходные настройки клапанов. Клапаны оставлены как есть",
+  "problem.pacing_unreadable":
+    "Не удаётся прочитать сохранённый учёт разрешённых записей в клапаны. Heatmaster начинает с пустым запасом у каждого клапана и пишет по мере его восстановления: одна запись в 30 минут на клапан",
   "problem.transport_unusable": "Heatmaster не может использовать {transport}: {reason}",
   "problem.link_down": "Нет связи с {name}",
   "problem.valve_not_adopted":

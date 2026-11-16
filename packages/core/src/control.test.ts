@@ -567,6 +567,7 @@ const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) => {
         sensors,
         unobservableSensors: new Set(r.unobservable),
         memory,
+        buckets: undefined,
         now: BUILDER_NOW,
       };
       return { world, steps: r.steps };
@@ -2477,6 +2478,43 @@ describe("control", () => {
           { ...base, ledger: undefined },
         ];
         for (const world of worlds) expect(preview(world)).toEqual([]);
+      });
+    });
+  });
+
+  describe("tick — start buckets", () => {
+    const fresh = (buckets: World["buckets"]): World => ({
+      ...equalWorld(),
+      memory: { valves: new Map(), rooms: new Map() },
+      buckets,
+    });
+    describe("With a valve that has no memory and a stamp for it", () => {
+      it("its memory starts with the bucket the stamp carries", () => {
+        const base = fresh(undefined);
+        const now = nowOf(base);
+        const world = fresh({ stamps: new Map([[V, now + 2.5 * REFILL_MS]]), fallback: 0 });
+        expect(tokensAt(vmOf(tick(world)), now)).toBeCloseTo(BUCKET - 2.5 - 1, 9);
+      });
+    });
+    describe("With a valve that has no memory and no stamp", () => {
+      it("its memory starts with the fallback bucket", () => {
+        const now = nowOf(fresh(undefined));
+        const empty = fresh({ stamps: new Map(), fallback: now + BUCKET * REFILL_MS });
+        expect(tokensAt(vmOf(tick(empty)), now)).toBe(0);
+        const full = fresh({ stamps: new Map(), fallback: 0 });
+        // The valve has not been heard, so the tick asks it once: one token.
+        expect(tokensAt(vmOf(tick(full)), now)).toBe(BUCKET - 1);
+      });
+    });
+    describe("With a valve that already has memory", () => {
+      it("the stamps are not applied", () => {
+        const world = {
+          ...equalWorld(),
+          buckets: { stamps: new Map(), fallback: nowOf(equalWorld()) + 99 * REFILL_MS },
+        };
+        const before = world.memory.valves.get(V);
+        const after = vmOf(tick(world));
+        expect(after.tokens).toBe(before?.tokens ?? after.tokens);
       });
     });
   });

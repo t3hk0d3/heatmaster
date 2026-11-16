@@ -348,6 +348,7 @@ export function makeWorld(options: Partial<World> & { config?: Config } = {}): W
     sensors: new Map(),
     unobservableSensors: new Set(),
     memory: EMPTY_MEMORY,
+    buckets: undefined,
     now: BUILDER_NOW,
     ...rest,
   };

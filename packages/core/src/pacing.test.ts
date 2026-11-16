@@ -1,9 +1,14 @@
+import { fc, test as fcTest } from "@fast-check/vitest";
 import { beforeAll, describe, expect, it } from "vitest";
 import { START_TOKENS, mark, newValveMemory, noteHeard, type ValveMemory } from "./memory.ts";
 import {
   BUCKET,
+  SPACING_MS,
   charge,
   chargeAsk,
+  REFILL_MS,
+  exportBucket,
+  importBucket,
   mayAsk,
   maySpend,
   mayWrite,
@@ -566,6 +571,88 @@ describe("pacing", () => {
         expect(at).toHaveLength(52);
         expect(at).toEqual(expected);
       });
+    });
+  });
+});
+
+describe("pacing — the bucket stamp", () => {
+  describe("exportBucket", () => {
+    describe("With a full bucket", () => {
+      it("bucketFullAt <= now", () => {
+        const full = importBucket(unmarked(), 0, T0);
+        expect(exportBucket(full, T0)).toBeLessThanOrEqual(T0);
+        expect(exportBucket(full, T0 + HOUR_MS)).toBeLessThanOrEqual(T0 + HOUR_MS);
+      });
+    });
+    describe("With 2 tokens taken at t", () => {
+      it("bucketFullAt = t + 2 * REFILL_MS", () => {
+        const both = importBucket(unmarked(), 0, T0);
+        const taken = spend(spend(both, T0), T0);
+        expect(exportBucket(taken, T0)).toBe(T0 + 2 * REFILL_MS);
+      });
+    });
+  });
+
+  describe("importBucket", () => {
+    describe("With bucketFullAt <= now", () => {
+      it("the valve holds BUCKET tokens", () => {
+        const vm = importBucket(unmarked(), T0 - HOUR_MS, T0);
+        expect(vm.tokens).toBe(BUCKET);
+        expect(vm.tokensAt).toBe(T0);
+        expect(importBucket(unmarked(), T0, T0).tokens).toBe(BUCKET);
+      });
+    });
+    describe("With bucketFullAt = now + 2.5 * REFILL_MS", () => {
+      it("mayWrite allows exactly 3 writes now, a 4th only after REFILL_MS / 2", () => {
+        let vm = importBucket(unmarked(), T0 + 2.5 * REFILL_MS, T0);
+        const groups: Group[] = ["schedule", "active_group", "sensor_source"];
+        let written = 0;
+        for (const [i, group] of groups.entries()) {
+          const at = T0 + i * SPACING_MS;
+          expect(mayWrite(vm, group, at)).toBe(true);
+          vm = charge(vm, group, at, true);
+          written += 1;
+        }
+        expect(written).toBe(3);
+        // Each group is on its first write, so no backoff is in the way: the token alone decides.
+        expect(mayWrite(vm, "sensor_source", T0 + 3 * SPACING_MS)).toBe(false);
+        expect(mayWrite(vm, "schedule", T0 + REFILL_MS / 2 - SECOND_MS)).toBe(false);
+        expect(mayWrite(vm, "schedule", T0 + REFILL_MS / 2)).toBe(true);
+      });
+    });
+    describe("With bucketFullAt > now + BUCKET * REFILL_MS", () => {
+      it("clamped: bucket empty, first token after REFILL_MS", () => {
+        const vm = importBucket(unmarked(), T0 + 100 * REFILL_MS, T0);
+        expect(vm.tokens).toBe(0);
+        expect(maySpend(vm, T0 + REFILL_MS - SECOND_MS)).toBe(false);
+        expect(maySpend(vm, T0 + REFILL_MS)).toBe(true);
+        expect(exportBucket(vm, T0)).toBe(T0 + BUCKET * REFILL_MS);
+      });
+    });
+    describe("Round trip export -> import at the same time", () => {
+      fcTest.prop([fc.array(fc.integer({ min: 0, max: 40 * MINUTE_MS }), { maxLength: 14 })])(
+        "the same spends are allowed as with the original memory",
+        (gaps) => {
+          let original = importBucket(unmarked(), 0, T0);
+          let at = T0;
+          for (const gap of gaps) {
+            at += gap;
+            if (maySpend(original, at)) original = spend(original, at);
+          }
+          const restored = importBucket(unmarked(at), exportBucket(original, at), at);
+          let a = original;
+          let b = restored;
+          for (let i = 0; i < 30; i++) {
+            // Spacing is not kept across a restart: the first look is one spacing later.
+            const t = at + SPACING_MS + i * 20 * MINUTE_MS;
+            expect(maySpend(b, t)).toBe(maySpend(a, t));
+            if (maySpend(a, t)) {
+              a = spend(a, t);
+              b = spend(b, t);
+            }
+          }
+        },
+      );
     });
   });
 });
