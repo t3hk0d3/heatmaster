@@ -1,7 +1,7 @@
 import mqtt from "mqtt";
 import type { IClientOptions, MqttClient as JsClient } from "mqtt";
 import type { Clock } from "./clock.ts";
-import { HeatmasterError } from "./errors.ts";
+import { consoleErrorLog, HeatmasterError, type ErrorLog } from "./errors.ts";
 
 export type MqttOptions = Readonly<{
   url: string;
@@ -73,10 +73,6 @@ interface Attempt {
 
 type Pending = Readonly<{ fail(): void }>;
 
-function logError(message: string, error: unknown): void {
-  console.error(JSON.stringify({ level: "error", msg: message, err: String(error) }));
-}
-
 /** A PUBACK with a refusing reason code is the broker's answer, not a lost connection. */
 function publishFailure(error: Error): HeatmasterError {
   const code = (error as Error & { code: unknown }).code;
@@ -107,7 +103,11 @@ export function createMqttClient(
   options: MqttOptions,
   clock: Clock,
   tuning: MqttTuning = DEFAULT_TUNING,
+  log: ErrorLog = consoleErrorLog,
 ): MqttClient {
+  const logError = (message: string, error: unknown): void => {
+    log.error(message, { err: String(error) });
+  };
   let js: JsClient | undefined;
   let state: MqttState = "disconnected";
   let attempt: Attempt = freshAttempt();

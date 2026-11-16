@@ -4,7 +4,7 @@ import { buildApi, startApi, type ApiRuntime } from "./api.ts";
 import { systemClock, type Clock } from "./clock.ts";
 import { buildHaLink, type HaLog } from "./ha-link.ts";
 import { createDiscovery, type Discovery } from "./discovery.ts";
-import { createMqttClient, type MqttClient } from "./mqtt.ts";
+import { createMqttClient, DEFAULT_TUNING, type MqttClient } from "./mqtt.ts";
 import { loadOptions, type Options } from "./options.ts";
 import { createRuntime, type HeatmasterRuntime, type RuntimeLog } from "./runtime.ts";
 import { createConfigStore, createLedgerStore } from "./stores.ts";
@@ -78,8 +78,7 @@ export async function start(
   );
   await startApi(app, options.port);
   const log = runtimeLog(app.log);
-  // The MQTT client and the Zigbee2MQTT transport take no logger; they write to console.error.
-  const mqtt = createMqttClient(options.mqtt, clock);
+  const mqtt = createMqttClient(options.mqtt, clock, DEFAULT_TUNING, log);
   late.mqtt = mqtt;
   const runtime = createRuntime({
     configStore: createConfigStore(options.dataDir, clock),
@@ -99,6 +98,7 @@ export async function start(
     mqtt,
     stopWriting: () => runtime.setHold(true),
     options: { prefix: options.discoveryPrefix, version: pkg.version },
+    log,
   });
   const shutdown = async (): Promise<void> => {
     ready = false;

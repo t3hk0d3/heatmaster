@@ -1,6 +1,7 @@
 /** Home Assistant entities through MQTT discovery: room devices, a Heatmaster device, one button. */
 
 import type { ProblemView, RoomView, StateView, SyncState } from "@heatmaster/core";
+import { consoleErrorLog, type ErrorLog } from "./errors.ts";
 import { STATUS_OFFLINE, STATUS_ONLINE, STATUS_TOPIC, type MqttClient } from "./mqtt.ts";
 
 export const DISCOVERY_NODE = "heatmaster";
@@ -248,6 +249,8 @@ export type DiscoveryDeps = Readonly<{
   mqtt: DiscoveryMqtt;
   stopWriting: () => Promise<unknown>;
   options: DiscoveryOptions;
+  /** Defaults to one JSON line on stderr. */
+  log?: ErrorLog;
 }>;
 
 export type Discovery = Readonly<{
@@ -258,12 +261,12 @@ export type Discovery = Readonly<{
 
 const PUBLISH = { qos: 1, retain: true } as const;
 
-function logError(message: string, error: unknown): void {
-  console.error(JSON.stringify({ level: "error", msg: message, err: String(error) }));
-}
-
 export function createDiscovery(deps: DiscoveryDeps): Discovery {
   const { mqtt, options } = deps;
+  const log = deps.log ?? consoleErrorLog;
+  const logError = (message: string, error: unknown): void => {
+    log.error(message, { err: String(error) });
+  };
   /** The text last published to each topic. */
   const published = new Map<string, string>();
   /** Room config topics this process published to, or that the broker holds from earlier runs. */
