@@ -392,7 +392,7 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
 }
 
 function timeKeyMessage(key: string): string {
-  return /^\d+$/.test(key)
+  return /^(0|[1-9]\d*)$/.test(key)
     ? `the key "${key}" is not a time; an unquoted 07:00 is read as a number, write "HH:MM" in quotes`
     : 'a time is "HH:MM"';
 }

@@ -318,6 +318,13 @@ describe("validation", () => {
     });
 
     describe("On an unquoted time key that YAML read as a number", () => {
+      it("a key with a leading zero gets the plain message", () => {
+        const raw = withPlan({ "00:00": "eco", "0700": 22 });
+        expectIssue(raw, "time_invalid", "schedules[0].week[0].temperature.0700");
+        const issue = issuesOf(raw).find((i) => i.code === "time_invalid");
+        expect(issue?.message).toBe('a time is "HH:MM"');
+      });
+
       it("throws time_invalid at that key and says to quote the time", () => {
         const raw = withPlan({ "00:00": "eco", "420": 22 });
         expectIssue(raw, "time_invalid", "schedules[0].week[0].temperature.420");

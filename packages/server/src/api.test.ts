@@ -645,6 +645,28 @@ describe("api", () => {
     });
   });
 
+  describe("POST /api/config/preview with unquoted times", () => {
+    describe("With YAML text holding an unquoted 07:00 key", () => {
+      it('preview receives the set point at "07:00"', async () => {
+        const { app, stub: runtime } = await rig();
+        const yaml = [
+          "schedules:",
+          "  - week:",
+          "      - days: [mon]",
+          "        temperature:",
+          "          00:00: 17",
+          "          07:00: 21",
+          "",
+        ].join("\n");
+        const response = await post(app, "/api/config/preview", { yaml });
+        expect(response.statusCode).toBe(200);
+        expect(runtime.preview.mock.calls[0]?.[0]).toEqual({
+          schedules: [{ week: [{ days: ["mon"], temperature: { "00:00": 17, "07:00": 21 } }] }],
+        });
+      });
+    });
+  });
+
   describe("POST /api/config", () => {
     describe("With a valid document", () => {
       it("apply is called once with that document, and preview is not called", async () => {
