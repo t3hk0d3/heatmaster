@@ -602,8 +602,6 @@ describe("main (runtime)", () => {
         world.options = liveOptions(await freePort(), world.fake, world.ha, dirs);
         world.files = [];
         world.running = await start(world.options, world.clock, false);
-        // This world is paced by the test: the publisher shares the connection and would disturb it.
-        await world.running.discovery.stop();
         await vi.waitFor(() => {
           expect(world.running.runtime.snapshot().links).toEqual({ z2m: true, ha: true });
         }, WAIT);
@@ -639,17 +637,29 @@ describe("main (runtime)", () => {
           done = true;
         });
         let polls = 0;
-        await vi.waitFor(() => {
+        await vi.waitFor(async () => {
           polls += 1;
-          if (!done && polls > 1) world.clock.advance(1000);
+          if (!done && polls > 1) {
+            await quiet();
+            world.clock.advance(1000);
+          }
           expect(done).toBe(true);
         }, WAIT);
         await settled;
       }
 
+      /**
+       * Resolves when no discovery publish is waiting for its PUBACK: the client times a publish
+       * out on the manual clock, so the clock must not move meanwhile.
+       */
+      async function quiet(): Promise<void> {
+        await world.running.discovery.sync(stateView(world.running.runtime.snapshot()));
+      }
+
       /** Advances in steps of at most 30 s, letting the runtime settle after each. */
       async function advance(ms: number): Promise<void> {
         for (let left = ms; left > 0; left -= 30 * 1000) {
+          await quiet();
           world.clock.advance(Math.min(left, 30 * 1000));
           await settle();
         }
@@ -661,6 +671,7 @@ describe("main (runtime)", () => {
           try {
             check();
           } catch (error) {
+            await quiet();
             world.clock.advance(1000);
             await settle();
             throw error;
@@ -687,8 +698,9 @@ describe("main (runtime)", () => {
         await advance(2000);
         world.fake.releaseAnswers();
         await vi.waitFor(seen, WAIT);
-        await settle();
+        // Held before the settling, which can publish a write: its answer must come later.
         world.fake.holdAnswers();
+        await settle();
       }
 
       /** `answerLater` for an answer that makes the valve heard again. */
@@ -796,9 +808,6 @@ describe("main (runtime)", () => {
           begin();
           restartedAt = world.clock.nowMs();
           world.running = await start(world.options, world.clock, false);
-          await world.running.discovery.stop();
-          // This world is paced by the test: the publisher shares the connection and would disturb it.
-          await world.running.discovery.stop();
           await advanceUntil(() => {
             expect(gets()).toBe(1);
           });

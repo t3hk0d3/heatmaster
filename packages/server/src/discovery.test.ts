@@ -66,7 +66,7 @@ function view(extra: Partial<StateView> = {}): StateView {
 }
 
 // Parsed discovery payloads are walked by key in many places; a typed walk would only repeat them.
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 type Config = any;
 function parse(text: string | undefined): Config {
   return JSON.parse(text ?? "null");
@@ -146,12 +146,17 @@ describe("discovery", () => {
           device_class: "temperature",
           unit_of_measurement: "°C",
           state_class: "measurement",
+          suggested_display_precision: 1,
         });
         expect(Object.hasOwn(temperature, "name")).toBe(false);
       });
       it("problem is a binary_sensor with device class problem and no name key", () => {
         const entity = config.components.problem;
-        expect(entity).toMatchObject({ platform: "binary_sensor", device_class: "problem" });
+        expect(entity).toMatchObject({
+          platform: "binary_sensor",
+          device_class: "problem",
+          entity_category: "diagnostic",
+        });
         expect(Object.hasOwn(entity, "name")).toBe(false);
       });
       it("sync has device class enum, the six options in order, no unit and no state class", () => {
@@ -231,6 +236,12 @@ describe("discovery", () => {
           "held",
           "stop_writing",
         ]);
+      });
+      it("problem_count is a measurement and a diagnostic", () => {
+        expect(config.components.problem_count).toMatchObject({
+          state_class: "measurement",
+          entity_category: "diagnostic",
+        });
       });
       it("problem_count has json_attributes_topic heatmaster/system/problems", () => {
         expect(config.components.problem_count.json_attributes_topic).toBe(
@@ -338,6 +349,8 @@ describe("discovery", () => {
     });
   });
 });
+
+/* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 
 // ---- the publisher against a recording stub -----------------------------------------------------
 
@@ -631,7 +644,9 @@ describe("discovery (createDiscovery)", () => {
         open();
         await Promise.all([first, second, third]);
         const texts = s.published.filter((m) => m.topic === roomStateTopic("a"));
-        expect(texts.map((m) => parse(m.payload).temperature)).toEqual([19.6, 17]);
+        expect(
+          texts.map((m) => (JSON.parse(m.payload) as { temperature: number }).temperature),
+        ).toEqual([19.6, 17]);
       });
     });
   });

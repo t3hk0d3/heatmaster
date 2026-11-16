@@ -103,6 +103,8 @@ export async function startFakeZ2m(
       socket.destroy();
       return;
     }
+    // Without it Nagle holds small replies (PUBACKs) for ~40 ms, which paces the tests by accident.
+    socket.setNoDelay(true);
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     aedes.handle(socket);
