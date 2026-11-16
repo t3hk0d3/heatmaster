@@ -638,6 +638,44 @@ describe("discovery (createDiscovery)", () => {
       });
     });
 
+    describe("With a state whose messages cannot be built", () => {
+      /** A language with no entity texts makes building the config messages throw. */
+      const broken = (): StateView => view({ language: "xx" as StateView["language"] });
+      function logged() {
+        const s = stub();
+        const errors: string[] = [];
+        const discovery = createDiscovery({
+          mqtt: s.mqtt,
+          stopWriting: () => Promise.resolve(),
+          options: OPTIONS,
+          log: { error: (message) => errors.push(message) },
+        });
+        return { discovery, s, errors };
+      }
+      it("sync resolves and the error is logged", async () => {
+        const { discovery, errors } = logged();
+        await discovery.start();
+        await expect(discovery.sync(broken())).resolves.toBeUndefined();
+        expect(errors).toEqual(["discovery messages could not be built"]);
+      });
+      it("a resend after Home Assistant comes online does not reject either", async () => {
+        const { discovery, s, errors } = logged();
+        await discovery.start();
+        await discovery.sync(broken());
+        s.deliver("homeassistant/status", "online", false);
+        await vi.waitFor(() => {
+          expect(errors).toHaveLength(2);
+        }, WAIT);
+      });
+      it("the next sync with a good state publishes", async () => {
+        const { discovery, s } = logged();
+        await discovery.start();
+        await discovery.sync(broken());
+        await discovery.sync(view());
+        expect(s.topics()).toContain(SYSTEM_CONFIG);
+      });
+    });
+
     describe("With two syncs asked for while one is running", () => {
       it("one more sync runs, with the newest state", async () => {
         const { discovery, stub: s } = make();

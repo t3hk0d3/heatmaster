@@ -342,7 +342,15 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
         do {
           flags.again = false;
           const state = newest();
-          if (state !== undefined && !isStopped()) await pass(state);
+          if (state !== undefined && !isStopped()) {
+            // A throw while building the messages must not reject the loop: nobody awaits a
+            // resend, and an unhandled rejection would end the process.
+            try {
+              await pass(state);
+            } catch (error) {
+              logError("discovery messages could not be built", error);
+            }
+          }
         } while (wanted());
       } finally {
         running = undefined;
