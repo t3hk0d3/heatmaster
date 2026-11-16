@@ -3,13 +3,19 @@ import pkg from "../package.json" with { type: "json" };
 import { buildApi, startApi, type ApiRuntime } from "./api.ts";
 import { systemClock, type Clock } from "./clock.ts";
 import { buildHaLink, type HaLog } from "./ha-link.ts";
+import { createDiscovery, type Discovery } from "./discovery.ts";
 import { createMqttClient, type MqttClient } from "./mqtt.ts";
 import { loadOptions, type Options } from "./options.ts";
 import { createRuntime, type HeatmasterRuntime, type RuntimeLog } from "./runtime.ts";
 import { createConfigStore, createLedgerStore } from "./stores.ts";
+import { stateView } from "./views.ts";
 import { buildTransports } from "./z2m.ts";
 
-export type Running = Readonly<{ runtime: HeatmasterRuntime; stop(): Promise<void> }>;
+export type Running = Readonly<{
+  runtime: HeatmasterRuntime;
+  discovery: Discovery;
+  stop(): Promise<void>;
+}>;
 
 /** The runtime's and the Home Assistant link's log lines go through Fastify's logger. */
 function runtimeLog(logger: FastifyBaseLogger): RuntimeLog & HaLog {
@@ -57,6 +63,7 @@ export async function start(
   let ready = false;
   // Set once the API listens: the API is built before the things it will talk to.
   const late: { mqtt?: MqttClient; runtime?: HeatmasterRuntime } = {};
+  let unsubscribe: (() => void) | undefined;
   const app = buildApi(
     {
       runtime: lateRuntime(() => {
@@ -88,8 +95,21 @@ export async function start(
     log,
   });
   late.runtime = runtime;
+  const discovery = createDiscovery({
+    mqtt,
+    stopWriting: () => runtime.setHold(true),
+    options: { prefix: options.discoveryPrefix, version: pkg.version },
+  });
   const shutdown = async (): Promise<void> => {
     ready = false;
+    unsubscribe?.();
+    try {
+      await discovery.stop();
+    } finally {
+      await stopRest();
+    }
+  };
+  const stopRest = async (): Promise<void> => {
     try {
       await runtime.stop();
     } finally {
@@ -103,7 +123,12 @@ export async function start(
   try {
     await mqtt.connect();
     await runtime.start();
-    // Task 20: start the discovery publisher here, after the runtime and before `ready`.
+    // The runtime's first tick has run already, so the first state is given by hand.
+    await discovery.start();
+    unsubscribe = runtime.subscribe((snapshot) => {
+      void discovery.sync(stateView(snapshot));
+    });
+    await discovery.sync(stateView(runtime.snapshot()));
     ready = true;
   } catch (error) {
     await shutdown();
@@ -112,6 +137,7 @@ export async function start(
   let stopping: Promise<void> | undefined;
   return {
     runtime,
+    discovery,
     stop: () => (stopping ??= shutdown()),
   };
 }

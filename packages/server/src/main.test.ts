@@ -10,8 +10,10 @@ import { startFakeHa, type FakeHa } from "../test/fake-ha.ts";
 import { startFakeZ2m, type FakeZ2m, type Received } from "../test/fake-z2m.ts";
 import { createManualClock, type ManualClock } from "../test/manual-clock.ts";
 import { startRawBroker } from "../test/raw-broker.ts";
+import { PRESS_TOPIC, roomConfigTopic, roomStateTopic, systemConfigTopic } from "./discovery.ts";
 import { API_HOST, type Options } from "./options.ts";
 import { systemClock } from "./clock.ts";
+import { createMqttClient } from "./mqtt.ts";
 import { start, type Running } from "./main.ts";
 import type { DeviceSnapshot } from "./runtime.ts";
 import { stateView } from "./views.ts";
@@ -36,6 +38,7 @@ function optionsFor(port: number): Options {
     },
     z2m: { baseTopic: "zigbee2mqtt" },
     ha: undefined,
+    discoveryPrefix: "homeassistant",
   };
 }
 
@@ -366,6 +369,7 @@ function liveOptions(
     mqtt: { url: fake.url, username: undefined, password: undefined, clientId: undefined },
     z2m: { baseTopic: "zigbee2mqtt" },
     ha: ha === undefined ? undefined : { url: ha.url, token: "test-token" },
+    discoveryPrefix: "ha_test",
   };
 }
 
@@ -598,6 +602,8 @@ describe("main (runtime)", () => {
         world.options = liveOptions(await freePort(), world.fake, world.ha, dirs);
         world.files = [];
         world.running = await start(world.options, world.clock, false);
+        // This world is paced by the test: the publisher shares the connection and would disturb it.
+        await world.running.discovery.stop();
         await vi.waitFor(() => {
           expect(world.running.runtime.snapshot().links).toEqual({ z2m: true, ha: true });
         }, WAIT);
@@ -790,6 +796,9 @@ describe("main (runtime)", () => {
           begin();
           restartedAt = world.clock.nowMs();
           world.running = await start(world.options, world.clock, false);
+          await world.running.discovery.stop();
+          // This world is paced by the test: the publisher shares the connection and would disturb it.
+          await world.running.discovery.stop();
           await advanceUntil(() => {
             expect(gets()).toBe(1);
           });
@@ -1043,3 +1052,101 @@ function checkStored(file: Record<string, unknown>): string[] {
     ? mismatches(file, LEDGER_FILE, "ledger.json")
     : mismatches(file, CONFIG_FILE, "config.json");
 }
+
+// ---- Home Assistant entities ---------------------------------------------------------------------
+
+describe("main (discovery)", () => {
+  /** Stores a config of one room, stops, and starts again on the same folders. */
+  async function restarted(holdWrites: boolean) {
+    const fake = await startFakeZ2m();
+    live.push(() => fake.stop());
+    const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
+    const options = liveOptions(await freePort(), fake, undefined, dirs);
+    const clock = createManualClock(T);
+    fake.addDevice({ ieee: IEEE, name: "living/valve", modelId: "TRVZB" }, TRVZB_STATE);
+    const first = await start(options, clock, false);
+    const observed = (): boolean =>
+      first.runtime.snapshot().devices.find((d) => d.deviceId === VALVE)?.observed === true;
+    await vi.waitFor(() => {
+      if (!observed()) fake.republish(IEEE);
+      expect(observed()).toBe(true);
+    }, WAIT);
+    const config = houseConfig(true);
+    config.settings = { hold_writes: holdWrites, timezone: "Europe/Amsterdam" };
+    config.rooms = [{ id: "living", name: "Living", schedule_id: "main", valves: [{ id: VALVE }] }];
+    await first.runtime.apply(config, NO_CHANGE);
+    await first.stop();
+    const running = await start(options, clock, false);
+    live.push(() => running.stop());
+    return { fake, running };
+  }
+
+  describe("start (on the fake Zigbee2MQTT's broker)", () => {
+    describe("With a stored config of one room", () => {
+      it("the broker holds the retained config of the system device and of the room, under the prefix from the options", async () => {
+        const { fake } = await restarted(false);
+        await vi.waitFor(() => {
+          expect(fake.retained(systemConfigTopic("ha_test"))).toBeDefined();
+          expect(fake.retained(roomConfigTopic("ha_test", "living"))).toBeDefined();
+        }, WAIT);
+      });
+    });
+
+    describe("With a stored config of one room whose hold is off, and PRESS published on the press topic by another client", () => {
+      it("the runtime's snapshot has held true", async () => {
+        const { fake, running } = await restarted(false);
+        expect(running.runtime.snapshot().held).toBe(false);
+        fake.inject(PRESS_TOPIC, "PRESS");
+        await vi.waitFor(() => {
+          expect(running.runtime.snapshot().held).toBe(true);
+        }, WAIT);
+      });
+
+      it("the stored config's revision is one higher", async () => {
+        const { fake, running } = await restarted(false);
+        const before = running.runtime.snapshot().revision;
+        fake.inject(PRESS_TOPIC, "PRESS");
+        await vi.waitFor(() => {
+          expect(running.runtime.snapshot().revision).toBe(before + 1);
+        }, WAIT);
+      });
+    });
+
+    describe("With a stored config of one room, right after start has resolved", () => {
+      it("the broker holds the room's retained state message, without waiting for the next tick", async () => {
+        const { fake } = await restarted(false);
+        expect(fake.retained(roomStateTopic("living"))).toBeDefined();
+      });
+    });
+  });
+
+  describe("stop", () => {
+    describe("Always", () => {
+      it("the publisher publishes nothing afterwards", async () => {
+        const { fake, running } = await restarted(false);
+        const watcher = createMqttClient(
+          { url: fake.url, username: undefined, password: undefined, clientId: "watcher" },
+          systemClock,
+        );
+        await watcher.connect();
+        live.push(() => watcher.end());
+        const seen: string[] = [];
+        const note = (topic: string, _payload: Buffer, retained: boolean): void => {
+          // A retained message that the broker replays at subscription is not a new publish.
+          if (!retained) seen.push(topic);
+        };
+        watcher.subscribe("heatmaster/system/+", note);
+        watcher.subscribe("heatmaster/rooms/+/state", note);
+        watcher.subscribe("ha_test/device/heatmaster/+/config", note);
+        watcher.subscribe("sentinel", note);
+        await running.stop();
+        await running.discovery.sync(stateView(running.runtime.snapshot()));
+        await watcher.publish("sentinel", "x", { qos: 1, retain: false });
+        await vi.waitFor(() => {
+          expect(seen).toContain("sentinel");
+        }, WAIT);
+        expect(seen.filter((topic) => topic !== "sentinel")).toEqual([]);
+      });
+    });
+  });
+});

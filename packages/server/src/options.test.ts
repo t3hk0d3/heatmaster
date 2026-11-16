@@ -29,6 +29,20 @@ describe("options", () => {
       });
     });
 
+    describe("With no DISCOVERY_PREFIX", () => {
+      it('discoveryPrefix is "homeassistant"', () => {
+        expect(loadOptions({ MQTT_URL }).discoveryPrefix).toBe("homeassistant");
+      });
+    });
+
+    describe("With DISCOVERY_PREFIX=ha_test", () => {
+      it('discoveryPrefix is "ha_test"', () => {
+        expect(loadOptions({ MQTT_URL, DISCOVERY_PREFIX: "ha_test" }).discoveryPrefix).toBe(
+          "ha_test",
+        );
+      });
+    });
+
     describe('With HEATMASTER_PORT "8123"', () => {
       it("port is 8123", () => {
         expect(loadOptions({ MQTT_URL, HEATMASTER_PORT: "8123" }).port).toBe(8123);

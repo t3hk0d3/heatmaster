@@ -8,6 +8,7 @@ export const API_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 3000;
 export const DEFAULT_DATA_DIR = "/data";
 export const DEFAULT_PUBLIC_DIR = "/config";
+export const DEFAULT_DISCOVERY_PREFIX = "homeassistant";
 
 export type Options = Readonly<{
   port: number;
@@ -19,6 +20,8 @@ export type Options = Readonly<{
   dataDir: string;
   /** The public config folder that holds the readable copy of the originals. */
   publicDir: string;
+  /** The MQTT discovery prefix of Home Assistant. */
+  discoveryPrefix: string;
 }>;
 
 /** A variable that is set to an empty text counts as not set. */
@@ -65,5 +68,6 @@ export function loadOptions(env: Readonly<Record<string, string | undefined>>): 
     ha: parseHa(env),
     dataDir: read(env, "DATA_DIR") ?? DEFAULT_DATA_DIR,
     publicDir: read(env, "PUBLIC_DIR") ?? DEFAULT_PUBLIC_DIR,
+    discoveryPrefix: read(env, "DISCOVERY_PREFIX") ?? DEFAULT_DISCOVERY_PREFIX,
   };
 }
