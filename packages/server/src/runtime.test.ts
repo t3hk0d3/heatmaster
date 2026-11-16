@@ -232,6 +232,9 @@ interface StoreControl {
   expected: boolean[];
   overwrite: boolean[];
   fail: { config: number; ledger: number; copy: number };
+  /** While set, the ledger store's save or copyRecords waits for it; `reached` notes the call. */
+  gates: { ledgerSave?: Promise<void>; copyRecords?: Promise<void> };
+  reached: string[];
 }
 
 function failure(): HeatmasterError {
@@ -267,6 +270,10 @@ function wrapLedger(store: LedgerStore, control: StoreControl): LedgerStore {
       return store.load(expected);
     },
     async save(ledger) {
+      if (control.gates.ledgerSave !== undefined) {
+        control.reached.push("ledger.save");
+        await control.gates.ledgerSave;
+      }
       if (control.fail.ledger > 0) {
         control.fail.ledger -= 1;
         note(control, "ledger.fail");
@@ -284,7 +291,13 @@ function wrapLedger(store: LedgerStore, control: StoreControl): LedgerStore {
       note(control, "copy.write");
     },
     importCopy: (acceptEmpty) => store.importCopy(acceptEmpty),
-    copyRecords: () => store.copyRecords(),
+    async copyRecords() {
+      if (control.gates.copyRecords !== undefined) {
+        control.reached.push("copyRecords");
+        await control.gates.copyRecords;
+      }
+      return store.copyRecords();
+    },
     remove: () => store.remove(),
   };
 }
@@ -338,6 +351,8 @@ async function boot(
     expected: [],
     overwrite: [],
     fail: { config: 0, ledger: 0, copy: 0 },
+    gates: {},
+    reached: [],
   };
   z2m.setDevices(options.devices ?? [trvzb(A)]);
   const ha = options.ha === null ? undefined : (options.ha ?? createStubHaLink());
@@ -436,6 +451,17 @@ async function inSync(rig: Rig, valves: readonly string[]): Promise<void> {
   await rig.advance(1000);
   for (const id of valves) rig.say(id, `${id}-3`);
   await rig.advance(1000);
+}
+
+/**
+ * Waits until the events queued behind a tick's effects were applied (they arm the debounce timer
+ * beside the tick interval), then runs the tick they asked for.
+ */
+async function drained(rig: Rig): Promise<void> {
+  await vi.waitFor(() => {
+    expect(rig.clock.pending()).toBe(2);
+  });
+  await rig.advance(EVENT_DEBOUNCE_MS);
 }
 
 /** Moves the clock and waits until a send matching `match` is attempted after the move. */
@@ -1074,6 +1100,17 @@ describe("runtime", () => {
           true,
         );
       });
+
+      it("the valve is not in the follow set, and a managed one is reported unsupported", async () => {
+        const rig = await boot({
+          devices: [{ ...trvzb(A), name: "hall/valve+1" }, trvzb(B)],
+          seed: managedSeed([A]),
+        });
+        expect([...rig.z2m.followed()]).toEqual([B]);
+        expect(rig.rt.snapshot().problems).toContainEqual(
+          expect.objectContaining({ kind: "valve_unsupported", subject: { kind: "valve", id: A } }),
+        );
+      });
     });
   });
 
@@ -1092,7 +1129,7 @@ describe("runtime", () => {
         const rig = await boot({ seed: managedSeed([A]) });
         await rig.advance(5000);
         rig.say(A, "a1");
-        await rig.advance(EVENT_DEBOUNCE_MS - 1);
+        rig.clock.advance(EVENT_DEBOUNCE_MS - 1);
         expect(rig.rt.snapshot().tickedAt).toBe(T);
         await rig.advance(1);
         expect(rig.rt.snapshot().tickedAt).toBe(T + 5000 + EVENT_DEBOUNCE_MS);
@@ -1195,12 +1232,14 @@ describe("runtime", () => {
         const at = rig.clock.nowMs();
         rig.z2m.emit({ kind: "bridge_restarted" });
         release();
-        await rig.rt.settled();
-        expect(rig.marks(A).schedule).toEqual({ at, askedAt: undefined, writtenAt: undefined });
-        expect(rig.marks(A).sensor_source).toEqual({
-          at,
-          askedAt: undefined,
-          writtenAt: undefined,
+        // Not settled(): the queued event arms a debounce, and that tick would ask the valve.
+        await vi.waitFor(() => {
+          expect(rig.marks(A).schedule).toEqual({ at, askedAt: undefined, writtenAt: undefined });
+          expect(rig.marks(A).sensor_source).toEqual({
+            at,
+            askedAt: undefined,
+            writtenAt: undefined,
+          });
         });
       });
     });
@@ -1484,6 +1523,23 @@ describe("runtime", () => {
       });
     });
 
+    describe("With settled awaited while an event's tick is waiting for its debounce", () => {
+      it("it resolves only after that tick has run", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await rig.advance(5000);
+        rig.say(A, "a-1");
+        let resolved = false;
+        const settled = rig.rt.settled().then(() => {
+          resolved = true;
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(resolved).toBe(false);
+        rig.clock.advance(EVENT_DEBOUNCE_MS);
+        await settled;
+        expect(rig.rt.snapshot().tickedAt).toBe(T + 5000 + EVENT_DEBOUNCE_MS);
+      });
+    });
+
     describe("With settled awaited while a tick is executing effects and another is waiting", () => {
       it("it resolves only after both have finished", async () => {
         const rig = await boot({ seed: managedSeed([A]) });
@@ -1617,7 +1673,7 @@ describe("runtime", () => {
         rig.say(B, `${B}-2`, trvzbMessage(`${B}-2`, "remote_temperature"));
         rig.clock.advance(1000);
         release();
-        await rig.rt.settled();
+        await drained(rig);
         expect(rig.marks(B).sensor_source).toBeDefined();
       });
 
@@ -1628,7 +1684,7 @@ describe("runtime", () => {
         rig.say(B, `${B}-2`, trvzbMessage(`${B}-2`, "remote_temperature"));
         rig.clock.advance(1000);
         release();
-        await rig.rt.settled();
+        await drained(rig);
         const devices = rig.rt.diagnostics().devices as Record<string, Record<string, unknown>>;
         expect(devices[B]?.values).toMatchObject({ sensor_source: "external" });
       });
@@ -1642,7 +1698,7 @@ describe("runtime", () => {
         rig.clock.advance(1000);
         rig.say(B, `${B}-2`);
         release();
-        await rig.rt.settled();
+        await drained(rig);
         expect(rig.marks(B).sensor_source).toBeUndefined();
       });
     });
@@ -1680,7 +1736,7 @@ describe("runtime", () => {
           rig.clock.advance(1000);
         }
         release();
-        await rig.rt.settled();
+        await drained(rig);
         return Object.assign(rig, { arrivals, seen });
       }
 
@@ -1694,6 +1750,56 @@ describe("runtime", () => {
         const device = (rig.rt.diagnostics().devices as Record<string, Record<string, unknown>>)[A];
         expect(device?.messageAt).toBe(rig.arrivals[2]);
         expect(device?.heardAt).toBe(rig.arrivals[2]);
+        expect(device?.values).toMatchObject({ sensor_source: "external" });
+      });
+    });
+
+    describe("With transport events arriving while a save is awaited and while the copy's record count is read after the saves", () => {
+      async function duringSaves(): Promise<Rig & { arrivals: number[]; seen: unknown[] }> {
+        const rig = await boot();
+        rig.say(A, "a-1");
+        let openSave: () => void = () => undefined;
+        let openCount: () => void = () => undefined;
+        rig.stores.gates.ledgerSave = new Promise((resolve) => {
+          openSave = resolve;
+        });
+        rig.stores.gates.copyRecords = new Promise((resolve) => {
+          openCount = resolve;
+        });
+        const applied = rig.rt.apply(raw(), APPLY);
+        const arrivals: number[] = [];
+        const seen: unknown[] = [];
+        const messageAt = (): unknown =>
+          (rig.rt.diagnostics().devices as Record<string, Record<string, unknown>>)[A]?.messageAt;
+        await vi.waitFor(() => {
+          expect(rig.stores.reached).toContain("ledger.save");
+        });
+        arrivals.push(rig.clock.nowMs());
+        rig.say(A, "a-x1", trvzbMessage("a-x1", "local_temperature"));
+        seen.push(messageAt());
+        rig.clock.advance(1000);
+        openSave();
+        await vi.waitFor(() => {
+          expect(rig.stores.reached).toContain("copyRecords");
+        });
+        arrivals.push(rig.clock.nowMs());
+        rig.say(A, "a-x2", trvzbMessage("a-x2", "remote_temperature"));
+        seen.push(messageAt());
+        rig.clock.advance(1000);
+        openCount();
+        await applied;
+        return Object.assign(rig, { arrivals, seen });
+      }
+
+      it("none is applied before the copy's count has been read", async () => {
+        const rig = await duringSaves();
+        expect(rig.seen).toEqual([T, T]);
+      });
+
+      it("they are applied in arrival order, each with its arrival time as nowMs", async () => {
+        const rig = await duringSaves();
+        const device = (rig.rt.diagnostics().devices as Record<string, Record<string, unknown>>)[A];
+        expect(device?.messageAt).toBe(rig.arrivals[1]);
         expect(device?.values).toMatchObject({ sensor_source: "external" });
       });
     });

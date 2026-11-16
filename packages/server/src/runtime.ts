@@ -391,6 +391,14 @@ function describeValues(state: DeviceState | undefined): Record<string, unknown>
   return values;
 }
 
+/**
+ * A device whose name holds + or # cannot be addressed over MQTT (the Zigbee2MQTT transport
+ * drops it), so it is not followed: a managed one shows as unsupported.
+ */
+function unaddressable(info: DeviceInfo): boolean {
+  return /[+#]/.test(info.name);
+}
+
 const NOTHING_DECODED: Decoded = { values: {}, readings: EMPTY_READINGS };
 
 export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
@@ -428,6 +436,13 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   let tickQueued = false;
   const idle: (() => void)[] = [];
 
+  /** Resolves `settled` waiters once nothing runs, nothing is queued and no debounce is armed. */
+  function wakeIdle(): void {
+    if (busy === 0 && cancelDebounce === undefined) {
+      for (const resolve of idle.splice(0)) resolve();
+    }
+  }
+
   function withLock<T>(task: () => Promise<T>): Promise<T> {
     busy += 1;
     const run = tail.then(task);
@@ -437,7 +452,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     );
     void tail.then(() => {
       busy -= 1;
-      if (busy === 0) for (const resolve of idle.splice(0)) resolve();
+      wakeIdle();
     });
     return run;
   }
@@ -626,16 +641,24 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       const ids = new Set<string>();
       for (const info of transport.devices().values()) {
         if (findProfile(info.modelId, key) === undefined) continue;
+        if (unaddressable(info)) {
+          if (!warnedTopics.has(`${info.deviceId}|${info.name}`)) {
+            warnedTopics.add(`${info.deviceId}|${info.name}`);
+            log.warn("a valve's name holds + or #, which no topic can carry; it is not followed", {
+              valveId: info.deviceId,
+              name: info.name,
+            });
+          }
+          continue;
+        }
         ids.add(info.deviceId);
-        if (/[+#]/.test(info.name) && !warnedTopics.has(`${info.deviceId}|${info.name}`)) {
-          warnedTopics.add(`${info.deviceId}|${info.name}`);
-          log.warn("a valve's name holds + or # and cannot be a topic; it is not followed", {
-            valveId: info.deviceId,
-            name: info.name,
-          });
+      }
+      for (const valveId of kinds.keys()) {
+        const info = transport.devices().get(valveId);
+        if (transportOf(valveId) === key && (info === undefined || !unaddressable(info))) {
+          ids.add(valveId);
         }
       }
-      for (const valveId of kinds.keys()) if (transportOf(valveId) === key) ids.add(valveId);
       next.set(key, ids);
     }
     const before = followed;
@@ -679,6 +702,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     cancelDebounce = clock.after(EVENT_DEBOUNCE_MS, () => {
       cancelDebounce = undefined;
       queueTick();
+      wakeIdle();
     });
   }
 
@@ -731,6 +755,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     cancelInterval = undefined;
     cancelDebounce?.();
     cancelDebounce = undefined;
+    wakeIdle();
   }
 
   function queueTick(): void {
@@ -782,10 +807,18 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     effects: readonly Effect[],
     overwriteUnreadable: boolean,
   ): Promise<EffectOutcome> {
+    // Events stay queued until every await of this function is done: one that skipped the
+    // queue would be applied before older ones and before the failed-send rule.
     executing = true;
     let outcome: EffectOutcome;
     try {
       outcome = await executeEffects(effects, effectContext(overwriteUnreadable));
+      if (outcome.stores.ledger === true || outcome.stores.copy === true) {
+        copyRecords = await deps.ledgerStore.copyRecords().catch((error: unknown) => {
+          log.error("reading the copy's record count failed", { error: errorText(error) });
+          return copyRecords;
+        });
+      }
     } finally {
       executing = false;
     }
@@ -793,9 +826,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       const result = outcome.stores[name];
       if (result !== undefined) storeFailed[name] = !result;
     }
-    if (outcome.stores.ledger === true || outcome.stores.copy === true) {
-      copyRecords = await deps.ledgerStore.copyRecords();
-    }
+    // Nothing below awaits: the queue is drained before any new event can arrive.
     const nowMs = clock.nowMs();
     if (outcome.error !== undefined) {
       log.error("an effect failed", {
@@ -1303,8 +1334,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
 
     diagnostics,
 
+    /** Also waits for an armed debounce: its tick counts as waiting to run. */
     settled() {
-      if (busy === 0) return Promise.resolve();
+      if (busy === 0 && cancelDebounce === undefined) return Promise.resolve();
       return new Promise<void>((resolve) => idle.push(resolve));
     },
   };

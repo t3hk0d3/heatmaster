@@ -508,11 +508,29 @@ describe("main (runtime)", () => {
         world.mark = world.fake.received(IEEE).length;
       };
 
+      /**
+       * `settled()` also waits for an armed debounce. A message of the fake can arrive while it
+       * waits and arm one; then the clock is moved a second at a time until its tick has run.
+       */
+      async function settle(): Promise<void> {
+        let done = false;
+        const settled = world.running.runtime.settled().then(() => {
+          done = true;
+        });
+        let polls = 0;
+        await vi.waitFor(() => {
+          polls += 1;
+          if (!done && polls > 1) world.clock.advance(1000);
+          expect(done).toBe(true);
+        }, WAIT);
+        await settled;
+      }
+
       /** Advances in steps of at most 30 s, letting the runtime settle after each. */
       async function advance(ms: number): Promise<void> {
         for (let left = ms; left > 0; left -= 30 * 1000) {
           world.clock.advance(Math.min(left, 30 * 1000));
-          await world.running.runtime.settled();
+          await settle();
         }
       }
 
@@ -523,7 +541,7 @@ describe("main (runtime)", () => {
             check();
           } catch (error) {
             world.clock.advance(1000);
-            await world.running.runtime.settled();
+            await settle();
             throw error;
           }
         }, WAIT);
@@ -548,7 +566,7 @@ describe("main (runtime)", () => {
         await advance(2000);
         world.fake.releaseAnswers();
         await vi.waitFor(seen, WAIT);
-        await world.running.runtime.settled();
+        await settle();
         world.fake.holdAnswers();
       }
 
