@@ -24,6 +24,8 @@ const SUPPORT_URL = "https://github.com/t3hk0d3/heatmaster";
 const ROOM_PREFIX = "room_";
 
 export type EntityTexts = Readonly<{
+  temperature: string;
+  problem: string;
   target: string;
   sync: string;
   problemCount: string;
@@ -34,6 +36,8 @@ export type EntityTexts = Readonly<{
 
 export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
   en: {
+    temperature: "Temperature",
+    problem: "Problem",
     target: "Target temperature",
     sync: "Sync",
     problemCount: "Problems",
@@ -42,6 +46,8 @@ export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
     roomModel: "Room",
   },
   ru: {
+    temperature: "Температура",
+    problem: "Проблема",
     target: "Целевая температура",
     sync: "Синхронизация",
     problemCount: "Проблемы",
@@ -69,6 +75,13 @@ function origin(options: DiscoveryOptions): Record<string, string> {
   return { name: "Heatmaster", sw_version: options.version, support_url: SUPPORT_URL };
 }
 
+/** The suggested entity id: ASCII, from ids only, so a room's name never reaches it. */
+function entityId(platform: string, roomId: string | undefined, key: string): string {
+  return roomId === undefined
+    ? `${platform}.${DISCOVERY_NODE}_${key}`
+    : `${platform}.${DISCOVERY_NODE}_${roomId}_${key}`;
+}
+
 function template(key: string): string {
   return `{{ value_json.${key} }}`;
 }
@@ -94,6 +107,8 @@ function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOption
       temperature: {
         platform: "sensor",
         unique_id: `${id}_temperature`,
+        name: texts.temperature,
+        default_entity_id: entityId("sensor", room.roomId, "temperature"),
         state_topic: stateTopic,
         device_class: "temperature",
         state_class: "measurement",
@@ -105,6 +120,7 @@ function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOption
         platform: "sensor",
         unique_id: `${id}_target`,
         name: texts.target,
+        default_entity_id: entityId("sensor", room.roomId, "target"),
         state_topic: stateTopic,
         device_class: "temperature",
         state_class: "measurement",
@@ -114,6 +130,8 @@ function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOption
       problem: {
         platform: "binary_sensor",
         unique_id: `${id}_problem`,
+        name: texts.problem,
+        default_entity_id: entityId("binary_sensor", room.roomId, "problem"),
         state_topic: stateTopic,
         device_class: "problem",
         entity_category: "diagnostic",
@@ -123,6 +141,7 @@ function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOption
         platform: "sensor",
         unique_id: `${id}_sync`,
         name: texts.sync,
+        default_entity_id: entityId("sensor", room.roomId, "sync"),
         state_topic: stateTopic,
         device_class: "enum",
         options: SYNC_OPTIONS,
@@ -150,6 +169,8 @@ function systemConfig(texts: EntityTexts, options: DiscoveryOptions): string {
       problem: {
         platform: "binary_sensor",
         unique_id: "heatmaster_problem",
+        name: texts.problem,
+        default_entity_id: entityId("binary_sensor", undefined, "problem"),
         state_topic: SYSTEM_STATE_TOPIC,
         device_class: "problem",
         value_template: template("problem"),
@@ -158,6 +179,7 @@ function systemConfig(texts: EntityTexts, options: DiscoveryOptions): string {
         platform: "sensor",
         unique_id: "heatmaster_problem_count",
         name: texts.problemCount,
+        default_entity_id: entityId("sensor", undefined, "problem_count"),
         state_topic: SYSTEM_STATE_TOPIC,
         state_class: "measurement",
         entity_category: "diagnostic",
@@ -168,6 +190,7 @@ function systemConfig(texts: EntityTexts, options: DiscoveryOptions): string {
         platform: "binary_sensor",
         unique_id: "heatmaster_held",
         name: texts.held,
+        default_entity_id: entityId("binary_sensor", undefined, "held"),
         state_topic: SYSTEM_STATE_TOPIC,
         value_template: template("held"),
       },
@@ -175,6 +198,7 @@ function systemConfig(texts: EntityTexts, options: DiscoveryOptions): string {
         platform: "button",
         unique_id: "heatmaster_stop_writing",
         name: texts.stopWriting,
+        default_entity_id: entityId("button", undefined, "stop_writing"),
         command_topic: PRESS_TOPIC,
         payload_press: PRESS_PAYLOAD,
       },

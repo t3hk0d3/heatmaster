@@ -140,7 +140,7 @@ describe("discovery", () => {
           expect(component.state_topic).toBe("heatmaster/rooms/a/state");
         }
       });
-      it("temperature has device class temperature, unit °C, state class measurement and no name key", () => {
+      it("temperature has device class temperature, unit °C, state class measurement", () => {
         const temperature = config.components.temperature;
         expect(temperature).toMatchObject({
           device_class: "temperature",
@@ -148,16 +148,14 @@ describe("discovery", () => {
           state_class: "measurement",
           suggested_display_precision: 1,
         });
-        expect(Object.hasOwn(temperature, "name")).toBe(false);
       });
-      it("problem is a binary_sensor with device class problem and no name key", () => {
+      it("problem is a binary_sensor with device class problem", () => {
         const entity = config.components.problem;
         expect(entity).toMatchObject({
           platform: "binary_sensor",
           device_class: "problem",
           entity_category: "diagnostic",
         });
-        expect(Object.hasOwn(entity, "name")).toBe(false);
       });
       it("sync has device class enum, the six options in order, no unit and no state class", () => {
         const entity = config.components.sync;
@@ -186,6 +184,39 @@ describe("discovery", () => {
         });
         it(`sync is named "${ENTITY_TEXTS[language].sync}"`, () => {
           expect(config.components.sync.name).toBe(ENTITY_TEXTS[language].sync);
+        });
+        it("every room component is named from the language's texts", () => {
+          const texts = ENTITY_TEXTS[language];
+          const names = Object.fromEntries(
+            Object.entries<Config>(config.components).map(([key, component]) => [
+              key,
+              component.name,
+            ]),
+          );
+          expect(names).toEqual({
+            temperature: texts.temperature,
+            target: texts.target,
+            problem: texts.problem,
+            sync: texts.sync,
+          });
+        });
+        it("every system component is named from the language's texts", () => {
+          const texts = ENTITY_TEXTS[language];
+          const system = parse(
+            configMessages(view({ language }), OPTIONS).get(systemConfigTopic("homeassistant")),
+          );
+          const names = Object.fromEntries(
+            Object.entries<Config>(system.components).map(([key, component]) => [
+              key,
+              component.name,
+            ]),
+          );
+          expect(names).toEqual({
+            problem: texts.problem,
+            problem_count: texts.problemCount,
+            held: texts.held,
+            stop_writing: texts.stopWriting,
+          });
         });
         it(`the device model is "${ENTITY_TEXTS[language].roomModel}"`, () => {
           expect(config.device.model).toBe(ENTITY_TEXTS[language].roomModel);
@@ -221,6 +252,46 @@ describe("discovery", () => {
           );
           expect(parse(text).device.name).toBe(name);
         }
+      });
+    });
+
+    describe("For the default entity ids", () => {
+      it("each room component has <platform>.heatmaster_<roomId>_<key>", () => {
+        const config = parse(
+          configMessages(view(), OPTIONS).get(roomConfigTopic("homeassistant", "a")),
+        );
+        expect(
+          Object.fromEntries(
+            Object.entries<Config>(config.components).map(([key, c]) => [key, c.default_entity_id]),
+          ),
+        ).toEqual({
+          temperature: "sensor.heatmaster_a_temperature",
+          target: "sensor.heatmaster_a_target",
+          problem: "binary_sensor.heatmaster_a_problem",
+          sync: "sensor.heatmaster_a_sync",
+        });
+      });
+      it("each system component has <platform>.heatmaster_<key>", () => {
+        const config = parse(
+          configMessages(view(), OPTIONS).get(systemConfigTopic("homeassistant")),
+        );
+        expect(
+          Object.fromEntries(
+            Object.entries<Config>(config.components).map(([key, c]) => [key, c.default_entity_id]),
+          ),
+        ).toEqual({
+          problem: "binary_sensor.heatmaster_problem",
+          problem_count: "sensor.heatmaster_problem_count",
+          held: "binary_sensor.heatmaster_held",
+          stop_writing: "button.heatmaster_stop_writing",
+        });
+      });
+      it("the unique ids are unchanged", () => {
+        const config = parse(
+          configMessages(view(), OPTIONS).get(roomConfigTopic("homeassistant", "a")),
+        );
+        expect(config.components.temperature.unique_id).toBe("heatmaster_room_a_temperature");
+        expect(config.components.problem.unique_id).toBe("heatmaster_room_a_problem");
       });
     });
 
