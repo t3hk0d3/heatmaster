@@ -250,7 +250,7 @@ export type DiscoveryDeps = Readonly<{
   stopWriting: () => Promise<unknown>;
   options: DiscoveryOptions;
   /** Defaults to one JSON line on stderr. */
-  log?: ErrorLog;
+  log: ErrorLog | undefined;
 }>;
 
 export type Discovery = Readonly<{

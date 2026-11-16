@@ -464,7 +464,13 @@ function holds(arbitrary: fc.Arbitrary<FaultPlan>, ids: readonly Id[]): void {
   );
 }
 
-const SLOW_MS = 600 * 1000;
+/**
+ * Per-test timeouts. Measured under `FC_PROFILE=ci` (50 runs): the fast-check properties take up to
+ * 20 s, so their budget is 6x that, which also covers the dev profile's 100 capped runs. The fixed
+ * plans below take up to 1.6 s, so their budget is about 12x that.
+ */
+const SLOW_MS = 120 * 1000;
+const PLAN_MS = 20 * 1000;
 
 function propertyTest(name: string, ids: readonly Id[], options: { crashy?: boolean } = {}): void {
   it(
@@ -618,9 +624,13 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
           { k: "wait", seconds: 3600 },
         ],
       };
-      it("the release does not finish from stale state, and every property holds", () => {
-        nothingBroken(execute(plan).report);
-      });
+      it(
+        "the release does not finish from stale state, and every property holds",
+        () => {
+          nothingBroken(execute(plan).report);
+        },
+        PLAN_MS,
+      );
     });
 
     describe("With a crash after the first effect of a join, which the user then asks for again", () => {
@@ -635,14 +645,18 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
           { k: "wait", seconds: 600 },
         ],
       };
-      it("the valve ends up adopted and in sync, and every property holds", () => {
-        const { report, rig } = execute(plan);
-        nothingBroken(report);
-        const world = rig.sim.world();
-        const kinds = memberships(world.configState, world.stored, world.ledger);
-        expect(kinds.get(VALVE_IDS[0])).toBe("managed");
-        expect(rig.sim.valve(VALVE_IDS[0]).truth().select).toBe("remote_temperature");
-      });
+      it(
+        "the valve ends up adopted and in sync, and every property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          nothingBroken(report);
+          const world = rig.sim.world();
+          const kinds = memberships(world.configState, world.stored, world.ledger);
+          expect(kinds.get(VALVE_IDS[0])).toBe("managed");
+          expect(rig.sim.valve(VALVE_IDS[0]).truth().select).toBe("remote_temperature");
+        },
+        PLAN_MS,
+      );
     });
 
     describe("With a TRV-ZBT that sleeps for two days after both valves were placed", () => {
@@ -650,23 +664,27 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         initial,
         steps: [...waits(4), { k: "sleep", valve: 1 }, { k: "bridgeRestart" }, ...waits(48)],
       };
-      it("it is asked 2 min, 10 min and 1 h after the one before, then not any more once it is silent", () => {
-        const { report, rig } = execute(plan);
-        nothingBroken(report);
-        const asks = rig.sim
-          .effectsOf(VALVE_IDS[1], "refresh")
-          .map((e) => e.at / 1000)
-          .filter((t) => t < 20 * 3600);
-        const first = asks.findIndex((t) => t >= 4 * 3600);
-        const gaps = asks
-          .slice(first)
-          .flatMap((t, i, all) => (i === 0 ? [] : [t - (all[i - 1] ?? 0)]));
-        expect(gaps).toHaveLength(3);
-        for (const [i, minutes] of [2, 10, 60].entries()) {
-          expect(gaps[i]).toBeGreaterThanOrEqual(minutes * 60);
-          expect(gaps[i]).toBeLessThan(minutes * 60 + 61);
-        }
-      });
+      it(
+        "it is asked 2 min, 10 min and 1 h after the one before, then not any more once it is silent",
+        () => {
+          const { report, rig } = execute(plan);
+          nothingBroken(report);
+          const asks = rig.sim
+            .effectsOf(VALVE_IDS[1], "refresh")
+            .map((e) => e.at / 1000)
+            .filter((t) => t < 20 * 3600);
+          const first = asks.findIndex((t) => t >= 4 * 3600);
+          const gaps = asks
+            .slice(first)
+            .flatMap((t, i, all) => (i === 0 ? [] : [t - (all[i - 1] ?? 0)]));
+          expect(gaps).toHaveLength(3);
+          for (const [i, minutes] of [2, 10, 60].entries()) {
+            expect(gaps[i]).toBeGreaterThanOrEqual(minutes * 60);
+            expect(gaps[i]).toBeLessThan(minutes * 60 + 61);
+          }
+        },
+        PLAN_MS,
+      );
     });
 
     describe("With every write to the TRV-ZBT lost for a day after its week changed", () => {
@@ -678,16 +696,22 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
           ...waits(24),
         ],
       };
-      it("the week is sent at least once and at most 7 times in 24 h, and every property holds", () => {
-        const { report, rig } = execute(plan);
-        nothingBroken(report);
-        const weeks = rig.sim
-          .effectsOf(VALVE_IDS[1], "publish")
-          .filter((e) => e.at > 6 * 60 * 1000 && e.at <= 24 * HOUR_MS + 6 * 60 * 1000)
-          .filter((e) => e.effect.kind === "publish" && Object.hasOwn(e.effect.values, "day_mon"));
-        expect(weeks.length).toBeGreaterThanOrEqual(1);
-        expect(weeks.length).toBeLessThanOrEqual(7);
-      });
+      it(
+        "the week is sent at least once and at most 7 times in 24 h, and every property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          nothingBroken(report);
+          const weeks = rig.sim
+            .effectsOf(VALVE_IDS[1], "publish")
+            .filter((e) => e.at > 6 * 60 * 1000 && e.at <= 24 * HOUR_MS + 6 * 60 * 1000)
+            .filter(
+              (e) => e.effect.kind === "publish" && Object.hasOwn(e.effect.values, "day_mon"),
+            );
+          expect(weeks.length).toBeGreaterThanOrEqual(1);
+          expect(weeks.length).toBeLessThanOrEqual(7);
+        },
+        PLAN_MS,
+      );
     });
 
     describe("With the schedules edited every 5 min for a day, so that only the tokens can stop the writes", () => {
@@ -705,15 +729,19 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         edits.push({ k: "wait", seconds: 300 });
       }
       const plan: FaultPlan = { initial, steps: edits };
-      it("a valve gets about the bucket and its refills in 24 h, never more, and every property holds", () => {
-        const { report, rig } = execute(plan);
-        nothingBroken(report);
-        for (const valveId of VALVE_IDS) {
-          const most = busiest(rig, valveId);
-          expect(most).toBeGreaterThanOrEqual(BUCKET + 40);
-          expect(most).toBeLessThanOrEqual(BUCKET + 48 + START_TOKENS);
-        }
-      });
+      it(
+        "a valve gets about the bucket and its refills in 24 h, never more, and every property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          nothingBroken(report);
+          for (const valveId of VALVE_IDS) {
+            const most = busiest(rig, valveId);
+            expect(most).toBeGreaterThanOrEqual(BUCKET + 40);
+            expect(most).toBeLessThanOrEqual(BUCKET + 48 + START_TOKENS);
+          }
+        },
+        PLAN_MS,
+      );
     });
   });
 

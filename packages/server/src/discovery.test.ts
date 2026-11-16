@@ -430,7 +430,12 @@ function stub(initial: MqttState = "connected") {
 }
 
 function make(mqttStub = stub(), stopWriting: () => Promise<unknown> = () => Promise.resolve()) {
-  const discovery = createDiscovery({ mqtt: mqttStub.mqtt, stopWriting, options: OPTIONS });
+  const discovery = createDiscovery({
+    mqtt: mqttStub.mqtt,
+    stopWriting,
+    options: OPTIONS,
+    log: undefined,
+  });
   return { discovery, stub: mqttStub };
 }
 
@@ -771,7 +776,12 @@ describe("discovery on the test broker (the real MQTT client)", () => {
     const first = createMqttClient({ ...options, clientId: undefined }, systemClock);
     await first.connect();
     closers.push(() => first.end());
-    const discovery = createDiscovery({ mqtt: first, stopWriting, options: OPTIONS });
+    const discovery = createDiscovery({
+      mqtt: first,
+      stopWriting,
+      options: OPTIONS,
+      log: undefined,
+    });
     await discovery.start();
     closers.push(() => discovery.stop());
     const second = createMqttClient({ ...options, clientId: "second" }, systemClock);

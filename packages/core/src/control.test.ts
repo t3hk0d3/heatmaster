@@ -1873,6 +1873,10 @@ describe("control", () => {
         expect(vmOf(first).nudgeDue).toBe(true);
         expect(valveEffects(tick(unheard))).toEqual([]);
       });
+      it("no publishSetpoint for a message heard at the very moment of the write", () => {
+        const sameInstant = hear(unheard, {}, nowOf(changed));
+        expect(valveEffects(tick(sameInstant))).toEqual([]);
+      });
       it("one publishSetpoint with the active set point's temperature once a message is heard after the write", () => {
         const heard = hear(unheard, {}, nowOf(changed) + SECOND_MS);
         expect(valveEffects(tick(heard))).toEqual([
