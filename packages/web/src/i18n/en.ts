@@ -254,7 +254,8 @@ export const en = {
   "error.config_missing": "There is no configuration yet.",
   "error.ask_limited": "Valve {valveId} was asked a moment ago. Try again in a minute.",
   "error.not_started": "Heatmaster has not finished starting.",
-  "error.store_locked": "Another process holds the Heatmaster files. Stop the other instance.",
+  "error.store_locked":
+    "A Heatmaster file could not be read when it was loaded, so Heatmaster will not overwrite it. For the original valve settings, press Import saved originals; for the configuration, choose Overwrite the unreadable configuration and apply again.",
   "error.no_originals_copy": "There is no readable copy of the saved original settings.",
   "error.ledger_readable":
     "The saved original settings can be read, so there is nothing to import.",
