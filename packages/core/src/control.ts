@@ -574,9 +574,25 @@ function unique(problems: readonly Problem[]): readonly Problem[] {
   });
 }
 
+/**
+ * The stored config with every release ordered after `nowMs` (the clock ran fast) ordered at
+ * `nowMs`; undefined when there is none.
+ */
+function clampReleases(stored: StoredConfig | undefined, nowMs: number): StoredConfig | undefined {
+  if (stored === undefined) return undefined;
+  if (![...stored.releasing.values()].some((orderedAt) => orderedAt > nowMs)) return undefined;
+  const releasing = new Map<string, number>();
+  for (const [valveId, orderedAt] of stored.releasing) {
+    releasing.set(valveId, Math.min(orderedAt, nowMs));
+  }
+  return { config: stored.config, revision: stored.revision, releasing };
+}
+
 /** One control step: what to save and write, the new memory, the rooms and the problems. */
-export function tick(world: World): TickResult {
-  const nowMs = world.now.epochMilliseconds;
+export function tick(given: World): TickResult {
+  const nowMs = given.now.epochMilliseconds;
+  const clamp = clampReleases(given.stored, nowMs);
+  const world: World = clamp === undefined ? given : { ...given, stored: clamp };
   const kinds = memberships(world.configState, world.stored, world.ledger);
   const stored = world.stored;
   const held = stored?.config.settings.holdWrites === true;
@@ -673,7 +689,7 @@ export function tick(world: World): TickResult {
     saves.push({ kind: "saveLedger", ledger }, { kind: "writeOriginalsCopy", ledger });
   }
   const dropped = [...finished, ...strays];
-  if (stored !== undefined && dropped.length > 0) {
+  if (stored !== undefined && (dropped.length > 0 || clamp !== undefined)) {
     const releasing = new Map(stored.releasing);
     for (const valveId of dropped) releasing.delete(valveId);
     saves.push({

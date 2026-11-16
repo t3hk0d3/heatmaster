@@ -2118,6 +2118,49 @@ describe("control", () => {
         ).toEqual([]);
       });
     });
+    describe("With a release whose orderedAt is later than now", () => {
+      const base = withValues(equalWorld(), { sensor_source: "external" });
+      const future = released(base, nowOf(base) + HOUR_MS);
+      const configSaves = (result: TickResult): readonly Effect[] =>
+        result.effects.filter((e) => e.kind === "saveConfig");
+      it("effects include saveConfig with orderedAt = now", () => {
+        const [save, ...rest] = configSaves(tick(future));
+        if (save?.kind !== "saveConfig") throw new Error("expected saveConfig");
+        expect(rest).toEqual([]);
+        expect(save.stored.releasing.get(V)).toBe(nowOf(future));
+      });
+      it("the release proceeds as if ordered now", () => {
+        const now = released(base, nowOf(base));
+        expect(valveEffects(tick(future))).toEqual(valveEffects(tick(now)));
+        expect(publishes(valveEffects(tick(future)))).toEqual([{ sensor_source: "internal" }]);
+      });
+      it("release_stalled fires measured from the clamped time", () => {
+        const save = configSaves(tick(future))[0];
+        if (save?.kind !== "saveConfig") throw new Error("expected saveConfig");
+        const clamped = { ...future, stored: save.stored };
+        const near = later(clamped, RELEASE_STALLED_AFTER_MS - MINUTE_MS);
+        const past = later(clamped, RELEASE_STALLED_AFTER_MS + MINUTE_MS);
+        expect(problemsOf(tick(near), "release_stalled")).toEqual([]);
+        expect(problemsOf(tick(past), "release_stalled").map((p) => p.subject.id)).toEqual([V]);
+      });
+      it("a stray one is dropped in the same single saveConfig", () => {
+        const stray = {
+          ...released(base, nowOf(base) + HOUR_MS),
+          ledger: EMPTY_LEDGER,
+        };
+        const [save, ...rest] = tick(stray).effects.filter((e) => e.kind === "saveConfig");
+        if (save?.kind !== "saveConfig") throw new Error("expected saveConfig");
+        expect(rest).toEqual([]);
+        expect(save.stored.releasing.has(V)).toBe(false);
+      });
+    });
+    describe("With a release whose orderedAt is not later than now", () => {
+      it("no extra saveConfig", () => {
+        const base = withValues(equalWorld(), { sensor_source: "external" });
+        expect(saves(tick(released(base, nowOf(base))))).toEqual([]);
+        expect(saves(tick(released(base, nowOf(base) - HOUR_MS)))).toEqual([]);
+      });
+    });
     describe("With a stray valve", () => {
       it("one saveConfig that drops it from releasing and no other effect for it", () => {
         const world = {
