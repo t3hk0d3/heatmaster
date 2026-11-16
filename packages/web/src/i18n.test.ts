@@ -62,6 +62,15 @@ describe("i18n", () => {
   });
 
   describe("dictionaries", () => {
+    describe("Server codes that carry a data field", () => {
+      it("io_failed, mqtt_refused and topic_invalid have a text in both languages", () => {
+        for (const language of ["en", "ru"] as const) {
+          for (const code of ["io_failed", "mqtt_refused", "topic_invalid"]) {
+            expect(Object.hasOwn(DICTIONARIES[language], `error.${code}`), code).toBe(true);
+          }
+        }
+      });
+    });
     describe("en and ru", () => {
       it("have the same keys", () => {
         expect(Object.keys(DICTIONARIES.ru).sort()).toEqual(Object.keys(DICTIONARIES.en).sort());

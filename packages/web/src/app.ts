@@ -75,6 +75,10 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
   const halted = (): boolean => stopped;
   let offerEmpty = false;
   let actionError: ApiError | undefined;
+  /** The failure of the first state read. A state message proves it is over, so it clears it. */
+  let startError: ApiError | undefined;
+  /** The config read failed for a reason that passes (starting, no network): read it again. */
+  let retryConfig = false;
 
   const headerBox = element(document, "div", "header-box");
   const noticeBox = element(document, "div", "notice-box");
@@ -100,6 +104,7 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     headerBox.replaceChildren(renderHeader(state, status, language, t));
     noticeBox.replaceChildren(
       ...(state === undefined ? [renderPlaceholder(t("app.loading"))] : []),
+      ...(startError === undefined ? [] : [renderError(startError, t)]),
       ...(actionError === undefined ? [] : [renderError(actionError, t)]),
     );
     if (state === undefined) {
@@ -144,6 +149,11 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     if (halted()) return;
     editor = result.ok ? loaded(result.value) : loadFailed(state?.revision ?? 0, result.error);
     configLoaded = true;
+    retryConfig =
+      !result.ok &&
+      (result.error.code === "not_ready" ||
+        result.error.code === "network" ||
+        result.error.code.startsWith("http_"));
     render();
   }
 
@@ -306,10 +316,11 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
       if (halted()) return;
       eventSeen = true;
       state = next;
+      startError = undefined;
       if (configLoaded) {
         const checked = serverRevision(editor, next.revision);
         editor = checked.state;
-        if (checked.reload) void loadConfig();
+        if (checked.reload || (retryConfig && !editor.dirty)) void loadConfig();
       }
       render();
     },
@@ -326,7 +337,7 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     if (result.ok) {
       if (!eventSeen) state = result.value;
     } else {
-      actionError = result.error;
+      startError = result.error;
     }
     render();
   });

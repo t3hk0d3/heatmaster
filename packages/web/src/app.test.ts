@@ -469,6 +469,68 @@ describe("app", () => {
     });
   });
 
+  describe("start-up errors", () => {
+    describe("With the first state read refused and then a state message", () => {
+      it("the error is no longer shown", async () => {
+        const page = setup({
+          client: { state: vi.fn(() => Promise.resolve(fail("not_ready"))) },
+        });
+        await settle();
+        expect(page.text()).toContain(en["error.not_ready"]);
+        page.emit(stateView());
+        expect(page.text()).not.toContain(en["error.not_ready"]);
+      });
+    });
+    describe("With a refused user action and then a state message", () => {
+      it("the action's error stays", async () => {
+        const page = setup({
+          client: { refresh: vi.fn(() => Promise.resolve(fail("ask_limited", { valveId: ID }))) },
+        });
+        await settle();
+        page.emit(roomState());
+        page.button("refresh", ID).click();
+        await settle();
+        page.emit(roomState());
+        expect(page.text()).toContain("was asked a moment ago");
+      });
+    });
+    describe("With the first config read refused as not_ready and then a state message", () => {
+      it("the config is read again", async () => {
+        const config = vi
+          .fn<ApiClient["config"]>()
+          .mockResolvedValueOnce(fail("not_ready"))
+          .mockResolvedValue(ok(configView({ yaml: "later: 1\n" })));
+        const page = setup({ client: { config } });
+        await settle();
+        page.emit(stateView());
+        await settle();
+        expect(page.textarea().value).toBe("later: 1\n");
+      });
+    });
+  });
+
+  describe("confirmed paths", () => {
+    describe("When forget is pressed and confirmed", () => {
+      it("forget is called with the id", async () => {
+        const page = setup({ confirm: true });
+        await settle();
+        page.emit(stateView({ valves: [valveView({ valveId: ID, membership: "orphan" })] }));
+        page.button("forget", ID).click();
+        expect(page.client.forget).toHaveBeenCalledWith(ID);
+      });
+    });
+    describe("When release is pressed and not confirmed", () => {
+      it("the config is not read again", async () => {
+        const page = setup({ confirm: false });
+        await settle();
+        page.emit(stateView({ held: true }));
+        page.button("release").click();
+        await settle();
+        expect(page.client.config).toHaveBeenCalledOnce();
+      });
+    });
+  });
+
   describe("stop", () => {
     describe("Always", () => {
       it("the event stream is closed", () => {

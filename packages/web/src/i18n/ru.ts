@@ -209,6 +209,9 @@ export const ru: Dictionary = {
   "error.device_unknown": "Устройство {deviceId} неизвестно.",
   "error.mqtt_not_connected": "Heatmaster не подключён к брокеру MQTT.",
   "error.mqtt_timeout": "Брокер MQTT не ответил вовремя.",
+  "error.mqtt_refused": "Брокер MQTT отклонил запрос (код причины {reasonCode}).",
+  "error.topic_invalid": "Тема MQTT {topic} недопустима.",
+  "error.io_failed": "Heatmaster не смог прочитать или записать свои файлы. Проверьте диск.",
   "error.network": "Не удаётся связаться с Heatmaster.",
   "error.http": "Сервер ответил со статусом {status}, а не ответом Heatmaster.",
 };

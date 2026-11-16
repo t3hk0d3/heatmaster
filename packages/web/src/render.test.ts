@@ -426,7 +426,7 @@ describe("render", () => {
             },
           ],
         });
-        const out = text(renderPlan(plan, t));
+        const out = text(renderPlan(plan, t, []));
         for (const part of [
           "Hall valve",
           en["setting.sensor_source"],
@@ -449,7 +449,7 @@ describe("render", () => {
             },
           ],
         });
-        expect(text(renderPlan(plan, t))).toContain(
+        expect(text(renderPlan(plan, t, []))).toContain(
           `${en["setting.active_group"]}: could not be read`,
         );
       });
@@ -468,7 +468,7 @@ describe("render", () => {
             },
           ],
         });
-        const out = text(renderPlan(plan, t));
+        const out = text(renderPlan(plan, t, []));
         expect(out).toContain(`${en["setting.sensor_source"]}: internal → external`);
         expect(out).toContain(`${en["setting.active_group"]}: ${en.unknown} → 3`);
       });
@@ -489,13 +489,13 @@ describe("render", () => {
     });
     describe("With no writes", () => {
       it('shows the "nothing will be written" text', () => {
-        expect(text(renderPlan(planView(), t))).toContain(en["plan.nothing"]);
+        expect(text(renderPlan(planView(), t, []))).toContain(en["plan.nothing"]);
       });
     });
     describe("With held true / false", () => {
       it("says that writes stay held / that Heatmaster will write to the valves", () => {
-        expect(text(renderPlan(planView({ held: true }), t))).toContain(en["plan.held"]);
-        expect(text(renderPlan(planView({ held: false }), t))).toContain(en["plan.not_held"]);
+        expect(text(renderPlan(planView({ held: true }), t, []))).toContain(en["plan.held"]);
+        expect(text(renderPlan(planView({ held: false }), t, []))).toContain(en["plan.not_held"]);
       });
     });
     describe("With leaving and rejoining valves", () => {
@@ -504,7 +504,7 @@ describe("render", () => {
           rejoining: [{ valveId: "z2m:a", name: "Back again" }],
           leaving: [{ valveId: "z2m:b", name: "Going away" }],
         });
-        const out = text(renderPlan(plan, t));
+        const out = text(renderPlan(plan, t, []));
         expect(out).toContain("Back again");
         expect(out).toContain("Going away");
       });

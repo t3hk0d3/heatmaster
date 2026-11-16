@@ -1,4 +1,5 @@
 import type {
+  ChangeRefusedCode,
   Evidence,
   Liveness,
   Membership,
@@ -21,21 +22,7 @@ type CodedKey =
   | `evidence.${Evidence}`;
 
 type ErrorCode =
-  | "config_unreadable"
-  | "revision_conflict"
-  | "timezone_missing"
-  | "ha_link_missing"
-  | "sensor_unknown"
-  | "sensor_not_temperature"
-  | "sensor_on_valve"
-  | "valve_unknown"
-  | "valve_unsupported"
-  | "ledger_unreadable"
-  | "transport_unusable"
-  | "valve_not_observed"
-  | "originals_unreadable"
-  | "valve_not_orphan"
-  | "valve_managed"
+  | ChangeRefusedCode
   | "not_ready"
   | "mqtt_fault"
   | "body_invalid"
@@ -55,6 +42,9 @@ type ErrorCode =
   | "device_unknown"
   | "mqtt_not_connected"
   | "mqtt_timeout"
+  | "mqtt_refused"
+  | "topic_invalid"
+  | "io_failed"
   | "network"
   | "http";
 
@@ -269,6 +259,9 @@ export const en = {
   "error.device_unknown": "Device {deviceId} is not known.",
   "error.mqtt_not_connected": "Heatmaster is not connected to the MQTT broker.",
   "error.mqtt_timeout": "The MQTT broker did not answer in time.",
+  "error.mqtt_refused": "The MQTT broker refused the request (reason code {reasonCode}).",
+  "error.topic_invalid": "The MQTT topic {topic} is not valid.",
+  "error.io_failed": "Heatmaster could not read or write its files. Check the disk.",
   "error.network": "Heatmaster cannot be reached.",
   "error.http": "The server answered with status {status}, not with a Heatmaster answer.",
 } as const satisfies Required & Readonly<Record<string, string>>;

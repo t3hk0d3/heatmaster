@@ -276,7 +276,7 @@ const PROBLEM_CODE_PARAMS: Readonly<Record<string, string>> = {
 function problemText(problem: ProblemView, t: Translate): string {
   const key = `problem.${problem.kind}`;
   const params: Record<string, string> = { name: problem.name };
-  if (problem.kind === "link_down") params.name = codeText(t, "link", problem.name);
+  if (problem.kind === "link_down") params.name = codeText(t, "link", problem.subject.id);
   for (const [name, value] of Object.entries(problem.data)) {
     const prefix = PROBLEM_CODE_PARAMS[name];
     params[name] = prefix === undefined ? value : codeText(t, prefix, value);
@@ -353,7 +353,7 @@ function renderWrite(write: WriteView, valves: readonly ValveView[], t: Translat
 export function renderPlan(
   plan: PlanView,
   t: Translate,
-  valves: readonly ValveView[] = [],
+  valves: readonly ValveView[],
 ): HTMLElement {
   const section = el("section", { class: "plan" });
   section.append(textElement("h3", t("plan.title")));
