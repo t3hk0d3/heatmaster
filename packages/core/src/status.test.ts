@@ -16,6 +16,7 @@ import {
   problemSensorStale,
   problemSettingNotHolding,
   problemStoreWriteFailed,
+  problemTickFailed,
   problemTransportUnusable,
   problemValveNotAdopted,
   problemValveNotAuto,
@@ -266,8 +267,9 @@ describe("status", () => {
           [problemFeedLost(V1), "feed_lost", "valve", "warning", []],
           [problemValveNotAuto(V1, "off"), "valve_not_auto", "valve", "warning", ["mode"]],
           [problemStoreWriteFailed("config"), "store_write_failed", "system", "error", ["store"]],
+          [problemTickFailed(), "tick_failed", "system", "error", []],
         ];
-        expect(new Set(table.map((row) => row[1])).size).toBe(18);
+        expect(new Set(table.map((row) => row[1])).size).toBe(19);
         for (const [problem, kind, subjectKind, severity, dataKeys] of table) {
           expect(problem.kind).toBe(kind);
           expect(problem.subject.kind).toBe(subjectKind);
@@ -323,6 +325,13 @@ describe("status", () => {
         const problem = problemValveNotAuto(V1, "heat");
         expect(problem.data.mode).toBe("heat");
         expect(problem.severity).toBe("warning");
+      });
+    });
+    describe("With problemTickFailed()", () => {
+      it("the subject id is SYSTEM_ID and the severity is error", () => {
+        const problem = problemTickFailed();
+        expect(problem.subject).toEqual({ kind: "system", id: SYSTEM_ID });
+        expect(problem.severity).toBe("error");
       });
     });
     describe('With problemStoreWriteFailed("ledger")', () => {

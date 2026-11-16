@@ -218,6 +218,8 @@ export const en = {
     "Valve {name} is in {mode} mode and is not following its schedule. Heatmaster does not change the mode",
   "problem.store_write_failed":
     "Heatmaster could not save {store}. Check the disk; writes to valves may be stopped until the save works",
+  "problem.tick_failed":
+    "Heatmaster failed inside while deciding what to send, so valves get no writes and no room temperature. See its log",
 
   "error.config_unreadable": "The configuration cannot be read, so it cannot be changed.",
   "error.revision_conflict":

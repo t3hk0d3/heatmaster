@@ -30,7 +30,8 @@ export type ProblemKind =
   | "sensor_liveness_unobservable"
   | "feed_lost"
   | "valve_not_auto"
-  | "store_write_failed";
+  | "store_write_failed"
+  | "tick_failed";
 
 export type Problem = Readonly<{
   kind: ProblemKind;
@@ -238,4 +239,9 @@ export function problemValveNotAuto(valveId: string, mode: ValveMode): Problem {
 /** Raised by the runtime, never by `tick`. `store` is `config`, `ledger` or `copy`. */
 export function problemStoreWriteFailed(store: string): Problem {
   return problem("store_write_failed", "system", SYSTEM_ID, "error", { store });
+}
+
+/** Raised by the runtime, never by `tick`: the last tick threw, so nothing is being decided. */
+export function problemTickFailed(): Problem {
+  return problem("tick_failed", "system", SYSTEM_ID, "error");
 }

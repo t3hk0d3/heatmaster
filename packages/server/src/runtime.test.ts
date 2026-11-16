@@ -51,6 +51,8 @@ import type { DeviceInfo } from "./transport.ts";
 
 /** A binding the runtime gets instead of the real one, for the model ids named here. */
 const bindingOverrides = new Map<string, Binding>();
+/** While set, core's `tick` throws an Error with this message. */
+const tickFault: { message: string | undefined } = { message: undefined };
 
 vi.mock("@heatmaster/core", async (importOriginal) => {
   const core = await importOriginal<typeof import("@heatmaster/core")>();
@@ -60,6 +62,10 @@ vi.mock("@heatmaster/core", async (importOriginal) => {
       const found = core.findProfile(modelId === "TRVZB-NOREAD" ? "TRVZB" : modelId, transport);
       const binding = bindingOverrides.get(modelId);
       return found === undefined || binding === undefined ? found : { ...found, binding };
+    },
+    tick: (world: Parameters<typeof core.tick>[0]) => {
+      if (tickFault.message !== undefined) throw new Error(tickFault.message);
+      return core.tick(world);
     },
   };
 });
@@ -326,6 +332,7 @@ afterEach(async () => {
   for (const rig of rigs.splice(0)) await rig.rt.stop();
   for (const dir of folders.splice(0)) rmSync(dir, { recursive: true, force: true });
   bindingOverrides.clear();
+  tickFault.message = undefined;
 });
 
 async function boot(
@@ -1508,6 +1515,45 @@ describe("runtime", () => {
         await rig.advance(TICK_INTERVAL_MS);
         expect(after).toHaveLength(1);
         expect(rig.logs.some((line) => line.startsWith("error"))).toBe(true);
+      });
+    });
+
+    describe("With a tick that throws after the start", () => {
+      /** Started and ticked once; the next two interval ticks throw the same error. */
+      async function failing(): Promise<Rig> {
+        const rig = await boot({ seed: managedSeed([A]) });
+        tickFault.message = "tick broke";
+        await rig.advance(TICK_INTERVAL_MS);
+        return rig;
+      }
+      it("the error is logged once, however often the same error repeats", async () => {
+        const rig = await failing();
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.logs.filter((line) => line.startsWith("error a tick failed"))).toHaveLength(1);
+      });
+      it("the listeners still receive a snapshot, and its problems hold tick_failed", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        const before = rig.snapshots.length;
+        tickFault.message = "tick broke";
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.snapshots.length).toBe(before + 1);
+        expect(problemKinds(rig.snapshots.at(-1) ?? rig.rt.snapshot())).toContain("tick_failed");
+        expect(problemKinds(rig.rt.snapshot())).toContain("tick_failed");
+      });
+      it("the next interval tick still runs, and once it succeeds tick_failed is gone", async () => {
+        const rig = await failing();
+        tickFault.message = undefined;
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.rt.snapshot().tickedAt).toBe(T + 2 * TICK_INTERVAL_MS);
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("tick_failed");
+      });
+      it("an error that comes back after a good tick is logged again", async () => {
+        const rig = await failing();
+        tickFault.message = undefined;
+        await rig.advance(TICK_INTERVAL_MS);
+        tickFault.message = "tick broke";
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.logs.filter((line) => line.startsWith("error a tick failed"))).toHaveLength(2);
       });
     });
 

@@ -145,6 +145,7 @@ export {
   problemSensorStale,
   problemSettingNotHolding,
   problemStoreWriteFailed,
+  problemTickFailed,
   problemTransportUnusable,
   problemValveNotAdopted,
   problemValveNotAuto,

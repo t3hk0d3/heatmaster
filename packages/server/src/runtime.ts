@@ -23,6 +23,7 @@ import {
   planChange,
   preview as previewWrites,
   problemStoreWriteFailed,
+  problemTickFailed,
   restoreValve as coreRestoreValve,
   sensorId,
   storedToRaw,
@@ -419,6 +420,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   const warnedTopics = new Set<string>();
   let lastTick: TickRecord | undefined;
   const storeFailed: Partial<Record<StoreName, boolean>> = {};
+  /** The error of the last timed or event tick, while it keeps failing; undefined once one runs. */
+  let tickError: string | undefined;
   const directAsks = new Map<string, number[]>();
   const listeners = new Set<(snapshot: Snapshot) => void>();
 
@@ -763,8 +766,27 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     tickQueued = true;
     void withLock(async () => {
       tickQueued = false;
-      await runTick();
+      try {
+        await runTick();
+      } catch (error) {
+        tickFailed(error);
+      }
     });
+  }
+
+  /**
+   * A tick that threw: logged once while the same error repeats, shown as a problem, and the
+   * listeners still hear of it. The next tick runs as usual.
+   */
+  function tickFailed(error: unknown): void {
+    const message = String(error);
+    if (message !== tickError) log.error("a tick failed", { error: message });
+    tickError = message;
+    try {
+      notify();
+    } catch (failure) {
+      log.error("a snapshot could not be built", { error: String(failure) });
+    }
   }
 
   /** The clock-jump rule: a wall clock that moved unlike the monotonic one was set. */
@@ -858,6 +880,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     };
     const outcome = await execute(result.effects, false);
     if (outcome.stores.config === true || outcome.stores.ledger === true) refollow();
+    tickError = undefined;
     notify();
   }
 
@@ -1062,7 +1085,11 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       timeZone: lastTick?.timeZone ?? zone(),
       tickedAt: lastTick?.tickedAt,
       rooms,
-      problems: [...(lastTick?.problems ?? []), ...storeProblems()],
+      problems: [
+        ...(lastTick?.problems ?? []),
+        ...storeProblems(),
+        ...(tickError === undefined ? [] : [problemTickFailed()]),
+      ],
       memberships: membershipRecord,
       devices,
       unassigned,
