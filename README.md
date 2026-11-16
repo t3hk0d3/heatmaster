@@ -49,36 +49,24 @@ is refused, and room sensors need the link.
 ## Example config
 
 ```yaml
-version: 1
+version: 2
 settings:
   timezone: Europe/Amsterdam
   hold_writes: true
 schedules:
   - id: main
     name: Main
-    default_week:
-      mon:
-        &weekday [
-          { time: "00:00", temperature: 16 },
-          { time: "06:30", temperature: 20 },
-          { time: "22:00", temperature: 16 },
-        ]
-      tue: *weekday
-      wed: *weekday
-      thu: *weekday
-      fri: *weekday
-      sat:
-        [
-          { time: "00:00", temperature: 16 },
-          { time: "08:00", temperature: 20 },
-          { time: "23:00", temperature: 16 },
-        ]
-      sun:
-        [
-          { time: "00:00", temperature: 16 },
-          { time: "08:00", temperature: 20 },
-          { time: "23:00", temperature: 16 },
-        ]
+    week:
+      - days: weekdays
+        temperature:
+          "00:00": 16
+          "06:30": 20
+          "22:00": 16
+      - days: weekend
+        temperature:
+          "00:00": 16
+          "08:00": comfort
+          "23:00": 16
 rooms:
   - id: living
     name: Living room
@@ -88,6 +76,12 @@ rooms:
     sensors:
       - ref: ha:sensor.living_temperature
 ```
+
+A schedule's `week` is a list of blocks; every weekday is in exactly one block. `days` is a list
+of day names (`[mon, wed]`), or one of `all`, `weekdays` (mon to fri) and `weekend` (sat, sun).
+`temperature` maps each time, in quotes, to a temperature or a preset name, and holds `"00:00"`.
+Documents of version 1 (a `default_week` with a list per day) are refused; a stored config of
+version 1 is upgraded when it is loaded.
 
 Home Assistant gets, through MQTT discovery, one device per room (temperature, target
 temperature, problem and sync entities) and one "Heatmaster" device (problem, problem count,
