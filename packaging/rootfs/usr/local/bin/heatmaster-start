@@ -15,8 +15,9 @@ halt_container() {
 if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
   # Running as a Home Assistant app: the broker comes from the Supervisor.
   while :; do
-    answer=$(curl -fsS --max-time 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-      http://supervisor/services/mqtt 2>/dev/null) &&
+    # The header comes from stdin, so the token is not on curl's command line.
+    answer=$(curl -fsS --max-time 10 -H @- http://supervisor/services/mqtt 2>/dev/null \
+      <<<"Authorization: Bearer ${SUPERVISOR_TOKEN}") &&
       jq -e '.result == "ok" and ((.data.host // "") | type == "string" and length > 0)' \
         >/dev/null 2>&1 <<<"$answer" && break
     echo "heatmaster: no MQTT broker available from the Supervisor; install and start the Mosquitto broker app" >&2
@@ -37,8 +38,12 @@ if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
   export DATA_DIR=/data
   export PUBLIC_DIR=/config
   if [ -r /data/options.json ]; then
-    topic=$(jq -r '.z2m_base_topic // empty' /data/options.json)
-    prefix=$(jq -r '.discovery_prefix // empty' /data/options.json)
+    if ! topic=$(jq -r '.z2m_base_topic // empty' /data/options.json 2>/dev/null) ||
+      ! prefix=$(jq -r '.discovery_prefix // empty' /data/options.json 2>/dev/null); then
+      echo "heatmaster: /data/options.json could not be read; the default base topic and discovery prefix are used" >&2
+      topic=""
+      prefix=""
+    fi
     [ -n "$topic" ] && export Z2M_BASE_TOPIC="$topic"
     [ -n "$prefix" ] && export DISCOVERY_PREFIX="$prefix"
   fi
@@ -57,7 +62,8 @@ recent=()
 if [ -r "$starts_file" ]; then
   while read -r at; do
     [[ "$at" =~ ^[0-9]+$ ]] || continue
-    if [ $((now - at)) -lt "$WINDOW_SECONDS" ]; then recent+=("$at"); fi
+    # An entry from the future (the clock stepped back) does not count.
+    if [ "$at" -le "$now" ] && [ $((now - at)) -lt "$WINDOW_SECONDS" ]; then recent+=("$at"); fi
   done <"$starts_file"
 fi
 if [ "${#recent[@]}" -ge "$MAX_STARTS" ]; then

@@ -23,7 +23,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4.4.1
       - name: Build the amd64 image and run the container test
         run: |
-          docker build -f packaging/Dockerfile -t heatmaster:ci .
+          docker buildx build --load -f packaging/Dockerfile -t heatmaster:ci .
           IMAGE=heatmaster:ci bash packaging/test/container-test.sh
       - name: arm64 smoke check under QEMU
         run: bash packaging/test/container-test.sh arm64

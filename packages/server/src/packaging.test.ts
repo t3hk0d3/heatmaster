@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, globSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -42,6 +42,16 @@ describe("packaging files", () => {
           schema: { z2m_base_topic: "str", discovery_prefix: "str" },
         });
         expect(typeof config.description).toBe("string");
+      });
+
+      it("is the only config.yaml, config.yml or config.json the Supervisor's app search can find", () => {
+        const found = globSync("**/config.{yaml,yml,json}", { cwd: ROOT }).filter(
+          (file) =>
+            !file
+              .split("/")
+              .some((part) => part.startsWith(".") || part === "node_modules" || part === "rootfs"),
+        );
+        expect(found).toEqual(["packaging/app/config.yaml"]);
       });
 
       it("its version equals the server package's version", () => {

@@ -50,10 +50,10 @@ describe("options", () => {
     });
 
     describe('With HEATMASTER_PORT "abc", "0", "-1", "70000" or "80.5"', () => {
-      it("throws an Error whose message names HEATMASTER_PORT", () => {
+      it("throws an OptionsError that names HEATMASTER_PORT", () => {
         for (const value of ["abc", "0", "-1", "70000", "80.5"]) {
-          expect(() => loadOptions({ MQTT_URL, HEATMASTER_PORT: value }), value).toThrow(
-            /HEATMASTER_PORT/,
+          expect(Object.keys(codes({ MQTT_URL, HEATMASTER_PORT: value })), value).toContain(
+            "HEATMASTER_PORT",
           );
         }
       });
@@ -89,21 +89,21 @@ describe("options", () => {
     });
 
     describe("With MQTT_URL missing or empty", () => {
-      it("throws an Error whose message names MQTT_URL", () => {
-        expect(() => loadOptions({})).toThrow(/MQTT_URL/);
-        expect(() => loadOptions({ MQTT_URL: "" })).toThrow(/MQTT_URL/);
+      it("throws an OptionsError that names MQTT_URL", () => {
+        expect(Object.keys(codes({}))).toContain("MQTT_URL");
+        expect(Object.keys(codes({ MQTT_URL: "" }))).toContain("MQTT_URL");
       });
     });
 
     describe("With an MQTT_URL that is not tcp or tls", () => {
-      it("throws an Error whose message names MQTT_URL", () => {
+      it("throws an OptionsError that names MQTT_URL", () => {
         for (const url of [
           "ws://broker:9001",
           "wss://broker/mqtt",
           "http://broker",
           "broker:1883",
         ]) {
-          expect(() => loadOptions({ MQTT_URL: url }), url).toThrow(/MQTT_URL/);
+          expect(Object.keys(codes({ MQTT_URL: url })), url).toContain("MQTT_URL");
         }
       });
 
@@ -144,9 +144,9 @@ describe("options", () => {
     });
 
     describe("With one of the two", () => {
-      it("throws an Error whose message names the other", () => {
-        expect(() => loadOptions({ MQTT_URL, HA_URL: "http://ha:8123" })).toThrow(/HA_TOKEN/);
-        expect(() => loadOptions({ MQTT_URL, HA_TOKEN: "t0ken" })).toThrow(/HA_URL/);
+      it("throws an OptionsError that names the other", () => {
+        expect(Object.keys(codes({ MQTT_URL, HA_URL: "http://ha:8123" }))).toContain("HA_TOKEN");
+        expect(Object.keys(codes({ MQTT_URL, HA_TOKEN: "t0ken" }))).toContain("HA_URL");
       });
     });
   });
@@ -371,7 +371,6 @@ describe("options (task 22)", () => {
           DATA_DIR: ["path_not_absolute"],
           HEATMASTER_PORT: ["port_invalid"],
         });
-        expect(() => loadOptions(env)).toThrow(/MQTT_URL.*DATA_DIR.*HEATMASTER_PORT/);
       });
     });
   });

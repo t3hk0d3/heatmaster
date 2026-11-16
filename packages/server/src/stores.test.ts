@@ -150,16 +150,16 @@ describe("ConfigStore", () => {
     describe("With a leftover config.json.tmp holding garbage and a good config.json", () => {
       it("returns state ok", async () => {
         const w = world();
-        put(w.file("config.json"), fixtureText("config.v1.json"));
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
         put(w.file("config.json.tmp"), "garbage");
         expect((await w.config.load()).state).toBe("ok");
       });
     });
 
-    describe("With the fixture config.v1.json", () => {
+    describe("With the fixture house-config.v1.json", () => {
       it("returns state ok and the expected StoredConfig", async () => {
         const w = world();
-        put(w.file("config.json"), fixtureText("config.v1.json"));
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
         expect(await w.config.load()).toEqual({ state: "ok", stored: sampleStored() });
       });
     });
@@ -173,7 +173,7 @@ describe("ConfigStore", () => {
         await w.config.save(sampleStored());
         const file = jsonOf(w.file("config.json"));
         expect(file.version).toBe(1);
-        expect(file.data).toEqual(jsonOf(path.join(FIXTURES, "config.v1.json")).data);
+        expect(file.data).toEqual(jsonOf(path.join(FIXTURES, "house-config.v1.json")).data);
         expect((await w.config.load()).stored).toEqual(sampleStored());
       });
 
@@ -190,7 +190,7 @@ describe("ConfigStore", () => {
     describe("After a good load", () => {
       it("the file holds the new document", async () => {
         const w = world();
-        put(w.file("config.json"), fixtureText("config.v1.json"));
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
         await w.config.load();
         await w.config.save({ ...sampleStored(), revision: 4 });
         expect((jsonOf(w.file("config.json")).data as Record<string, unknown>).revision).toBe(4);
@@ -261,7 +261,7 @@ describe("ConfigStore", () => {
     describe("After a good load, with overwriteUnreadable", () => {
       it("the document is saved and nothing is set aside", async () => {
         const w = world();
-        put(w.file("config.json"), fixtureText("config.v1.json"));
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
         await w.config.load();
         await w.config.save({ ...sampleStored(), revision: 8 }, true);
         expect(setAsideNames(w.dataDir, "config")).toEqual([]);
@@ -272,7 +272,7 @@ describe("ConfigStore", () => {
     describe("With a directory standing where config.json.tmp must be written", () => {
       it("rejects with the file system's error and config.json is unchanged", async () => {
         const w = world();
-        const text = fixtureText("config.v1.json");
+        const text = fixtureText("house-config.v1.json");
         put(w.file("config.json"), text);
         mkdirSync(w.file("config.json.tmp"));
         await w.config.load();
@@ -299,7 +299,7 @@ describe("ConfigStore", () => {
     describe("After a good load", () => {
       it("the config file is gone and a later load returns state empty", async () => {
         const w = world();
-        put(w.file("config.json"), fixtureText("config.v1.json"));
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
         await w.config.load();
         await w.config.remove();
         expect(existsSync(w.file("config.json"))).toBe(false);
