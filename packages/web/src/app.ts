@@ -147,7 +147,9 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     const result = await client.config();
     reloading = false;
     if (halted()) return;
-    editor = result.ok ? loaded(result.value) : loadFailed(state?.revision ?? 0, result.error);
+    // Text typed while the read was in flight is the user's; the read only flags the difference.
+    if (editor.dirty) editor = result.ok ? { ...editor, serverChanged: true } : editor;
+    else editor = result.ok ? loaded(result.value) : loadFailed(state?.revision ?? 0, result.error);
     configLoaded = true;
     retryConfig =
       !result.ok &&

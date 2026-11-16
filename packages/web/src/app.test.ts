@@ -236,6 +236,25 @@ describe("app", () => {
     });
   });
 
+  describe("a config read that lands after the user typed", () => {
+    describe("With the editor edited while the read was in flight", () => {
+      it('the text is kept and the "changed on the server" notice is shown', async () => {
+        let land: ((result: Result<ReturnType<typeof configView>>) => void) | undefined;
+        const pending = new Promise<Result<ReturnType<typeof configView>>>((resolve) => {
+          land = resolve;
+        });
+        const page = setup({ client: { config: vi.fn(() => pending) } });
+        await settle();
+        page.textarea().value = "mine";
+        page.textarea().dispatchEvent(new Event("input", { bubbles: true }));
+        land?.(ok(configView({ yaml: "theirs: 1\n" })));
+        await settle();
+        expect(page.textarea().value).toBe("mine");
+        expect(page.text()).toContain(en["editor.server_changed"]);
+      });
+    });
+  });
+
   describe("preview and apply", () => {
     async function typed() {
       const page = setup();
