@@ -175,6 +175,25 @@ export type {
   SyncState,
   ValveStatus,
 } from "./status.ts";
+export {
+  IGNORE_LABEL,
+  LEGACY_SENSOR_LABEL,
+  SCHEDULE_LABEL_PREFIX,
+  SENSOR_LABEL,
+  membershipFrom,
+  sameMembership,
+  scheduleLabelId,
+  scheduleLabelName,
+} from "./house.ts";
+export type {
+  AreaMembership,
+  AreaRoom,
+  HaArea,
+  HaEntity,
+  HaSnapshot,
+  MembershipView,
+  UnplacedReason,
+} from "./house.ts";
 export { applyEvent } from "./events.ts";
 export type { Event, Inbox } from "./events.ts";
 export {

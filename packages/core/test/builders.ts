@@ -14,8 +14,10 @@ import type {
   DeviceState,
   DeviceView,
   Event,
+  AreaMembership,
   Group,
   GroupSpec,
+  HaSnapshot,
   Inbox,
   PresetName,
   RawConfig,
@@ -450,4 +452,42 @@ export function settled(world: World): World {
     nowMs = answers.size > 0 ? messageAt + 2000 : nowMs + 2 * MINUTE_MS;
   }
   throw new Error("the world did not settle");
+}
+
+/** A Home Assistant snapshot; an area's name defaults to its id. */
+export function makeSnapshot(
+  options: {
+    areas?: Record<string, { name?: string; labels?: string[] }>;
+    valveAreas?: Record<string, string | null>;
+    entities?: Record<string, { areaId?: string; labels?: string[] }>;
+    labels?: Record<string, string>;
+  } = {},
+): HaSnapshot {
+  return {
+    areas: new Map(
+      Object.entries(options.areas ?? {}).map(([id, area]) => [
+        id,
+        { name: area.name ?? id, labels: area.labels ?? [] },
+      ]),
+    ),
+    valveAreas: new Map(Object.entries(options.valveAreas ?? {})),
+    entities: new Map(
+      Object.entries(options.entities ?? {}).map(([id, entity]) => [
+        id,
+        { areaId: entity.areaId, labels: entity.labels ?? [] },
+      ]),
+    ),
+    labels: new Map(Object.entries(options.labels ?? {})),
+  };
+}
+
+/** A saved membership whose area names equal their ids. */
+export function makeMembership(
+  rooms: Record<string, readonly string[]>,
+  ignored: readonly string[] = [],
+): AreaMembership {
+  return {
+    rooms: new Map(Object.entries(rooms).map(([id, valveIds]) => [id, { name: id, valveIds }])),
+    ignored,
+  };
 }
