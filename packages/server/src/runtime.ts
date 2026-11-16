@@ -1031,6 +1031,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     if (payload === undefined) return;
     directAsks.set(valveId, [...recent, nowMs]);
     await found.transport.read(valveId, payload);
+    // It went out: the core's next request to this valve waits for the spacing after it.
+    applyCore({ kind: "asked_directly", valveId, at: clock.nowMs() }, clock.nowMs());
   }
 
   async function askQuietly(valveIds: readonly string[]): Promise<void> {

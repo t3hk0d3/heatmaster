@@ -2563,6 +2563,36 @@ describe("runtime", () => {
       });
     });
 
+    describe("With a direct ask 1 s before the tick that would refresh the same valve", () => {
+      const silent: Seed = {
+        config: raw({ rooms: [{ valves: [A] }], hold: true }),
+        ledger: [record(A)],
+      };
+      const reads = (rig: Rig): number => sends(rig, A).filter((s) => s.kind === "read").length;
+
+      async function askedBeforeTick(): Promise<Rig> {
+        const rig = await boot({ seed: silent });
+        await rig.advance(119 * 1000);
+        await rig.rt.refreshValve(A);
+        return rig;
+      }
+
+      it("the tick sends no refresh to that valve before SPACING_MS has passed", async () => {
+        const rig = await askedBeforeTick();
+        const before = reads(rig);
+        await rig.advance(1000);
+        expect(rig.clock.nowMs()).toBe(T + 120 * 1000);
+        expect(reads(rig)).toBe(before);
+      });
+
+      it("a refresh follows at the next tick", async () => {
+        const rig = await askedBeforeTick();
+        const before = reads(rig);
+        await rig.advance(TICK_INTERVAL_MS + 1000);
+        expect(reads(rig)).toBe(before + 1);
+      });
+    });
+
     describe("Called twice within 60 s", () => {
       it("one read is sent", async () => {
         const rig = await boot({ seed: held });

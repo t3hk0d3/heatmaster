@@ -4,6 +4,7 @@ import type { Event, Inbox } from "./events.ts";
 import { VALVE_SILENT_AFTER_MS, newState } from "./observation.ts";
 import type { Decoded, DeviceState } from "./observation.ts";
 import { EMPTY_MEMORY, newValveMemory } from "./memory.ts";
+import { SPACING_MS, mayAsk, maySpend } from "./pacing.ts";
 import type { GroupMemory, Mark, Memory, ValveMemory } from "./memory.ts";
 import { EMPTY_READINGS } from "./settings.ts";
 import type { Group, GroupSpec, ValveSpec } from "./settings.ts";
@@ -578,6 +579,34 @@ describe("events", () => {
       const base = inboxOf([[Z1, live(T0)]]);
       it("the inbox is unchanged", () => {
         expect(apply(base, { kind: "push_failed", valveId: Z1 }, T0 + 9)).toEqual(base);
+      });
+    });
+
+    describe("With a direct ask to a valve at t", () => {
+      const t = T0 + 10 * SECOND_MS;
+      const before = { ...unmarked(), tokens: 4, tokensAt: t, asks: [T0 - 1] };
+      const base = inboxOf([[Z1, live(T0)]], [[Z1, before]]);
+      const out = apply(base, { kind: "asked_directly", valveId: Z1, at: t }, T0 + 1);
+      it("no refresh or setpoint write is allowed before t + SPACING_MS", () => {
+        const after = valve(out, Z1);
+        expect(mayAsk(after, t + SPACING_MS - 1)).toBe(false);
+        expect(maySpend(after, t + SPACING_MS - 1)).toBe(false);
+      });
+      it("a refresh is allowed at t + SPACING_MS", () => {
+        expect(maySpend(valve(out, Z1), t + SPACING_MS)).toBe(true);
+      });
+      it("tokens and asks are unchanged", () => {
+        const after = valve(out, Z1);
+        expect(after.tokens).toBe(before.tokens);
+        expect(after.tokensAt).toBe(before.tokensAt);
+        expect(after.asks).toEqual(before.asks);
+      });
+    });
+
+    describe("With a direct ask to a valve that has no ValveMemory", () => {
+      const base = inboxOf([[Z1, live(T0)]]);
+      it("the inbox is unchanged", () => {
+        expect(apply(base, { kind: "asked_directly", valveId: Z1, at: T0 }, T0)).toEqual(base);
       });
     });
 

@@ -30,7 +30,9 @@ export type Event =
   | Readonly<{ kind: "link_up"; transport: string }>
   | Readonly<{ kind: "resync_requested"; valveIds: ReadonlySet<string> }>
   | Readonly<{ kind: "push_failed"; valveId: string }>
-  | Readonly<{ kind: "sent"; valveId: string; what: "refresh" | "publish"; at: number }>;
+  | Readonly<{ kind: "sent"; valveId: string; what: "refresh" | "publish"; at: number }>
+  /** A read a user triggered went out: it counts for the valve's spacing, not for tokens or asks. */
+  | Readonly<{ kind: "asked_directly"; valveId: string; at: number }>;
 
 export type Inbox = Readonly<{
   states: ReadonlyMap<string, DeviceState>;
@@ -141,9 +143,16 @@ function sent(inbox: Inbox, event: Extract<Event, { kind: "sent" }>): Inbox {
   return { ...inbox, memory: withValve(inbox.memory, event.valveId, { ...vm, groups }) };
 }
 
+function askedDirectly(inbox: Inbox, event: Extract<Event, { kind: "asked_directly" }>): Inbox {
+  const vm = inbox.memory.valves.get(event.valveId);
+  if (vm === undefined) return inbox;
+  const lastWriteAt = Math.max(vm.lastWriteAt ?? event.at, event.at);
+  return { ...inbox, memory: withValve(inbox.memory, event.valveId, { ...vm, lastWriteAt }) };
+}
+
 /**
  * Applies what happened between two ticks. Never throws and never changes the given inbox.
- * `sent` does not use `nowMs`.
+ * `sent` and `asked_directly` do not use `nowMs`.
  */
 export function applyEvent(inbox: Inbox, event: Event, specs: Specs, nowMs: number): Inbox {
   switch (event.kind) {
@@ -161,5 +170,7 @@ export function applyEvent(inbox: Inbox, event: Event, specs: Specs, nowMs: numb
       return pushFailed(inbox, event.valveId);
     case "sent":
       return sent(inbox, event);
+    case "asked_directly":
+      return askedDirectly(inbox, event);
   }
 }
