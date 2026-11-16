@@ -1,0 +1,71 @@
+#!/bin/bash
+# Starts the server. Never prints a secret and never uses `set -x`.
+set -u
+
+EXITCODE_FILE=/run/s6-linux-init-container-results/exitcode
+HALT=/run/s6/basedir/bin/halt
+MAX_STARTS=5
+WINDOW_SECONDS=$((15 * 60))
+
+halt_container() {
+  echo "$1" >"$EXITCODE_FILE"
+  "$HALT"
+}
+
+if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+  # Running as a Home Assistant app: the broker comes from the Supervisor.
+  while :; do
+    answer=$(curl -fsS --max-time 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+      http://supervisor/services/mqtt 2>/dev/null) &&
+      jq -e '.result == "ok" and ((.data.host // "") | type == "string" and length > 0)' \
+        >/dev/null 2>&1 <<<"$answer" && break
+    echo "heatmaster: no MQTT broker available from the Supervisor; install and start the Mosquitto broker app" >&2
+    sleep 5
+  done
+  host=$(jq -r '.data.host' <<<"$answer")
+  port=$(jq -r '.data.port // 1883' <<<"$answer")
+  scheme=mqtt
+  [ "$(jq -r '.data.ssl // false' <<<"$answer")" = "true" ] && scheme=mqtts
+  export MQTT_URL="${scheme}://${host}:${port}"
+  username=$(jq -r '.data.username // empty' <<<"$answer")
+  password=$(jq -r '.data.password // empty' <<<"$answer")
+  [ -n "$username" ] && export MQTT_USERNAME="$username"
+  [ -n "$password" ] && export MQTT_PASSWORD="$password"
+  unset answer username password
+  export HA_URL=http://supervisor/core
+  export HA_TOKEN="$SUPERVISOR_TOKEN"
+  export DATA_DIR=/data
+  export PUBLIC_DIR=/config
+  if [ -r /data/options.json ]; then
+    topic=$(jq -r '.z2m_base_topic // empty' /data/options.json)
+    prefix=$(jq -r '.discovery_prefix // empty' /data/options.json)
+    [ -n "$topic" ] && export Z2M_BASE_TOPIC="$topic"
+    [ -n "$prefix" ] && export DISCOVERY_PREFIX="$prefix"
+  fi
+else
+  [ -n "${DATA_DIR:-}" ] || export DATA_DIR=/data
+  [ -n "${PUBLIC_DIR:-}" ] || export PUBLIC_DIR=/config
+fi
+
+# The restart limit. Every start of the server asks every managed valve to report, and nothing
+# about earlier asks is kept, so a crash loop would be an unbounded read loop. The count lies in
+# the data folder, so it holds whoever starts the container again.
+mkdir -p "$DATA_DIR"
+starts_file="$DATA_DIR/starts"
+now=$(date +%s)
+recent=()
+if [ -r "$starts_file" ]; then
+  while read -r at; do
+    [[ "$at" =~ ^[0-9]+$ ]] || continue
+    if [ $((now - at)) -lt "$WINDOW_SECONDS" ]; then recent+=("$at"); fi
+  done <"$starts_file"
+fi
+if [ "${#recent[@]}" -ge "$MAX_STARTS" ]; then
+  echo "heatmaster: the server was started five times in 15 minutes; stopping the container (exit code 1). Read the log above for the cause." >&2
+  halt_container 1
+  exit 1
+fi
+recent+=("$now")
+printf '%s\n' "${recent[@]}" >"$starts_file.tmp" && mv "$starts_file.tmp" "$starts_file"
+
+exec node /opt/heatmaster/packages/server/src/main.ts

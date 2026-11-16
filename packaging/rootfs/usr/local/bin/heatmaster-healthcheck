@@ -1,0 +1,17 @@
+#!/bin/bash
+# Healthy while the server answers and is not stopped for good. A broker that cannot be reached
+# (down, or refusing the login) is retried by the server itself and no restart can fix it, so it
+# does not make the container unhealthy: a watchdog would otherwise restart Heatmaster in a loop
+# while the broker is down at boot. A second instance that took over (another_instance) does.
+port="${HEATMASTER_PORT:-3000}"
+answer=$(curl -sS --max-time 5 -w '\n%{http_code}' "http://127.0.0.1:${port}/api/health") || exit 1
+code="${answer##*$'\n'}"
+body="${answer%$'\n'*}"
+[ "$code" = "200" ] && exit 0
+if [ "$code" = "503" ]; then
+  reason=$(jq -r 'select(.code == "mqtt_fault") | .data.reason // empty' <<<"$body" 2>/dev/null)
+  case "$reason" in
+    mqtt_unavailable | mqtt_auth_failed) exit 0 ;;
+  esac
+fi
+exit 1

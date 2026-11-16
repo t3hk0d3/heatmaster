@@ -1,0 +1,7 @@
+configuration:
+  z2m_base_topic:
+    name: Базовый топик Zigbee2MQTT
+    description: Базовый топик Zigbee2MQTT (настройка mqtt.base_topic). Оставьте zigbee2mqtt, если вы не меняли его там.
+  discovery_prefix:
+    name: Префикс MQTT discovery
+    description: Префикс discovery интеграции MQTT в Home Assistant. Оставьте homeassistant, если вы не меняли его там.

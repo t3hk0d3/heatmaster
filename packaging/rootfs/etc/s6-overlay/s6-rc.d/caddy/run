@@ -1,0 +1,11 @@
+#!/command/with-contenv bash
+set -eu
+dir=/run/heatmaster/caddy
+rm -rf "$dir"
+mkdir -p "$dir"
+if [ -n "${UI_USER:-}" ] && [ -n "${UI_PASSWORD_HASH:-}" ]; then
+  cp /etc/caddy/password.caddy "$dir/"
+elif [ -n "${UI_USER:-}" ] || [ -n "${UI_PASSWORD_HASH:-}" ]; then
+  echo "heatmaster: UI_USER and UI_PASSWORD_HASH must both be set; the password listener on port 8080 stays off" >&2
+fi
+exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile

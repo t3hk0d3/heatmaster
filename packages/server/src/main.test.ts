@@ -18,6 +18,70 @@ import { start, type Running } from "./main.ts";
 import type { DeviceSnapshot } from "./runtime.ts";
 import { stateView } from "./views.ts";
 
+const stopOrder: string[] = [];
+
+vi.mock("./discovery.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./discovery.ts")>();
+  return {
+    ...original,
+    createDiscovery: (...args: Parameters<typeof original.createDiscovery>) => {
+      const discovery = original.createDiscovery(...args);
+      return {
+        ...discovery,
+        stop: async () => {
+          stopOrder.push("discovery");
+          await discovery.stop();
+        },
+      };
+    },
+  };
+});
+vi.mock("./runtime.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./runtime.ts")>();
+  return {
+    ...original,
+    createRuntime: (...args: Parameters<typeof original.createRuntime>) => {
+      const runtime = original.createRuntime(...args);
+      return {
+        ...runtime,
+        stop: async () => {
+          stopOrder.push("runtime");
+          await runtime.stop();
+        },
+      };
+    },
+  };
+});
+vi.mock("./mqtt.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./mqtt.ts")>();
+  return {
+    ...original,
+    createMqttClient: (...args: Parameters<typeof original.createMqttClient>) => {
+      const client = original.createMqttClient(...args);
+      return {
+        ...client,
+        end: async () => {
+          stopOrder.push("mqtt");
+          await client.end();
+        },
+      };
+    },
+  };
+});
+vi.mock("./api.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./api.ts")>();
+  return {
+    ...original,
+    buildApi: (...args: Parameters<typeof original.buildApi>) => {
+      const app = original.buildApi(...args);
+      app.addHook("onClose", () => {
+        stopOrder.push("api");
+      });
+      return app;
+    },
+  };
+});
+
 const SERVER_DIR = path.resolve(import.meta.dirname, "..");
 const MAIN = path.join(SERVER_DIR, "src/main.ts");
 const VERSION = (
@@ -90,7 +154,10 @@ function temporaryFolder(): string {
 }
 
 /** Starts the process with an MQTT address where nothing listens and temporary folders. */
-async function runMain(port: number): Promise<{
+async function runMain(
+  port: number,
+  extraEnv: Readonly<Record<string, string>> = {},
+): Promise<{
   child: ChildProcess;
   lines: string[];
   exited: Promise<number | null>;
@@ -107,6 +174,7 @@ async function runMain(port: number): Promise<{
       // A dead local address: the process never reaches a real Home Assistant.
       HA_URL: `http://127.0.0.1:${String(await freePort())}`,
       HA_TOKEN: "test-token",
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1155,6 +1223,75 @@ describe("main (discovery)", () => {
           expect(seen).toContain("sentinel");
         }, WAIT);
         expect(seen.filter((topic) => topic !== "sentinel")).toEqual([]);
+      });
+    });
+  });
+});
+
+describe("main (task 22)", () => {
+  describe("process (node packages/server/src/main.ts)", () => {
+    /** The process with an environment that holds exactly `env`, so nothing leaks in. */
+    function runBare(env: Record<string, string>): {
+      lines: string[];
+      exited: Promise<number | null>;
+    } {
+      const child = spawn(process.execPath, [MAIN], {
+        cwd: SERVER_DIR,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const lines: string[] = [];
+      for (const stream of [child.stdout, child.stderr]) {
+        readline.createInterface({ input: stream }).on("line", (line) => lines.push(line));
+      }
+      return { lines, exited: new Promise((resolve) => child.once("close", resolve)) };
+    }
+
+    describe("With MQTT_URL not set", () => {
+      it("prints one line that names MQTT_URL and ends with exit code 78", async () => {
+        const { lines, exited } = runBare({});
+        expect(await exited).toBe(78);
+        expect(lines.filter((line) => line.includes("MQTT_URL"))).toHaveLength(1);
+      });
+    });
+
+    describe("With two faulty variables", () => {
+      it("prints one line for each", async () => {
+        const { lines, exited } = runBare({ MQTT_URL: "http://x", HEATMASTER_PORT: "0" });
+        expect(await exited).toBe(78);
+        expect(lines.filter((line) => line.includes("MQTT_URL"))).toHaveLength(1);
+        expect(lines.filter((line) => line.includes("HEATMASTER_PORT"))).toHaveLength(1);
+      });
+    });
+
+    describe("With a password and a token set", () => {
+      it("the start-up log line holds *** in their places and neither value", async () => {
+        const port = await freePort();
+        const { child, lines, exited } = await runMain(port, {
+          MQTT_USERNAME: "someone",
+          MQTT_PASSWORD: "pw-very-secret",
+          HA_TOKEN: "token-very-secret",
+        });
+        try {
+          const line = await logLine(lines, "***", exited);
+          expect(line).toContain("someone");
+          await logLine(lines, `127.0.0.1:${String(port)}`, exited);
+          expect(lines.join("\n")).not.toMatch(/pw-very-secret|token-very-secret/);
+        } finally {
+          child.kill("SIGTERM");
+          await exited;
+        }
+      });
+    });
+  });
+
+  describe("stop", () => {
+    describe("Always", () => {
+      it("the discovery publisher is stopped first, then the runtime, then the MQTT client, then the API", async () => {
+        stopOrder.length = 0;
+        const running = await start(optionsFor(await freePort()), systemClock, false);
+        await running.stop();
+        expect(stopOrder).toEqual(["discovery", "runtime", "mqtt", "api"]);
       });
     });
   });

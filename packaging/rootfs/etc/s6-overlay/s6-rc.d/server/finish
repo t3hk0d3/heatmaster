@@ -1,0 +1,9 @@
+#!/command/with-contenv bash
+# $1 is the server's exit code (256 when a signal killed it). Bad options (78) cannot be fixed by
+# a restart, so the container ends with that code. Any other end lets s6 start the server again,
+# within the limit that heatmaster-start enforces.
+if [ "${1:-}" = "78" ]; then
+  echo "heatmaster: the options are not usable; stopping the container" >&2
+  echo 78 > /run/s6-linux-init-container-results/exitcode
+  exec /run/s6/basedir/bin/halt
+fi

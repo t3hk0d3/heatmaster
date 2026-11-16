@@ -1,0 +1,29 @@
+# An example for running Heatmaster as a plain container.
+#
+# Notes:
+# - Make the password hash with: docker run --rm caddy:2.11.9-alpine caddy hash-password
+#   Write every "$" of the hash as "$$" in this file.
+# - Never publish ports 8099 or 3000. The server on 127.0.0.1:3000 has no login.
+# - Never run the container with host networking: the API on 127.0.0.1:3000 has no login and
+#   would be open to every process on the host.
+# - Never attach the container to a network in which another container can take the address
+#   172.30.32.2: the ingress listener admits that address without a password.
+# - Put TLS in front when the page is reached from outside the home network.
+services:
+  heatmaster:
+    image: ghcr.io/t3hk0d3/heatmaster:latest
+    restart: unless-stopped
+    environment:
+      MQTT_URL: mqtt://broker:1883
+      MQTT_USERNAME: heatmaster
+      MQTT_PASSWORD: change-me
+      # Optional: the link to Home Assistant, needed for room sensors.
+      # HA_URL: http://homeassistant:8123
+      # HA_TOKEN: a-long-lived-access-token
+      UI_USER: admin
+      UI_PASSWORD_HASH: "$$2a$$14$$replace-with-your-hash"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    ports:
+      - "8080:8080"

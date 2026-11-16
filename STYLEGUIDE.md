@@ -113,9 +113,7 @@ Temperatures round half up (19.25 → 19.3 at 0.1; 19.75 → 20.0 at 0.5). A val
   reports a problem.
 - Bindings never throw on a payload they cannot decode; the value is unknown.
 - The server maps errors to HTTP responses that carry a `code`.
-- Tests assert on codes, paths and data, never on message text. Exceptions: until Task 22,
-  `loadOptions` throws a plain `Error` and its tests check that the variable name appears in the
-  message; checks on process output, and checks that a secret is absent from output, are about
+- Tests assert on codes, paths and data, never on message text. Exceptions: checks on process output, and checks that a secret is absent from output, are about
   printed text by nature and are allowed.
 
 ## Tests

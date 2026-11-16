@@ -5,7 +5,7 @@ import { systemClock, type Clock } from "./clock.ts";
 import { buildHaLink, type HaLog } from "./ha-link.ts";
 import { createDiscovery, type Discovery } from "./discovery.ts";
 import { createMqttClient, DEFAULT_TUNING, type MqttClient } from "./mqtt.ts";
-import { loadOptions, type Options } from "./options.ts";
+import { loadOptions, OptionsError, redactOptions, type Options } from "./options.ts";
 import { createRuntime, type HeatmasterRuntime, type RuntimeLog } from "./runtime.ts";
 import { createConfigStore, createLedgerStore } from "./stores.ts";
 import { stateView } from "./views.ts";
@@ -142,15 +142,29 @@ export async function start(
   };
 }
 
-async function run(): Promise<void> {
-  // Handlers come first, so a signal that arrives while the server is starting is not lost.
-  let startup: Promise<Running>;
+/** The exit code for options that cannot be used (BSD sysexits EX_CONFIG): a restart cannot fix it. */
+export const EXIT_BAD_OPTIONS = 78;
+
+function loadOptionsOrExit(): Options {
   try {
-    startup = start(loadOptions(process.env));
+    return loadOptions(process.env);
   } catch (error) {
+    if (error instanceof OptionsError) {
+      for (const issue of error.issues) console.error(`${issue.message} (${issue.code})`);
+      process.exit(EXIT_BAD_OPTIONS);
+    }
     console.error(error);
     process.exit(1);
   }
+}
+
+async function run(): Promise<void> {
+  const options = loadOptionsOrExit();
+  console.log(
+    JSON.stringify({ level: "info", msg: "heatmaster starting", options: redactOptions(options) }),
+  );
+  // Handlers come first, so a signal that arrives while the server is starting is not lost.
+  const startup = start(options);
   let stopping = false;
   const shutdown = (): void => {
     if (stopping) return;

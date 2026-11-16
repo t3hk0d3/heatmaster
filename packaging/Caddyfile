@@ -1,0 +1,31 @@
+{
+	admin off
+	persist_config off
+}
+
+(app) {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:{$HEATMASTER_PORT:3000}
+	}
+	# No single-page fallback: the page has one view and relative asset paths, so a path that
+	# names no file is a 404, not the page.
+	handle {
+		root * /srv/www
+		@index path / /index.html
+		header @index Cache-Control no-cache
+		file_server
+	}
+}
+
+# Home Assistant's ingress. Everything that does not come from the Supervisor's ingress address
+# is aborted before anything else; `route` keeps this literal order. remote_ip, never client_ip.
+http://:8099 {
+	route {
+		@other not remote_ip 172.30.32.2
+		abort @other
+		import app
+	}
+}
+
+# The password listener is added by the caddy service when UI_USER and UI_PASSWORD_HASH are set.
+import /run/heatmaster/caddy/*.caddy

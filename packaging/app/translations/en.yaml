@@ -1,0 +1,7 @@
+configuration:
+  z2m_base_topic:
+    name: Zigbee2MQTT base topic
+    description: The base topic of Zigbee2MQTT (its mqtt.base_topic setting). Leave it at zigbee2mqtt unless you changed it there.
+  discovery_prefix:
+    name: MQTT discovery prefix
+    description: The discovery prefix of Home Assistant's MQTT integration. Leave it at homeassistant unless you changed it there.
