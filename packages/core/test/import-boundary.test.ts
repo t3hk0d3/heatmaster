@@ -29,6 +29,13 @@ const linter = new ESLint({
   overrideConfigFile: path.join(ROOT, "eslint.boundaries.js"),
 });
 
+/**
+ * Per-test timeout for the lint tests. The first `lintText` loads the config and the parsers: about
+ * 1.3 s on an idle machine, and up to 5.0 s measured with eight suites running beside it, which
+ * hit vitest's 5 s default. The budget is about 6x the loaded measurement.
+ */
+const LINT_MS = 30 * 1000;
+
 /** The messages ESLint gives a sample text placed at a file path inside the repository. */
 async function lint(file: string, code: string): Promise<string[]> {
   const [result] = await linter.lintText(code, { filePath: path.join(ROOT, file) });
@@ -52,7 +59,7 @@ describe("core package", () => {
     });
   });
 
-  describe("lint rules", () => {
+  describe("lint rules", { timeout: LINT_MS }, () => {
     describe('With a file in packages/core/src that imports "node:fs", "fastify" or "@heatmaster/server"', () => {
       it("ESLint reports an error", async () => {
         for (const specifier of ["node:fs", "fastify", "@heatmaster/server"]) {
