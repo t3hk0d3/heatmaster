@@ -227,7 +227,9 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     const result = await run<PlanView>(() => (apply ? client.apply(sent) : client.preview(sent)));
     if (result === undefined || halted()) return;
     if (!result.ok) editor = refused(editor, result.error);
-    else editor = apply ? applied(editor, result.value) : previewed(editor, result.value);
+    else {
+      editor = apply ? applied(editor, sent, result.value) : previewed(editor, sent, result.value);
+    }
     render();
   }
 

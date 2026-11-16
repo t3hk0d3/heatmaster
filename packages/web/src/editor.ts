@@ -59,15 +59,26 @@ export function overwriteToggled(state: EditorState, on: boolean): EditorState {
   return changed(state, { overwrite: on });
 }
 
-export function previewed(state: EditorState, plan: PlanView): EditorState {
-  return { ...state, plan, previewedText: state.text, error: undefined };
+/** Whether the editor still holds what `sent` was built from (`sent` comes from `request`). */
+function stillSent(state: EditorState, sent: ApplyRequest): boolean {
+  return JSON.stringify(request(state)) === JSON.stringify(sent);
 }
 
-export function applied(state: EditorState, plan: PlanView): EditorState {
+/**
+ * The plan for `sent`. When the text or a switch changed while the preview ran, the plan is
+ * stale: it is dropped, so Apply needs a new Preview.
+ */
+export function previewed(state: EditorState, sent: ApplyRequest, plan: PlanView): EditorState {
+  if (!stillSent(state, sent)) return state;
+  return { ...state, plan, previewedText: sent.yaml, error: undefined };
+}
+
+/** `sent` was applied. Text typed while it ran is kept and stays dirty. */
+export function applied(state: EditorState, sent: ApplyRequest, plan: PlanView): EditorState {
   return {
     ...state,
     baseRevision: plan.revision,
-    dirty: false,
+    dirty: state.text !== sent.yaml,
     previewedText: undefined,
     plan: undefined,
     error: undefined,

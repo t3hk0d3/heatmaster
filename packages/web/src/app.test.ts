@@ -299,6 +299,62 @@ describe("app", () => {
       });
     });
 
+    /** A call whose answer lands only when `land` is called. */
+    function deferred<T>(): Readonly<{ call: () => Promise<T>; land: (value: T) => void }> {
+      let resolve: ((value: T) => void) | undefined;
+      const promise = new Promise<T>((r) => {
+        resolve = r;
+      });
+      return { call: () => promise, land: (value) => resolve?.(value) };
+    }
+    function type(page: ReturnType<typeof setup>, text: string): void {
+      page.textarea().value = text;
+      page.textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    describe("With the text edited while Preview runs", () => {
+      it("Apply stays disabled, and the text that was never previewed is never applied", async () => {
+        const answer = deferred<Result<ReturnType<typeof planView>>>();
+        const page = setup({ client: { preview: vi.fn(answer.call) } });
+        await settle();
+        page.emit(stateView());
+        type(page, "hold_writes: true\n");
+        page.button("preview").click();
+        await settle();
+        type(page, "hold_writes: false\n");
+        answer.land(ok(planView()));
+        await settle();
+        expect(page.button("apply").disabled).toBe(true);
+        page.button("apply").click();
+        await settle();
+        expect(page.client.apply).not.toHaveBeenCalled();
+        expect(page.textarea().value).toBe("hold_writes: false\n");
+      });
+    });
+
+    describe("With the text edited while Apply runs", () => {
+      it("the newer text stays dirty: a state message with the applied revision does not replace it", async () => {
+        const answer = deferred<Result<ReturnType<typeof planView>>>();
+        const page = setup({ client: { apply: vi.fn(answer.call) } });
+        await settle();
+        page.emit(stateView());
+        type(page, "a: 1\n");
+        page.button("preview").click();
+        await settle();
+        page.button("apply").click();
+        await settle();
+        type(page, "a: 2\n");
+        answer.land(ok(planView({ revision: 4 })));
+        await settle();
+        page.emit(stateView({ revision: 4 }));
+        page.emit(stateView({ revision: 5 }));
+        await settle();
+        expect(page.client.config).toHaveBeenCalledTimes(1);
+        expect(page.textarea().value).toBe("a: 2\n");
+        expect(page.text()).toContain(en["editor.server_changed"]);
+      });
+    });
+
     describe("With apply refused as revision_conflict", () => {
       it("the error is shown and the text is kept", async () => {
         const page = await typed();

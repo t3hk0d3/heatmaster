@@ -13,10 +13,14 @@ import {
   request,
   serverRevision,
 } from "./editor.ts";
+import type { EditorState } from "./editor.ts";
 import { apiError, configView, planView } from "../test/builders.ts";
 
 const clean = () => loaded(configView({ revision: 3, yaml: "a: 1\n" }));
-const withPlan = () => previewed(edited(clean(), "a: 2\n"), planView({ revision: 4 }));
+/** Previews the state's own request. */
+const previewOf = (state: EditorState, plan = planView({ revision: 4 })) =>
+  previewed(state, request(state), plan);
+const withPlan = () => previewOf(edited(clean(), "a: 2\n"));
 
 describe("editor", () => {
   describe("loaded", () => {
@@ -61,6 +65,26 @@ describe("editor", () => {
     describe("With the current text", () => {
       it("canApply is true", () => {
         expect(canApply(withPlan())).toBe(true);
+      });
+    });
+    describe("With the text edited after the request was sent", () => {
+      const before = edited(clean(), "a: 2\n");
+      const state = previewed(edited(before, "a: 3\n"), request(before), planView());
+      it("the plan is not kept and canApply is false", () => {
+        expect(state.plan).toBeUndefined();
+        expect(canApply(state)).toBe(false);
+      });
+      it("the newer text is kept and stays dirty", () => {
+        expect(state.text).toBe("a: 3\n");
+        expect(state.dirty).toBe(true);
+      });
+    });
+    describe("With a switch toggled after the request was sent", () => {
+      it("the plan is not kept and canApply is false", () => {
+        const before = edited(clean(), "a: 2\n");
+        const state = previewed(overwriteToggled(before, true), request(before), planView());
+        expect(state.plan).toBeUndefined();
+        expect(canApply(state)).toBe(false);
       });
     });
   });
@@ -141,10 +165,8 @@ describe("editor", () => {
 
   describe("applied", () => {
     describe("With a plan of revision 5", () => {
-      const state = applied(
-        overwriteToggled(acceptToggled(withPlan(), "z2m:a", true), true),
-        planView({ revision: 5 }),
-      );
+      const sentState = overwriteToggled(acceptToggled(withPlan(), "z2m:a", true), true);
+      const state = applied(sentState, request(sentState), planView({ revision: 5 }));
       it("baseRevision is 5, dirty is false, the plan is dropped and appliedRevision is 5", () => {
         expect(state.baseRevision).toBe(5);
         expect(state.dirty).toBe(false);
@@ -154,6 +176,28 @@ describe("editor", () => {
       it("accept is empty and overwrite is false", () => {
         expect(state.accept).toEqual([]);
         expect(state.overwrite).toBe(false);
+      });
+    });
+    describe("With the text edited after the request was sent", () => {
+      const sentState = withPlan();
+      const state = applied(
+        edited(sentState, "a: 3\n"),
+        request(sentState),
+        planView({ revision: 5 }),
+      );
+      it("the newer text is kept and stays dirty", () => {
+        expect(state.text).toBe("a: 3\n");
+        expect(state.dirty).toBe(true);
+      });
+      it("baseRevision and appliedRevision are 5, the plan is dropped and canApply is false", () => {
+        expect(state.baseRevision).toBe(5);
+        expect(state.appliedRevision).toBe(5);
+        expect(state.plan).toBeUndefined();
+        expect(canApply(state)).toBe(false);
+      });
+      it("a state message with revision 5 does not reload it", () => {
+        expect(serverRevision(state, 5).reload).toBe(false);
+        expect(serverRevision(state, 5).state.text).toBe("a: 3\n");
       });
     });
   });

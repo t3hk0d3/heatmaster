@@ -1,6 +1,6 @@
 import type { StateView } from "@heatmaster/core";
 import { describe, expect, it } from "vitest";
-import { acceptToggled, edited, loaded, previewed, refused } from "./editor.ts";
+import { acceptToggled, edited, loaded, previewed, refused, request } from "./editor.ts";
 import { DICTIONARIES, translator } from "./i18n.ts";
 import {
   formatTemperature,
@@ -553,7 +553,10 @@ describe("render", () => {
 
   describe("renderEditorControls", () => {
     const clean = () => loaded(configView());
-    const ready = () => previewed(edited(clean(), "x"), planView());
+    const ready = () => {
+      const state = edited(clean(), "x");
+      return previewed(state, request(state), planView());
+    };
     describe("With canApply false", () => {
       it("the Apply button is disabled", () => {
         expect(button(renderEditorControls(clean(), undefined, false, t), "apply")?.disabled).toBe(
