@@ -1,0 +1,103 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.4;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  max-width: 64rem;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+  margin: 0.8rem 0 0.4rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.3rem 0.7rem;
+  margin: 0.2rem 0.3rem 0.2rem 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button[aria-pressed="true"] {
+  font-weight: bold;
+  text-decoration: underline;
+}
+
+dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1.2rem;
+  margin: 0.3rem 0;
+}
+
+dl .field {
+  display: flex;
+  gap: 0.4rem;
+}
+
+dt {
+  opacity: 0.75;
+}
+
+dd {
+  margin: 0;
+}
+
+.room,
+.valve,
+.plan,
+.error,
+.originals {
+  border: 1px solid currentcolor;
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.8rem;
+  margin: 0.5rem 0;
+}
+
+ul {
+  padding-left: 1.2rem;
+}
+
+.valves {
+  list-style: none;
+  padding: 0;
+}
+
+.valve-id {
+  margin-left: 0.6rem;
+  word-break: break-all;
+}
+
+.problem strong {
+  text-transform: uppercase;
+  font-size: 0.85em;
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+}
+
+.editor-controls label {
+  display: block;
+  margin: 0.3rem 0;
+}
+
+.notice,
+.mark {
+  font-weight: bold;
+}

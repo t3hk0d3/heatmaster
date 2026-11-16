@@ -1,4 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["esnext", "esnext.temporal", "dom", "dom.iterable"]
+  },
   "include": ["src", "test", "*.ts"]
 }
