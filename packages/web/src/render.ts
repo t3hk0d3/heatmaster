@@ -459,6 +459,7 @@ function problemText(problem: ProblemView, state: StateView, t: Translate): stri
   if (problem.data.roomId !== undefined) params.room = roomName(state, problem.data.roomId);
   if (problem.data.entities !== undefined)
     params.entities = problem.data.entities.split(",").join(", ");
+  if (problem.data.labels !== undefined) params.labels = problem.data.labels.split(",").join(", ");
   return isTextKey(key) ? t(key, params) : problem.kind;
 }
 

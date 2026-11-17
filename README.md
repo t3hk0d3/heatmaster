@@ -196,7 +196,9 @@ listed on the page as "changed in Home Assistant", newest first (the last 20 are
   problem names the sensor; no room changes.
 
 A label edit that would need a config entry the config cannot hold (more than 64 entries, or an
-area id that is not 1 to 64 lowercase letters, digits and underscores) is ignored, with no problem.
+area id that is not 1 to 64 lowercase letters, digits and underscores) changes nothing, and a
+problem says so; the sensor import leaves such a room out the same way. The next mirror may put the
+labels back as the config has them.
 
 Heatmaster's own label writes never come back as revisions.
 

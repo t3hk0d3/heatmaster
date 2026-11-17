@@ -250,12 +250,16 @@ export const ru: Dictionary = {
     "У датчика {name} есть метка heatmaster_temp_sensor, но ни одна комната его не использует: {reason}",
   "problem.sensor_label_unused.no_area": "датчик не отнесён ни к одной зоне",
   "problem.sensor_label_unused.area_not_room": "в его зоне нет клапана, поэтому это не комната",
+  "problem.sensor_label_unused.entry_unavailable":
+    "для его комнаты нельзя завести запись в конфигурации (записей уже 64 или идентификатор зоны не подходит Heatmaster)",
   "problem.sensor_label_unused.sensor_unknown": "Home Assistant не знает такого датчика",
   "problem.sensor_label_unused.sensor_not_temperature": "это не датчик температуры",
   "problem.sensor_label_unused.sensor_on_valve": "он принадлежит клапану",
   "problem.sensor_label_unused.sensor_limit": "в комнате уже максимальное число датчиков",
   "problem.legacy_label_present":
     "У комнаты «{name}» есть датчики Heatmaster, но у {entities} всё ещё стоит метка room_temperature_sensor. Ваша собственная автоматизация продолжает передавать температуру в комнату, пока вы не уберёте room_temperature_sensor из её датчиков",
+  "problem.entry_unavailable":
+    "Для зоны {name} нельзя завести запись в конфигурации (записей уже 64 или идентификатор зоны не подходит Heatmaster), поэтому её метки {labels} не учитываются",
   "problem.label_foreign":
     "Метка Home Assistant {name} похожа на метку расписания Heatmaster, но ею не является, поэтому Heatmaster её не трогает",
   "problem.ha_label_failed":

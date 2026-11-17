@@ -637,6 +637,23 @@ describe("render", () => {
         expect(out).toContain("sensor.a, sensor.b");
       });
     });
+    describe("With entry_unavailable for an area", () => {
+      it("names the area and its labels, comma separated", () => {
+        const state = stateView({
+          problems: [
+            problemView({
+              kind: "entry_unavailable",
+              subject: { kind: "area", id: "loft" },
+              name: "Loft",
+              data: { labels: "heatmaster_schedule_night,room_temperature_sensor" },
+            }),
+          ],
+        });
+        const out = text(renderProblems(state, t));
+        expect(out).toContain("Loft");
+        expect(out).toContain("heatmaster_schedule_night, room_temperature_sensor");
+      });
+    });
     describe("With sensor_label_unused and the reason sensor_on_valve", () => {
       it("shows the reason in words", () => {
         const state = stateView({

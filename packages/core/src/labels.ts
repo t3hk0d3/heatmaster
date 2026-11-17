@@ -14,6 +14,7 @@ import {
 import { HA_CHANGES_KEPT, type HaChangeItem, type StoredConfig } from "./ledger.ts";
 import type { Config, RoomEntry } from "./model.ts";
 import {
+  problemEntryUnavailable,
   problemLabelForeign,
   problemLegacyLabelPresent,
   problemSensorLabelUnused,
@@ -249,6 +250,7 @@ export type HaEdit = Readonly<{ config: Config; items: readonly HaChangeItem[] }
 type UnusedReason =
   | "no_area"
   | "area_not_room"
+  | "entry_unavailable"
   | "sensor_unknown"
   | "sensor_not_temperature"
   | "sensor_on_valve"
@@ -293,6 +295,7 @@ function unusedReason(
   const areaId = entity.areaId;
   if (areaId === undefined) return "no_area";
   if (!membership.rooms.has(areaId)) return "area_not_room";
+  if (!mayHoldEntry(rooms, areaId)) return "entry_unavailable";
   const failed = failedSensorCheck(infos.get(entityId));
   if (failed !== undefined) return failed;
   if ((rooms.get(areaId)?.sensors.length ?? 0) >= MAX_SENSORS) return "sensor_limit";
@@ -368,7 +371,6 @@ export function labelEdits(
       // With a reason nothing changes; labelProblems reports it while the label stays.
       if (unusedReason(entityId, entity, rooms, membership, infos) !== undefined) continue;
       const entry = rooms.get(areaId);
-      if (!mayHoldEntry(rooms, areaId)) continue;
       const sensors = [...(entry?.sensors ?? []), { ref, weight: 1 }];
       rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), sensors });
       items.push({ kind: "sensor_added", areaId, entityId, scheduleId: undefined });
@@ -450,7 +452,9 @@ export function importSensors(
  * The label problems Home Assistant shows: `sensor_label_unused` for each entity carrying
  * `heatmaster_temp_sensor` that no entry lists and that cannot join its room (one that can is
  * waiting for the next pull); `legacy_label_present` for each room whose entry has a sensor while
- * entities in its area still carry `room_temperature_sensor`; `label_foreign` for each numbered
+ * entities in its area still carry `room_temperature_sensor`; `entry_unavailable` for each area,
+ * in area-id order, that cannot hold an entry while it wears a label one would take in;
+ * `label_foreign` for each numbered
  * label, in registry order. `infos` is keyed by entity id.
  */
 export function labelProblems(
@@ -480,6 +484,19 @@ export function labelProblems(
         .map(([entityId]) => entityId),
     );
     if (legacy.length > 0) problems.push(problemLegacyLabelPresent(areaId, legacy));
+  }
+  const schedules = labelSchedules(config);
+  for (const areaId of ascending(snapshot.areas.keys())) {
+    const area = snapshot.areas.get(areaId);
+    if (area === undefined || mayHoldEntry(config.rooms, areaId)) continue;
+    const isRoom = membership.rooms.has(areaId);
+    const follows = isRoom ? config.defaultScheduleId : undefined;
+    const labels = area.labels.filter((id) => schedules.has(id) && schedules.get(id) !== follows);
+    const legacy = [...snapshot.entities.values()].some(
+      (entity) => entity.areaId === areaId && entity.labels.includes(LEGACY_SENSOR_LABEL),
+    );
+    if (isRoom && legacy) labels.push(LEGACY_SENSOR_LABEL);
+    if (labels.length > 0) problems.push(problemEntryUnavailable(areaId, labels));
   }
   for (const labelId of snapshot.labels.keys()) {
     if (numberedBase(labelId) !== undefined) problems.push(problemLabelForeign(labelId));

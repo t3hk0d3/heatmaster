@@ -19,6 +19,7 @@ import type {
 type SensorUnusedReason =
   | "no_area"
   | "area_not_room"
+  | "entry_unavailable"
   | "sensor_unknown"
   | "sensor_not_temperature"
   | "sensor_on_valve"
@@ -326,12 +327,16 @@ export const en = {
     "Sensor {name} has the heatmaster_temp_sensor label, but no room uses it: {reason}",
   "problem.sensor_label_unused.no_area": "the sensor is in no area",
   "problem.sensor_label_unused.area_not_room": "its area holds no valve, so it is no room",
+  "problem.sensor_label_unused.entry_unavailable":
+    "its room cannot have an entry in the configuration (there are 64 entries already, or its area id is not one Heatmaster accepts)",
   "problem.sensor_label_unused.sensor_unknown": "Home Assistant does not know the sensor",
   "problem.sensor_label_unused.sensor_not_temperature": "it is not a temperature sensor",
   "problem.sensor_label_unused.sensor_on_valve": "it belongs to a valve",
   "problem.sensor_label_unused.sensor_limit": "the room already has the most sensors it can have",
   "problem.legacy_label_present":
     "{name} has Heatmaster sensors, but {entities} still carry room_temperature_sensor. Your own automation still feeds the room until you remove room_temperature_sensor from its sensors",
+  "problem.entry_unavailable":
+    "Area {name} cannot have an entry in the configuration (there are 64 entries already, or its area id is not one Heatmaster accepts), so Heatmaster does not take its labels {labels}",
   "problem.label_foreign":
     "The Home Assistant label {name} looks like a Heatmaster schedule label but is not one, so Heatmaster leaves it alone",
   "problem.ha_label_failed":

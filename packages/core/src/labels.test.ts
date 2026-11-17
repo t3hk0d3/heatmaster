@@ -25,6 +25,7 @@ import {
 import { FRESH_STORED, type HaChange, type HaChangeItem, type StoredConfig } from "./ledger.ts";
 import type { Config, RoomEntry, Schedule } from "./model.ts";
 import {
+  problemEntryUnavailable,
   problemLabelForeign,
   problemLegacyLabelPresent,
   problemSensorLabelUnused,
@@ -1242,6 +1243,57 @@ describe("labels", () => {
             scene({ entities: { [OFFICE_T]: { areaId: "attic", labels: [SENSOR_LABEL] } } }),
           ),
         ).toEqual([problemSensorLabelUnused(OFFICE_T, "area_not_room")]);
+      });
+    });
+
+    describe("With such an entity in room office, which has no entry, while the config holds 64 entries", () => {
+      it("sensor_label_unused with reason entry_unavailable", () => {
+        const full = Object.fromEntries(
+          Array.from({ length: 64 }, (_, n) => [`area${String(n)}`, entry("night")]),
+        );
+        expect(
+          problemsOf(
+            full,
+            scene({ entities: { [OFFICE_T]: { areaId: "office", labels: [SENSOR_LABEL] } } }),
+          ),
+        ).toContainEqual(problemSensorLabelUnused(OFFICE_T, "entry_unavailable"));
+      });
+    });
+
+    describe("With areas whose id cannot key an entry", () => {
+      const long = "a".repeat(65);
+      const other = "b".repeat(65);
+      const rooms = makeMembership({ office: ["z2m:a"], [long]: ["z2m:c"] });
+      const problems = labelProblems(
+        configOf(),
+        rooms,
+        scene({
+          areas: { [long]: [NIGHT_LABEL, DAY_LABEL, "kids"], [other]: [DAY_LABEL] },
+          entities: { "sensor.old": { areaId: long, labels: LEGACY } },
+        }),
+        infosOf([]),
+      );
+      it("entry_unavailable for the room naming the other schedule's label and room_temperature_sensor", () => {
+        expect(problems).toContainEqual(
+          problemEntryUnavailable(long, [NIGHT_LABEL, LEGACY_SENSOR_LABEL]),
+        );
+      });
+      it("entry_unavailable for the area that is no room, naming the schedule label it wears", () => {
+        expect(problems).toContainEqual(problemEntryUnavailable(other, [DAY_LABEL]));
+      });
+    });
+
+    describe("With a room whose id cannot key an entry wearing only the default's label", () => {
+      it("no problem", () => {
+        const long = "a".repeat(65);
+        expect(
+          labelProblems(
+            configOf(),
+            makeMembership({ [long]: ["z2m:c"] }),
+            scene({ areas: { [long]: [DAY_LABEL] } }),
+            infosOf([]),
+          ),
+        ).toEqual([]);
       });
     });
 

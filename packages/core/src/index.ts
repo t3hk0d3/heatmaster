@@ -172,6 +172,7 @@ export {
   problemStoreWriteFailed,
   problemTickFailed,
   problemHaLabelFailed,
+  problemEntryUnavailable,
   problemLabelForeign,
   problemLegacyLabelPresent,
   problemSensorLabelUnused,

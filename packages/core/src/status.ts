@@ -43,6 +43,7 @@ export type ProblemKind =
   | "sensor_label_unused"
   | "legacy_label_present"
   | "label_foreign"
+  | "entry_unavailable"
   | "ha_label_failed"
   | "sensor_unlabellable";
 
@@ -300,8 +301,8 @@ function sensorSubject(entityId: string): string {
 
 /**
  * An entity carries `heatmaster_temp_sensor` but no entry lists it, and it cannot be added: `reason`
- * is `no_area`, `area_not_room`, `sensor_unknown`, `sensor_not_temperature`, `sensor_on_valve` or
- * `sensor_limit`.
+ * is `no_area`, `area_not_room`, `entry_unavailable`, `sensor_unknown`, `sensor_not_temperature`,
+ * `sensor_on_valve` or `sensor_limit`.
  */
 export function problemSensorLabelUnused(entityId: string, reason: string): Problem {
   return problem("sensor_label_unused", "sensor", sensorSubject(entityId), "warning", { reason });
@@ -312,6 +313,16 @@ export function problemLegacyLabelPresent(roomId: string, entityIds: readonly st
   return problem("legacy_label_present", "room", roomId, "warning", {
     entities: entityIds.join(","),
   });
+}
+
+/**
+ * An area with no config entry that cannot get one (the config holds `MAX_ROOMS` entries, or the
+ * area id does not match `AREA_ID_PATTERN`) wears a label Heatmaster would have taken into one: a
+ * schedule label of another schedule than the one it follows, or `room_temperature_sensor` on an
+ * entity of a room (the sensor import left it out). `labels` lists them, comma separated.
+ */
+export function problemEntryUnavailable(areaId: string, labels: readonly string[]): Problem {
+  return problem("entry_unavailable", "area", areaId, "warning", { labels: labels.join(",") });
 }
 
 /** A numbered schedule label (`heatmaster_schedule_<x>_<digits>`): Heatmaster never touches it. */
