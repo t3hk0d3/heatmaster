@@ -1,3 +1,4 @@
+import { ascending } from "./house.ts";
 import type { AreaMembership, AreaRoom, HouseInput } from "./house.ts";
 import { ConfigError, EMPTY_CONFIG } from "./model.ts";
 import { SETTING_KEYS, groupOf } from "./settings.ts";
@@ -33,9 +34,6 @@ export const EMPTY_LEDGER: Ledger = { records: new Map(), released: [] };
 /** How many Home Assistant changes the stored config keeps, oldest dropped first. */
 export const HA_CHANGES_KEPT = 20;
 
-/** Whether the one-time import of `room_temperature_sensor` sensors has run. */
-export type SensorImport = "pending" | "done";
-
 export type HaChangeKind = "schedule" | "sensor_added" | "sensor_removed" | "sensors_imported";
 
 export type HaChangeItem = Readonly<{
@@ -61,9 +59,10 @@ export type DroppedRoom = Readonly<{
 export type UpgradeReport = Readonly<{ fromVersion: 2; droppedRooms: readonly DroppedRoom[] }>;
 
 /**
- * `releasing` maps a valve id to the time its release was ordered. `releasing`, `membership` (the
- * saved membership), `sensorImport`, `haChanges` (oldest first) and `upgrade` are the server's: no
- * document carries or sets them. Whoever rebuilds a stored config spreads the old one and replaces
+ * `releasing` maps a valve id to the time its release was ordered. `importedAreas` lists, in
+ * ascending order, the areas whose one-time `room_temperature_sensor` import has run (each room
+ * gets it once). `releasing`, `membership` (the saved membership), `importedAreas`, `haChanges`
+ * (oldest first) and `upgrade` are the server's: no document carries or sets them. Whoever rebuilds a stored config spreads the old one and replaces
  * only what it changes.
  */
 export type StoredConfig = Readonly<{
@@ -71,7 +70,7 @@ export type StoredConfig = Readonly<{
   revision: number;
   releasing: ReadonlyMap<string, number>;
   membership: AreaMembership | undefined;
-  sensorImport: SensorImport;
+  importedAreas: readonly string[];
   haChanges: readonly HaChange[];
   upgrade: UpgradeReport | undefined;
 }>;
@@ -82,7 +81,7 @@ export const FRESH_STORED: StoredConfig = {
   revision: 0,
   releasing: new Map(),
   membership: undefined,
-  sensorImport: "pending",
+  importedAreas: [],
   haChanges: [],
   upgrade: undefined,
 };
@@ -460,7 +459,7 @@ export function storedToRaw(stored: StoredConfig): Record<string, unknown> {
     ),
     config: configToRaw(stored.config),
     ...(stored.membership === undefined ? {} : { membership: membershipToRaw(stored.membership) }),
-    sensor_import: stored.sensorImport,
+    sensor_import: [...stored.importedAreas],
     ha_changes: stored.haChanges.map((change, i) =>
       haChangeToRaw(`ha_changes[${String(i)}]`, change),
     ),
@@ -470,7 +469,6 @@ export function storedToRaw(stored: StoredConfig): Record<string, unknown> {
 
 const STORED_REQUIRED = ["revision", "releasing", "config", "sensor_import", "ha_changes"];
 const STORED_OPTIONAL = ["membership", "upgrade"];
-const SENSOR_IMPORTS: readonly SensorImport[] = ["pending", "done"];
 const HA_CHANGE_KINDS: readonly HaChangeKind[] = [
   "schedule",
   "sensor_added",
@@ -624,6 +622,25 @@ function haChangesFromRaw(read: StoredReader, value: unknown): readonly HaChange
   return changes;
 }
 
+/**
+ * `sensor_import`: the imported areas. A file written before the import was per room holds
+ * "pending" (none imported) or "done" (every area of its saved membership counts as imported).
+ */
+function importedFromRaw(
+  read: StoredReader,
+  value: unknown,
+  membership: AreaMembership | undefined,
+): readonly string[] | undefined {
+  if (value === "pending") return [];
+  if (value === "done") return ascending(membership?.rooms.keys() ?? []);
+  if (!Array.isArray(value)) {
+    read.issue("sensor_import", "type_invalid", 'expected a list of area ids, "pending" or "done"');
+    return undefined;
+  }
+  const areas = read.texts("sensor_import", value);
+  return areas === undefined ? undefined : ascending(new Set(areas));
+}
+
 function upgradeFromRaw(read: StoredReader, value: unknown): UpgradeReport | undefined {
   const obj = read.object("upgrade", value, ["from_version", "dropped_rooms"]);
   if (obj === undefined) return undefined;
@@ -704,8 +721,8 @@ export function storedFromRaw(raw: unknown): StoredConfig {
   const membership =
     rawMembership === undefined ? undefined : membershipFromRaw(read, rawMembership);
   const rawImport = value("sensor_import");
-  const sensorImport =
-    rawImport === undefined ? undefined : read.oneOf("sensor_import", rawImport, SENSOR_IMPORTS);
+  const importedAreas =
+    rawImport === undefined ? undefined : importedFromRaw(read, rawImport, membership);
   const rawChanges = value("ha_changes");
   const haChanges = rawChanges === undefined ? [] : haChangesFromRaw(read, rawChanges);
   const rawUpgrade = value("upgrade");
@@ -715,9 +732,9 @@ export function storedFromRaw(raw: unknown): StoredConfig {
     issues.length > 0 ||
     config === undefined ||
     revision === undefined ||
-    sensorImport === undefined
+    importedAreas === undefined
   ) {
     throw new ConfigError(issues);
   }
-  return { config, revision, releasing, membership, sensorImport, haChanges, upgrade };
+  return { config, revision, releasing, membership, importedAreas, haChanges, upgrade };
 }

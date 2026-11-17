@@ -169,7 +169,9 @@ const arbStored: fc.Arbitrary<StoredConfig> = fc.record({
     .uniqueArray(fc.tuple(address, arbInstant), { selector: ([id]) => id, maxLength: 3 })
     .map((entries) => new Map(entries)),
   membership: fc.option(arbMembership, { nil: undefined }),
-  sensorImport: fc.constantFrom("pending", "done"),
+  importedAreas: fc
+    .uniqueArray(fc.stringMatching(/^[a-z0-9_]{1,12}$/), { maxLength: 3 })
+    .map((areas) => areas.sort()),
   haChanges: fc.array(arbHaChange, { maxLength: 3 }),
   upgrade: fc.option(arbUpgrade, { nil: undefined }),
 });
@@ -202,7 +204,7 @@ function aRawStored(): Record<string, unknown> {
     revision: 7,
     releasing: { [V1]: "2026-11-14T09:30:00.000Z" },
     config: validRaw(),
-    sensor_import: "pending",
+    sensor_import: [],
     ha_changes: [],
   };
 }
@@ -220,7 +222,7 @@ function aFullStored(): StoredConfig {
       ]),
       ignored: ["garage"],
     },
-    sensorImport: "done",
+    importedAreas: ["mancave", "office"],
     haChanges: [
       {
         revision: 7,
@@ -621,14 +623,46 @@ describe("ledger", () => {
         expect([back.membership, back.upgrade]).toEqual([undefined, undefined]);
       });
     });
-    describe('With sensor_import missing or "maybe"', () => {
+    describe('With sensor_import "pending", from a file of before the per-room import', () => {
+      it("no area counts as imported", () => {
+        expect(storedFromRaw({ ...aRawStored(), sensor_import: "pending" }).importedAreas).toEqual(
+          [],
+        );
+      });
+    });
+    describe('With sensor_import "done", from a file of before the per-room import', () => {
+      it("every area of the saved membership counts as imported, in ascending order", () => {
+        const raw = {
+          ...aRawStored(),
+          membership: {
+            rooms: {
+              office: { name: "Office", valves: [V1] },
+              attic: { name: "Attic", valves: [] },
+            },
+            ignored: ["garage"],
+          },
+          sensor_import: "done",
+        };
+        expect(storedFromRaw(raw).importedAreas).toEqual(["attic", "office"]);
+      });
+      it("without a saved membership, none counts", () => {
+        expect(storedFromRaw({ ...aRawStored(), sensor_import: "done" }).importedAreas).toEqual([]);
+      });
+    });
+    describe("With sensor_import a list holding an area twice, out of order", () => {
+      it("importedAreas holds each once, ascending", () => {
+        const raw = { ...aRawStored(), sensor_import: ["office", "attic", "office"] };
+        expect(storedFromRaw(raw).importedAreas).toEqual(["attic", "office"]);
+      });
+    });
+    describe('With sensor_import missing, "maybe" or a list holding a number', () => {
       it.each([
         ["missing", { ...aRawStored(), sensor_import: undefined }],
         ['"maybe"', { ...aRawStored(), sensor_import: "maybe" }],
+        ["[1]", { ...aRawStored(), sensor_import: [1] }],
       ])("storedFromRaw throws (%s)", (_, raw) => {
-        expect(storedIssues(JSON.parse(JSON.stringify(raw)))).toContainEqual(
-          expect.objectContaining({ path: "sensor_import" }),
-        );
+        const paths = storedIssues(JSON.parse(JSON.stringify(raw))).map((issue) => issue.path);
+        expect(paths.some((path) => path.startsWith("sensor_import"))).toBe(true);
       });
     });
     describe("With a membership room whose valves is not a list", () => {

@@ -174,7 +174,7 @@ runs.
 | `heatmaster_ignore`        | area          | The area is no room. Read only; you create and set it.                                                                 |
 | `heatmaster_schedule_<id>` | area          | The area's room uses schedule `<id>` (a `-` in the id becomes `_`). Named "Heatmaster: <name>". Heatmaster creates it. |
 | `heatmaster_temp_sensor`   | sensor entity | The entity is a temperature sensor of its room.                                                                        |
-| `room_temperature_sensor`  | sensor entity | Your own automation's label. Read once by the sensor import, never written.                                            |
+| `room_temperature_sensor`  | sensor entity | Your own automation's label. Read once per room by the sensor import, never written.                                   |
 
 **Config to Home Assistant.** Heatmaster creates one label per schedule (it creates the name
 `heatmaster_schedule_<id>`, then renames it to "Heatmaster: <name>"), puts the room's schedule label
@@ -246,11 +246,12 @@ Version 0.2 reads a stored config of version 1 or 2 and converts it to version 3
 - If the converted config breaks a rule of the new format, Heatmaster manages no room, leaves every
   valve alone, and the page says how to recover; `config.json` is not changed.
 
-**Sensors, once.** On the first start of a fresh install, or the first one after a conversion,
-Heatmaster fills each room that has no sensors from the entities in its area labelled
+**Sensors, once per room.** The first time a room exists while Home Assistant is loaded (on a
+fresh install, after a conversion, or when a room appears later, for example once Zigbee2MQTT lists
+its valve), Heatmaster fills it, if it has no sensors, from the entities in its area labelled
 `room_temperature_sensor` (the entity's area, else its device's area), with weight 1. The page
-lists these as "changed in Home Assistant". It runs once; afterwards only `heatmaster_temp_sensor`
-counts.
+lists these as "changed in Home Assistant". Each room gets this once; afterwards only
+`heatmaster_temp_sensor` counts for it.
 
 **Handing a room over from your own automation.** If an automation of yours feeds the valves from
 `room_temperature_sensor`, it keeps doing so: Heatmaster does not touch that label, and two

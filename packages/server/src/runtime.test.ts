@@ -272,7 +272,8 @@ function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
       revision: seed.revision ?? 1,
       releasing: new Map(Object.entries(seed.releasing ?? {})),
       membership: house === null || house === undefined ? undefined : membershipOf(house),
-      sensorImport: "done",
+      // As a running install: every area of its house has had its sensor import.
+      importedAreas: house === null || house === undefined ? [] : Object.keys(house).sort(),
     };
     writeFileSync(
       path.join(dataDir, "config.json"),
@@ -4828,11 +4829,11 @@ describe("runtime", () => {
         });
       }
 
-      it("the room gets that sensor, sensorImport is done and one revision is saved", async () => {
+      it("the room gets that sensor, it is marked imported and one revision is saved", async () => {
         const rig = await converted();
         expect(storedData(rig)).toMatchObject({
           revision: 4,
-          sensor_import: "done",
+          sensor_import: ["living"],
           config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
         });
         expect(rig.rt.snapshot().haChanges).toEqual([
@@ -4872,12 +4873,87 @@ describe("runtime", () => {
       });
     });
 
+    describe("After a v2 conversion, with a second room whose valve Zigbee2MQTT lists only after Home Assistant has loaded", () => {
+      const OFFICE_T = "sensor.office_t";
+
+      async function lateListing(): Promise<Rig> {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        ha.setSensorInfo(OFFICE_T, OK_SENSOR);
+        const snapshot = haSnapshot({ living: [A], office: [B] });
+        const rig = await boot({
+          ha,
+          devices: [trvzb(A)],
+          seed: { configFile: v2WithoutSensors(), ledger: [record(A)] },
+          snapshot: {
+            ...snapshot,
+            entities: new Map([
+              [LIVING_T, { areaId: "living", labels: [LEGACY] }],
+              [OFFICE_T, { areaId: "office", labels: [LEGACY] }],
+            ]),
+          },
+        });
+        rig.z2m.setDevices([trvzb(A), trvzb(B)]);
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        await rig.rt.settled();
+        return rig;
+      }
+
+      it("the second room gets its legacy sensor when it joins, and both rooms are marked imported", async () => {
+        const rig = await lateListing();
+        await vi.waitFor(() => {
+          expect(storedData(rig)).toMatchObject({
+            sensor_import: ["living", "office"],
+            config: {
+              rooms: {
+                living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] },
+                office: { sensors: [{ ref: `ha:${OFFICE_T}`, weight: 1 }] },
+              },
+            },
+          });
+        });
+      });
+
+      it("each room's import is one HA change of its own", async () => {
+        const rig = await lateListing();
+        await vi.waitFor(() => {
+          expect(
+            rig.rt.snapshot().haChanges.map((change) => change.items.map((item) => item.areaId)),
+          ).toEqual([["living"], ["office"]]);
+        });
+      });
+    });
+
+    describe("With a running install's stored sensor_import done", () => {
+      it("every area of its saved membership counts as imported, and nothing is imported", async () => {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        const stored: StoredConfig = {
+          ...FRESH_STORED,
+          config: validateConfig(raw()),
+          revision: 1,
+          membership: membershipOf(DEFAULT_HOUSE),
+        };
+        const data = { ...storedToRaw(stored), sensor_import: "done" };
+        const rig = await boot({
+          ha,
+          seed: {
+            configFile: JSON.stringify({ version: 3, data }),
+            ledger: [record(A)],
+          },
+          snapshot: legacyHouse(),
+        });
+        expect(JSON.stringify(rig.rt.exportConfig().config)).not.toContain(LIVING_T);
+        expect(rig.rt.snapshot().haChanges).toEqual([]);
+      });
+    });
+
     describe("On a later start", () => {
       it("nothing is imported", async () => {
         const ha = createStubHaLink();
         ha.setSensorInfo(LIVING_T, OK_SENSOR);
         const rig = await boot({ ha, seed: managedSeed([A]), snapshot: legacyHouse() });
-        expect(storedData(rig)).toMatchObject({ revision: 1, sensor_import: "done" });
+        expect(storedData(rig)).toMatchObject({ revision: 1, sensor_import: ["living"] });
         expect(JSON.stringify(rig.rt.exportConfig().config)).not.toContain(LIVING_T);
       });
     });
@@ -4888,12 +4964,12 @@ describe("runtime", () => {
         ha.setSensorInfo(LIVING_T, OK_SENSOR);
         const rig = await boot({ ha, devices: [], snapshot: legacyHouse() });
         expect(rig.rt.snapshot().house).toBe("live");
-        expect(storedData(rig)).toMatchObject({ sensor_import: "pending" });
+        expect(storedData(rig)).toMatchObject({ sensor_import: [] });
         rig.z2m.setDevices([trvzb(A)]);
         await rig.advance(EVENT_DEBOUNCE_MS);
         await vi.waitFor(() => {
           expect(storedData(rig)).toMatchObject({
-            sensor_import: "done",
+            sensor_import: ["living"],
             config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
           });
         });
@@ -4906,12 +4982,12 @@ describe("runtime", () => {
         ha.setSensorInfo(LIVING_T, OK_SENSOR);
         ha.setState("connecting");
         const rig = await boot({ ha, snapshot: legacyHouse() });
-        expect(storedData(rig)).toMatchObject({ sensor_import: "pending" });
+        expect(storedData(rig)).toMatchObject({ sensor_import: [] });
         ha.setState("up");
         ha.emit({ kind: "link_up" });
         await vi.waitFor(() => {
           expect(storedData(rig)).toMatchObject({
-            sensor_import: "done",
+            sensor_import: ["living"],
             config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
           });
         });

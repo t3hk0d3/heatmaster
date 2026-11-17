@@ -13,6 +13,7 @@ import {
 } from "./house.ts";
 import {
   applyLabelOps,
+  importDue,
   importSensors,
   labelEdits,
   labelProblems,
@@ -987,7 +988,7 @@ describe("labels", () => {
       const stored = storedOf({
         config: { ...held, settings: { ...held.settings, holdWrites: true } },
         releasing: new Map([["z2m:c", 1000]]),
-        sensorImport: "done",
+        importedAreas: ["hall"],
         haChanges: [{ revision: 3, at: 1, items: [scheduleItem("hall", "night")] }],
       });
       const config: Config = { ...stored.config, rooms: new Map([["office", entry("night")]]) };
@@ -1001,11 +1002,11 @@ describe("labels", () => {
           { revision: 5, at: NOW_MS, items: edit.items },
         ]);
       });
-      it("releasing, membership, hold and sensorImport are unchanged", () => {
+      it("releasing, membership, hold and importedAreas are unchanged", () => {
         expect(next.releasing).toBe(stored.releasing);
         expect(next.membership).toBe(stored.membership);
         expect(next.config.settings.holdWrites).toBe(true);
-        expect(next.sensorImport).toBe("done");
+        expect(next.importedAreas).toBe(stored.importedAreas);
         expect(next.upgrade).toBe(stored.upgrade);
       });
     });
@@ -1049,8 +1050,8 @@ describe("labels", () => {
           entry(undefined, ["sensor.office_a", "sensor.office_b"]),
         );
       });
-      it("sensorImport is done, the revision is one higher, and one HA change has a sensors_imported item for office", () => {
-        expect(next.sensorImport).toBe("done");
+      it("both rooms are marked imported, the revision is one higher, and one HA change has a sensors_imported item for office", () => {
+        expect(next.importedAreas).toEqual(["hall", "office"]);
         expect(next.revision).toBe(5);
         expect(next.haChanges).toEqual([
           {
@@ -1081,6 +1082,51 @@ describe("labels", () => {
         );
         expect(next.config.rooms.get("hall")).toBe(stored.config.rooms.get("hall"));
         expect(next.revision).toBe(4);
+      });
+      it("hall is marked imported", () => {
+        const stored = storedOf({ config: configOf({ hall: entry("night", ["sensor.hall_a"]) }) });
+        const next = importSensors(stored, ROOMS, scene(), infosOf([]), NOW_MS);
+        expect(next.importedAreas).toContain("hall");
+      });
+    });
+
+    describe("With office imported already and hall not, each with a labelled temperature entity", () => {
+      const stored = storedOf({ importedAreas: ["office"] });
+      const snapshot = scene({
+        entities: {
+          "sensor.office_a": { areaId: "office", labels: LEGACY },
+          "sensor.hall_a": { areaId: "hall", labels: LEGACY },
+        },
+      });
+      const next = importSensors(
+        stored,
+        ROOMS,
+        snapshot,
+        infosOf(["sensor.office_a", "sensor.hall_a"]),
+        NOW_MS,
+      );
+      it("hall gets its entity and office is left alone", () => {
+        expect(next.config.rooms.get("hall")).toEqual(entry(undefined, ["sensor.hall_a"]));
+        expect(next.config.rooms.get("office")).toBeUndefined();
+      });
+      it("importedAreas holds both, and the HA change names hall only", () => {
+        expect(next.importedAreas).toEqual(["hall", "office"]);
+        expect(next.haChanges.at(-1)?.items.map((item) => item.areaId)).toEqual(["hall"]);
+      });
+    });
+
+    describe("With a room whose area cannot hold an entry", () => {
+      it("it is marked imported and gets no entry", () => {
+        const long = "a".repeat(65);
+        const next = importSensors(
+          storedOf(),
+          makeMembership({ [long]: ["z2m:a"] }),
+          scene({ entities: { "sensor.x": { areaId: long, labels: LEGACY } } }),
+          infosOf(["sensor.x"]),
+          NOW_MS,
+        );
+        expect(next.importedAreas).toEqual([long]);
+        expect(next.config.rooms.has(long)).toBe(false);
       });
     });
 
@@ -1139,7 +1185,7 @@ describe("labels", () => {
     });
 
     describe("With nothing to import", () => {
-      it("sensorImport is done, the revision is unchanged and no HA change is added", () => {
+      it("every room is marked imported, the revision is unchanged and no HA change is added", () => {
         const stored = storedOf();
         const next = importSensors(
           stored,
@@ -1148,18 +1194,33 @@ describe("labels", () => {
           infosOf(["sensor.office_a"]),
           NOW_MS,
         );
-        expect(next).toEqual({ ...stored, sensorImport: "done" });
+        expect(next).toEqual({ ...stored, importedAreas: ["hall", "office"] });
       });
     });
 
-    describe("With the import done", () => {
+    describe("With every room imported", () => {
       it("returns the given value itself", () => {
-        const stored = storedOf({ sensorImport: "done" });
+        const stored = storedOf({ importedAreas: ["hall", "office"] });
         const snapshot = scene({
           entities: { "sensor.office_a": { areaId: "office", labels: LEGACY } },
         });
         expect(importSensors(stored, ROOMS, snapshot, infosOf(["sensor.office_a"]), NOW_MS)).toBe(
           stored,
+        );
+      });
+    });
+  });
+
+  describe("importDue", () => {
+    describe("With a room of the membership not in importedAreas", () => {
+      it("is true", () => {
+        expect(importDue(storedOf({ importedAreas: ["office"] }), ROOMS)).toBe(true);
+      });
+    });
+    describe("With every room in importedAreas, and an area that is no room", () => {
+      it("is false", () => {
+        expect(importDue(storedOf({ importedAreas: ["attic", "hall", "office"] }), ROOMS)).toBe(
+          false,
         );
       });
     });

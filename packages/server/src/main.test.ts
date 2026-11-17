@@ -1135,7 +1135,7 @@ const CONFIG_FILE: Shape = {
             ignored: { listOf: "leaf" },
           },
         },
-        sensor_import: "leaf",
+        sensor_import: { listOf: "leaf" },
         ha_changes: {
           listOf: {
             fields: {

@@ -397,12 +397,18 @@ export function withHaEdit(stored: StoredConfig, edit: HaEdit, nowMs: number): S
   return { ...stored, config: edit.config, revision, haChanges };
 }
 
+/** True when a room of the membership has not had its sensor import yet. */
+export function importDue(stored: StoredConfig, membership: AreaMembership): boolean {
+  const imported = new Set(stored.importedAreas);
+  return [...membership.rooms.keys()].some((areaId) => !imported.has(areaId));
+}
+
 /**
- * The one-time import of `room_temperature_sensor`: each room whose entry has no sensor gets the
- * entities in its area that carry the label and pass the sensor checks, weight 1, in entity-id
- * order, at most `MAX_SENSORS`. `sensorImport` becomes `done`; when anything was imported the
- * revision rises by one with one HA change. The given value itself once the import is done.
- * `infos` is keyed by entity id.
+ * The import of `room_temperature_sensor`, once per room: each room of the membership not yet in
+ * `importedAreas` joins it, and if its entry has no sensor it gets the entities in its area that
+ * carry the label and pass the sensor checks, weight 1, in entity-id order, at most
+ * `MAX_SENSORS`. When anything was imported the revision rises by one with one HA change. The
+ * given value itself when no room is due. `infos` is keyed by entity id.
  */
 export function importSensors(
   stored: StoredConfig,
@@ -411,10 +417,13 @@ export function importSensors(
   infos: ReadonlyMap<string, SensorInfo>,
   nowMs: number,
 ): StoredConfig {
-  if (stored.sensorImport === "done") return stored;
+  if (!importDue(stored, membership)) return stored;
+  const imported = new Set(stored.importedAreas);
   const rooms = new Map(stored.config.rooms);
   const items: HaChangeItem[] = [];
   for (const areaId of ascending(membership.rooms.keys())) {
+    if (imported.has(areaId)) continue;
+    imported.add(areaId);
     const entry = rooms.get(areaId);
     if ((entry?.sensors.length ?? 0) > 0 || !mayHoldEntry(rooms, areaId)) continue;
     const found = ascending(
@@ -432,7 +441,7 @@ export function importSensors(
     rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), sensors });
     items.push({ kind: "sensors_imported", areaId, entityId: undefined, scheduleId: undefined });
   }
-  const done: StoredConfig = { ...stored, sensorImport: "done" };
+  const done: StoredConfig = { ...stored, importedAreas: ascending(imported) };
   if (items.length === 0) return done;
   return withHaEdit(done, { config: { ...stored.config, rooms }, items }, nowMs);
 }

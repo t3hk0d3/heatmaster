@@ -20,6 +20,7 @@ import {
   exportBucket,
   findProfile,
   forgetValve as coreForgetValve,
+  importDue,
   importSensors,
   labelProblems,
   ledgerToRaw,
@@ -784,9 +785,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   }
 
   /**
-   * The one-time sensor import, after a fresh install or a version 2 conversion. It runs on the
-   * first accepted membership that holds a room: Home Assistant may load before the transports
-   * list the valves, and an import over no room would be done for nothing. True when it saved.
+   * The sensor import, once per room: on every accepted membership, each room that has not had it
+   * yet gets it. Home Assistant may load before the transports list the valves, so a room that
+   * joins later gets its import when it joins. True when it saved.
    */
   async function importIfDue(membership: AreaMembership): Promise<boolean> {
     const current = readableStored();
@@ -794,8 +795,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     if (
       ha === undefined ||
       snapshot === undefined ||
-      current?.sensorImport !== "pending" ||
-      membership.rooms.size === 0
+      current === undefined ||
+      !importDue(current, membership)
     ) {
       return false;
     }

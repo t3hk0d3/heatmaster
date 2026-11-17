@@ -111,7 +111,7 @@ export function upgradeStoredV2(data: unknown): unknown {
       rooms: entries,
     },
     membership: { rooms: membershipRooms, ignored: [] },
-    sensor_import: "pending",
+    sensor_import: [],
     ha_changes: [],
     upgrade: { from_version: 2, dropped_rooms: droppedRooms },
   };

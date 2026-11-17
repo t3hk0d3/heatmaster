@@ -93,7 +93,7 @@
       },
       "ignored": ["garage"]
     },
-    "sensor_import": "done",
+    "sensor_import": ["living_room", "office"],
     "ha_changes": [
       {
         "revision": 2,

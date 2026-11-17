@@ -56,7 +56,7 @@ export function sampleStored(): StoredConfig {
       ]),
       ignored: ["garage"],
     },
-    sensorImport: "done",
+    importedAreas: ["living_room", "office"],
     haChanges: [
       {
         revision: 2,
@@ -88,7 +88,7 @@ export function sampleStored(): StoredConfig {
 
 /**
  * What the version 1 and version 2 house fixtures become on load: their one room is the area
- * `living_room`, writes are held, the sensor import is pending, and the upgrade report is empty.
+ * `living_room`, writes are held, no area has had its sensor import, and the report is empty.
  */
 export function convertedStored(): StoredConfig {
   const config = validateConfig({
@@ -112,7 +112,7 @@ export function convertedStored(): StoredConfig {
       rooms: new Map([["living_room", { name: "Living room", valveIds: [SAMPLE_VALVE] }]]),
       ignored: [],
     },
-    sensorImport: "pending",
+    importedAreas: [],
     haChanges: [],
     upgrade: { fromVersion: 2, droppedRooms: [] },
   };

@@ -103,7 +103,6 @@ export type {
   Ledger,
   Membership,
   ReleasedRecord,
-  SensorImport,
   StoredConfig,
   UpgradeReport,
   ValveRecord,
@@ -222,6 +221,7 @@ export type {
 } from "./house.ts";
 export {
   applyLabelOps,
+  importDue,
   importSensors,
   labelEdits,
   labelProblems,

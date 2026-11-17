@@ -211,9 +211,9 @@ describe("upgrade", () => {
           { ...v2Room("hall", "hall", "b", [V2]), sensors: [{ ref: "ha:sensor.hall" }] },
           v2Room("attic", undefined, "a", [V3]),
         ]);
-      it("sensor_import is pending, ha_changes is empty, revision and releasing are unchanged", () => {
+      it("sensor_import lists no area, ha_changes is empty, revision and releasing are unchanged", () => {
         const result = upgraded(data());
-        expect(result.sensor_import).toBe("pending");
+        expect(result.sensor_import).toEqual([]);
         expect(result.ha_changes).toEqual([]);
         expect(result.revision).toBe(4);
         expect(result.releasing).toEqual(RELEASING);
