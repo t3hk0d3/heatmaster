@@ -4,8 +4,12 @@ Heatmaster runs room schedules and weighted room temperatures on Sonoff radiator
 Zigbee2MQTT. The full documentation is in the repository README:
 
 - [What it is and what it needs](https://github.com/t3hk0d3/heatmaster#what-heatmaster-is)
+- [Rooms come from Home Assistant](https://github.com/t3hk0d3/heatmaster#rooms-come-from-home-assistant)
 - [Install as an app](https://github.com/t3hk0d3/heatmaster#install-as-an-app)
 - [First run](https://github.com/t3hk0d3/heatmaster#first-run)
+- [Labels](https://github.com/t3hk0d3/heatmaster#labels)
+- [Upgrading from 0.1](https://github.com/t3hk0d3/heatmaster#upgrading-from-01)
+- [Pending valves](https://github.com/t3hk0d3/heatmaster#pending-valves)
 - [What Heatmaster does to a valve](https://github.com/t3hk0d3/heatmaster#what-heatmaster-does-to-a-valve)
 - [Rollback](https://github.com/t3hk0d3/heatmaster#rollback)
 - [What uninstall deletes and keeps](https://github.com/t3hk0d3/heatmaster#what-uninstall-deletes-and-keeps)

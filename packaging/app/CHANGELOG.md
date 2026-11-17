@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Rooms come from Home Assistant: every area that holds a supported valve is a room (the label `heatmaster_ignore` opts an
+  area out). New rooms join, and changes to managed rooms are written, with no Apply. Config document version 3: a
+  `default_schedule` and `rooms` keyed by area id, with no valve lists. A stored version 1 or 2 config is converted
+  (the old file is kept as `config.v<old>.json`), and the first start after it holds writes.
+- Heatmaster keeps schedule labels (`heatmaster_schedule_<id>`) on areas and `heatmaster_temp_sensor` on sensors in step with
+  its config, both ways; edits made in Home Assistant show as "changed in Home Assistant". A plain container's token must
+  belong to an administrator.
+- A valve that cannot join waits as pending and never holds up other valves; unknown originals are accepted only by
+  pressing "Accept unknown originals". While Home Assistant is down, rooms are frozen on the last known areas.
+- A one-time import takes each room's sensors from `room_temperature_sensor`.
+- Rollback is now: label the areas `heatmaster_ignore`.
+
 ## 0.1.1
 
 - A schedule's week is written as blocks of days: `days` is a list of day names or `all`, `weekdays` or `weekend`,
