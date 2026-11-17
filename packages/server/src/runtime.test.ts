@@ -1220,10 +1220,22 @@ describe("runtime", () => {
         return rig;
       }
 
-      it("rooms are those of the stored membership and house is frozen", async () => {
+      it("rooms are those Home Assistant last reported, saved with the config, and house is frozen", async () => {
         const rig = await down();
-        expect(roomIds(rig)).toEqual(["living"]);
+        expect(roomIds(rig)).toEqual(["office"]);
         expect(rig.rt.snapshot().house).toBe("frozen");
+        const file = readJson(path.join(rig.dataDir, "config.json"));
+        expect(file).toMatchObject({
+          data: { membership: { rooms: { office: { valves: [A] } } } },
+        });
+      });
+
+      it("those rooms stay managed, so their Home Assistant room devices stay published", async () => {
+        const rig = await down();
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.rt.snapshot().rooms.map((room) => [room.roomId, room.managed])).toEqual([
+          ["office", true],
+        ]);
       });
 
       it("frozenReason is link_down", async () => {
@@ -1283,10 +1295,16 @@ describe("runtime", () => {
     describe("With a config file of version 2", () => {
       const seed: Seed = { configFile: readFileSync(V2_FIXTURE, "utf8") };
 
-      it("the converted file is saved once", async () => {
+      it("the converted file is saved once, then once more by the tick with Home Assistant's membership", async () => {
         const rig = await boot({ seed });
-        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(1);
-        expect(readJson(path.join(rig.dataDir, "config.json")).version).toBe(3);
+        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(2);
+        const file = readJson(path.join(rig.dataDir, "config.json"));
+        expect(file.version).toBe(3);
+        expect(file).toMatchObject({
+          data: { revision: 3, membership: { rooms: { living: {} } } },
+        });
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(2);
       });
 
       it('"config converted" is logged once', async () => {
@@ -2438,7 +2456,13 @@ describe("runtime", () => {
 
       it("the ledger file holds the valve's record before the config file is written", async () => {
         const rig = await applied();
-        expect(rig.stores.calls).toEqual(["ledger.save", "copy.write", "config.save"]);
+        // The tick after the apply then saves the membership Home Assistant reports.
+        expect(rig.stores.calls).toEqual([
+          "ledger.save",
+          "copy.write",
+          "config.save",
+          "config.save",
+        ]);
         const ledger = readJson(path.join(rig.dataDir, "ledger.json"));
         expect(Object.keys((ledger.data as { records: object }).records)).toEqual([A]);
       });
@@ -2723,7 +2747,8 @@ describe("runtime", () => {
         expect(readdirSync(rig.dataDir).some((name) => name.startsWith("config.unreadable."))).toBe(
           true,
         );
-        expect(rig.stores.overwrite).toEqual([true]);
+        // The apply overwrites; the tick after it saves the membership as an ordinary save.
+        expect(rig.stores.overwrite).toEqual([true, false]);
         expect(rig.rt.snapshot().configState).toBe("ok");
       });
     });
@@ -3086,7 +3111,8 @@ describe("runtime", () => {
   });
 
   describe("restoreValve / forgetValve", () => {
-    const orphan: Seed = { config: raw({ rooms: [] }), ledger: [record(A)] };
+    // Without a schedule nothing is released, so a recorded valve in no room stays an orphan.
+    const orphan: Seed = { config: raw({ rooms: [], schedules: false }), ledger: [record(A)] };
 
     describe("For an orphan", () => {
       it("the core function's effects are executed and one tick runs", async () => {
@@ -3127,9 +3153,14 @@ describe("runtime", () => {
 
     describe("Called while a tick is executing effects", () => {
       it("it starts after the tick has finished", async () => {
+        // No schedule: A stays an orphan, and B is releasing, so the ticks write to it.
         const rig = await boot({
           devices: [trvzb(A), trvzb(B)],
-          seed: { config: raw({ rooms: [{ valves: [B] }] }), ledger: [record(A), record(B)] },
+          seed: {
+            config: raw({ rooms: [], schedules: false }),
+            releasing: { [B]: T - MINUTE },
+            ledger: [record(A), record(B, "external")],
+          },
         });
         rig.say(B, "b-1");
         await rig.advance(90 * 1000);
@@ -3409,14 +3440,29 @@ describe("runtime", () => {
       });
     });
 
-    describe("With an orphan valve, a managed valve and a releasing valve", () => {
-      it("unassigned lists the orphan and neither of the other two", async () => {
+    describe("With a managed valve, a recorded valve in no room and a releasing valve", () => {
+      it("the valve in no room is released at once, so unassigned lists none of the three", async () => {
         const rig = await boot({
           devices: [trvzb(A), trvzb(B), trvzb(C)],
           seed: {
             config: raw({ rooms: [{ valves: [A] }] }),
             releasing: { [C]: T - MINUTE },
             ledger: [record(A), record(B), record(C)],
+          },
+        });
+        expect(rig.rt.snapshot().memberships[B]).toBe("releasing");
+        expect(rig.rt.snapshot().unassigned.map((u) => u.valveId)).toEqual([]);
+      });
+    });
+
+    describe("With an orphan valve and a releasing valve, under a config with no schedule", () => {
+      it("unassigned lists the orphan and not the releasing valve", async () => {
+        const rig = await boot({
+          devices: [trvzb(B), trvzb(C)],
+          seed: {
+            config: raw({ rooms: [], schedules: false }),
+            releasing: { [C]: T - MINUTE },
+            ledger: [record(B), record(C)],
           },
         });
         expect(rig.rt.snapshot().unassigned.map((u) => u.valveId)).toEqual([B]);
@@ -3736,11 +3782,11 @@ describe("runtime", () => {
         await hear(rig, [A]);
         rig.stores.fail.config = 1;
         await rejectionOf(rig.rt.setHold(true));
-        // The device leaves its area; restoring the orphan stands in for plan 2's release.
+        // The device leaves its area: after the settle the tick releases the valve.
         rig.ha?.setSnapshot(haSnapshot({}));
         rig.ha?.emit({ kind: "registries_changed" });
         await rig.advance(HA_SETTLE_MS);
-        await rig.rt.restoreValve(A);
+        expect(rig.rt.snapshot().memberships[A]).toBe("releasing");
         await rig.rt.apply(raw(), APPLY);
         for (let minute = 0; minute < 20; minute++) {
           rig.say(A, `a-r${String(minute)}`);

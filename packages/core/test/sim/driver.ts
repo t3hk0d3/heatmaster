@@ -15,6 +15,7 @@ import {
   memberships,
   newState,
   planChange,
+  reconcile,
   resolveWeek,
   restoreValve,
   roomsOf,
@@ -67,9 +68,9 @@ export type SimValveSetup = Readonly<
 export type SimSensorSetup = Readonly<{ ref: string; value: number; alive?: boolean }>;
 
 /**
- * `membership` is what Home Assistant says (areas and their valves); the house is live on it, and
- * the config file's saved membership starts as it. No membership: no area holds a valve, and
- * nothing is saved.
+ * `membership` is what Home Assistant says (areas and their valves); the house is live on it while
+ * the `ha` link is up, and the config file's saved membership starts as it. No membership: no area
+ * holds a valve.
  */
 export type SimSetup = Readonly<{
   config: Config;
@@ -131,8 +132,18 @@ export type SimDriver = Readonly<{
   config: () => Readonly<{ configState: ConfigState; stored: StoredConfig | undefined }>;
   /** What Home Assistant says now: the areas and their valves. */
   membership: () => AreaMembership;
-  /** A device moves in Home Assistant: the house is live on `next` from the next tick on. */
+  /**
+   * A device moves in Home Assistant: the house is live on `next` from the next tick on (frozen on
+   * the saved membership while the `ha` link is down).
+   */
   setMembership: (next: AreaMembership) => void;
+  /** Runs `fn` with the world each later tick reads, just before that tick. */
+  beforeTick: (fn: (world: World) => void) => void;
+  /**
+   * Runs the next tick's reconcile at once and executes its effects: what `planChange` sees once
+   * it previews over the reconciled world (plan 2, Task 8).
+   */
+  reconcileNow: () => void;
   ledger: () => Ledger | undefined;
   disk: () => Readonly<{ config: ConfigFile; ledger: LedgerFile }>;
   copy: () => Ledger | undefined;
@@ -209,7 +220,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
         config: setup.config,
         revision: setup.revision ?? 1,
         releasing: setup.releasing ?? new Map(),
-        membership: setup.membership,
+        membership,
       },
     },
     ledger: setup.ledger === undefined ? { state: "lost" } : { state: "ok", ledger: setup.ledger },
@@ -229,6 +240,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   let lastWorld: World | undefined;
   const log: LoggedEffect[] = [];
   const appearances: { at: number; valveId: string }[] = [];
+  const tickHooks: ((world: World) => void)[] = [];
 
   /**
    * The runtime's rule for a ledger file that did not load (plan 1's load rule, with the version 3
@@ -290,10 +302,14 @@ export function createSimDriver(setup: SimSetup): SimDriver {
         state: inbox.states.get(id),
       });
     }
+    // Rooms freeze on the saved membership while Home Assistant is down.
+    const haUp = links.ha !== false;
     return {
       configState,
       stored,
-      house: { kind: "live", membership, notInHa: [] },
+      house: haUp
+        ? { kind: "live", membership, notInHa: [] }
+        : { kind: "frozen", membership: stored?.membership, reason: "link_down" },
       ledger,
       devices,
       links: { ...links, ...linkOverride },
@@ -418,6 +434,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     deliver();
 
     const tickedWorld = buildWorld(restartingBridge ? { [TRANSPORT]: false } : undefined);
+    for (const hook of tickHooks) hook(tickedWorld);
     const result = tick(tickedWorld);
     lastWorld = tickedWorld;
     last = result;
@@ -482,6 +499,12 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     membership: () => membership,
     setMembership(next) {
       membership = next;
+    },
+    beforeTick(fn) {
+      tickHooks.push(fn);
+    },
+    reconcileNow() {
+      executeAll(reconcile(buildWorld()).effects);
     },
     ledger: () => ledger,
     disk: () => ({ config: disk.config, ledger: disk.ledger }),

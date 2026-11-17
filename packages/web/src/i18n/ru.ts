@@ -112,7 +112,7 @@ export const ru: Dictionary = {
   "sync.frozen": "заморожено",
 
   "membership.managed": "управляется",
-  "membership.not_adopted": "не принят",
+  "membership.pending": "ожидает подключения",
   "membership.releasing": "возвращается",
   "membership.stray": "посторонний",
   "membership.orphan": "без комнаты",
@@ -152,8 +152,13 @@ export const ru: Dictionary = {
     "Не удаётся прочитать сохранённый учёт разрешённых записей в клапаны. Heatmaster начинает с пустым запасом у каждого клапана и пишет по мере его восстановления: одна запись в 30 минут на клапан",
   "problem.transport_unusable": "Heatmaster не может использовать {transport}: {reason}",
   "problem.link_down": "Нет связи с {name}",
-  "problem.valve_not_adopted":
-    "Клапан {name} находится в комнате, но его исходные настройки не были сохранены",
+  "problem.valve_pending": "Клапан {name} находится в комнате, но ещё не подключён: {reason}",
+  "problem.ha_link_required": "Связь с Home Assistant не настроена, поэтому комнаты не управляются",
+  "problem.rooms_frozen":
+    "Комнаты заморожены по последним известным зонам Home Assistant: {reason}",
+  "problem.no_schedule": "В конфигурации нет расписания, поэтому комнаты не управляются",
+  "problem.valve_not_in_ha":
+    "В Home Assistant нет устройства клапана {name}; он остаётся в прежней комнате",
   "problem.valve_orphan": "Клапан {name} больше не входит ни в одну комнату и не был возвращён",
   "problem.valve_unsupported": "Модель клапана {name} не поддерживается",
   "problem.valve_silent": "Клапан {name} не отвечает",
@@ -194,6 +199,7 @@ export const ru: Dictionary = {
   "error.valve_not_orphan": "Клапан {valveId} не лишён комнаты.",
   "error.valve_managed":
     "Клапан {valveId} находится в комнате. Сначала уберите его из конфигурации.",
+  "error.valve_not_pending": "Клапан {valveId} не ожидает принятия неизвестных исходных настроек.",
   "error.not_ready": "Heatmaster ещё запускается. Повторите чуть позже.",
   "error.mqtt_fault": "Проблема с подключением к MQTT: {reason}.",
   "error.body_invalid": "Запрос некорректен.",

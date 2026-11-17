@@ -1,16 +1,8 @@
 import fc from "fast-check";
-import { ChangeRefused, configToRaw, findProfile } from "../../src/index.ts";
+import { configToRaw, findProfile, reconcile } from "../../src/index.ts";
 import { Z2M_DAY_PAYLOAD, Z2M_KEYS } from "../../src/profiles/sonoff-codec.ts";
 import { makeConfig, membershipOf, weekOf } from "../builders.ts";
-import {
-  HOUR_MS,
-  MINUTE_MS,
-  STEP_MS,
-  createSimDriver,
-  kindsOf,
-  simRoom,
-  valveIdOf,
-} from "./driver.ts";
+import { HOUR_MS, MINUTE_MS, STEP_MS, createSimDriver, simRoom, valveIdOf } from "./driver.ts";
 import { reported } from "./valve.ts";
 import type { SimDriver, SimSetup, LoggedEffect } from "./driver.ts";
 import type {
@@ -395,7 +387,8 @@ function bindingDecode(
 /**
  * The rig for a plan's initial state: both valves in the factory state, Heatmaster just started.
  * Home Assistant has the TRVZB in `a` and the TRV-ZBT in `b`; the config has no schedule yet, so
- * no room is managed until the first document with schedules joins both valves.
+ * no room is managed until the first document with schedules joins both valves. Later joins are
+ * the tick's, as Home Assistant moves the devices.
  */
 export function createRig(start: Initial): Rig {
   let placement: [RoomName | null, RoomName | null] = ["a", "b"];
@@ -424,6 +417,20 @@ export function createRig(start: Initial): Rig {
   const joins: Join[] = [];
   let cut = false;
   const observers: ((info: StepInfo) => void)[] = [];
+
+  // A tick joins what its reconcile joins, with what the cache and the valve hold at that moment.
+  sim.beforeTick((world) => {
+    for (const taken of reconcile(world).joined) {
+      const s: Slot = taken.valveId === VALVE_IDS[0] ? 0 : 1;
+      joins.push({
+        valveId: taken.valveId,
+        adoptedAt: world.now.epochMilliseconds,
+        cache: decoded(sim, s, "cache"),
+        truth: decoded(sim, s, "truth"),
+        originals: taken.originals,
+      });
+    }
+  });
 
   for (const s of SLOTS) {
     sim.valve(VALVE_IDS[s]).setPolicy((request: ValveRequest): Fate | undefined => {
@@ -475,30 +482,6 @@ export function createRig(start: Initial): Rig {
   const place = (next: Placement): void => {
     placement = [next[0], next[1]];
     sim.setMembership(modelMembership(next));
-  };
-
-  /**
-   * Until the tick joins valves (plan 2, Task 7), a valve with no record joins only through a
-   * document while no room is managed: the config is not readable or has no schedule.
-   */
-  const mayEnter = (s: Slot): boolean => {
-    const world = sim.world();
-    if (placement[s] !== null || world.ledger?.records.has(VALVE_IDS[s]) === true) return true;
-    return (
-      world.configState !== "ok" ||
-      world.stored === undefined ||
-      world.stored.config.schedules.length === 0
-    );
-  };
-
-  /** Until the tick releases valves (plan 2, Task 7), a valve that left every room is restored. */
-  const release = (s: Slot): void => {
-    if (kindsOf(sim.world()).get(VALVE_IDS[s]) !== "orphan") return;
-    try {
-      sim.restoreValve(VALVE_IDS[s]);
-    } catch (error) {
-      if (!(error instanceof ChangeRefused)) throw error;
-    }
   };
 
   const competitorWrite = (s: Slot, what: "select" | "group" | "days"): void => {
@@ -657,19 +640,9 @@ export function createRig(start: Initial): Rig {
         };
         return;
       case "place": {
+        // The device moves in Home Assistant; the tick joins or releases the valve.
         const old = placement;
-        const next: Placement = fault.valve === 0 ? [fault.room, old[1]] : [old[0], fault.room];
-        if (fault.room !== null && !mayEnter(fault.valve)) return;
-        // The device moves in Home Assistant, and the user applies the document again.
-        const kept = change(
-          () => {
-            place(next);
-          },
-          () => {
-            place(old);
-          },
-        );
-        if (kept && fault.room === null) release(fault.valve);
+        place(fault.valve === 0 ? [fault.room, old[1]] : [old[0], fault.room]);
         return;
       }
       case "edit": {

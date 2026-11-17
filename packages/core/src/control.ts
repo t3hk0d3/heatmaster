@@ -3,6 +3,8 @@ import type { Desired } from "./desired.ts";
 import { FEED_LOST_AFTER_MS, pushDue, pushed, stopped, trackRoom, wantedSource } from "./feed.ts";
 import { roomsOf } from "./house.ts";
 import type { HouseInput } from "./house.ts";
+import { reconcile } from "./join.ts";
+import type { Pending } from "./join.ts";
 import { memberships, withoutRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, Membership, StoredConfig } from "./ledger.ts";
 import { markByAge, markedReady, needsAsk, newValveMemory } from "./memory.ts";
@@ -37,10 +39,13 @@ import type {
 import {
   problemConfigUnreadable,
   problemFeedLost,
+  problemHaLinkRequired,
   problemId,
   problemLedgerUnreadable,
   problemLinkDown,
+  problemNoSchedule,
   problemReleaseStalled,
+  problemRoomsFrozen,
   problemRoomNoTemperature,
   problemScheduleClamped,
   problemSensorLivenessUnobservable,
@@ -48,9 +53,10 @@ import {
   problemSensorStale,
   problemSettingNotHolding,
   problemTransportUnusable,
-  problemValveNotAdopted,
   problemValveNotAuto,
+  problemValveNotInHa,
   problemValveOrphan,
+  problemValvePending,
   problemValveSilent,
   problemValveUnsupported,
   roomStatus,
@@ -120,11 +126,13 @@ export type Effect =
   | Readonly<{ kind: "pushTemperature"; valveId: string; celsius: number }>
   | Readonly<{ kind: "refresh"; valveId: string }>;
 
+/** `pending` lists the valves that wait to join, in valve-id order (see `reconcile`). */
 export type TickResult = Readonly<{
   memory: Memory;
   effects: readonly Effect[];
   rooms: ReadonlyMap<string, RoomStatus>;
   problems: readonly Problem[];
+  pending: readonly Pending[];
 }>;
 
 /** One group to write: every desired key when `marked`, otherwise the differing ones. */
@@ -524,8 +532,15 @@ function runValve(
         ? undefined
         : Math.max(equalSince, orderedAt);
     const holdPassed = holdFrom !== undefined && nowMs - holdFrom >= RELEASE_HOLD_MS;
+    // A message heard at the very instant of the order came before it: a tick orders a release
+    // after every message up to its now, so only a later one shows the valve after the order.
+    const heardAt = state.heardAt;
     const heardSince =
-      holdFrom !== undefined && state.heardAt !== undefined && state.heardAt >= holdFrom;
+      holdFrom !== undefined &&
+      heardAt !== undefined &&
+      heardAt >= holdFrom &&
+      orderedAt !== undefined &&
+      heardAt > orderedAt;
     finished = holdPassed && heardSince;
     if (
       holdPassed &&
@@ -580,6 +595,13 @@ function systemProblems(world: World, kinds: ReadonlyMap<string, Membership>): P
     (world.configState === "empty" && recorded);
   if (configUnreadable) problems.push(problemConfigUnreadable());
   if (world.ledger === undefined) problems.push(problemLedgerUnreadable());
+  const house = world.house;
+  if (house.kind === "unlinked") problems.push(problemHaLinkRequired());
+  if (house.kind === "frozen") problems.push(problemRoomsFrozen(house.reason));
+  const hasRoom = house.kind !== "unlinked" && (house.membership?.rooms.size ?? 0) > 0;
+  if (world.configState === "ok" && world.stored?.config.schedules.length === 0 && hasRoom) {
+    problems.push(problemNoSchedule());
+  }
   for (const link of Object.keys(world.links).sort()) {
     if (world.links[link] === false) problems.push(problemLinkDown(link));
   }
@@ -634,11 +656,51 @@ function roomIdsOf(rooms: readonly Room[]): ReadonlyMap<string, string> {
   return roomOf;
 }
 
-/** One control step: what to save and write, the new memory, the rooms and the problems. */
+/**
+ * One control step: `reconcile` first (joins, releases, the saved membership), then the control
+ * over the world with the reconciliation's stored config and ledger. The effects are the
+ * reconciliation's followed by the control's, so a joining valve's record is saved before any
+ * write reaches it.
+ */
 export function tick(given: World): TickResult {
   const nowMs = given.now.epochMilliseconds;
   const clamp = clampReleases(given.stored, nowMs);
   const world: World = clamp === undefined ? given : { ...given, stored: clamp };
+  const reconciled = reconcile(world);
+  const result = control(
+    { ...world, stored: reconciled.stored, ledger: reconciled.ledger },
+    clamp !== undefined,
+    reconciled.pending,
+  );
+  return { ...result, effects: [...reconciled.effects, ...result.effects] };
+}
+
+/**
+ * Asks a valve that waits to join and is not observable to report, paced as for a managed valve.
+ * Returns its memory (undefined when it has none and is not asked) and the ask.
+ */
+function askPending(
+  ctx: Context,
+  valveId: string,
+  view: DeviceView | undefined,
+  live: Liveness,
+): Readonly<{ vm: ValveMemory | undefined; action: Effect | undefined }> {
+  const { world, nowMs } = ctx;
+  const old = world.memory.valves.get(valveId);
+  const spec = view?.spec;
+  if (view === undefined || spec === undefined || isObservable(view)) {
+    return { vm: old, action: undefined };
+  }
+  const vm = old ?? startMemory(world, valveId, spec);
+  const canRead = transportUsable(world, view, valveId) && live !== "silent";
+  const readable = spec.groups.some((g) => g.readable);
+  if (!canRead || !readable || !mayAsk(vm, nowMs)) return { vm: old, action: undefined };
+  return { vm: chargeAsk(vm, spec, nowMs), action: { kind: "refresh", valveId } };
+}
+
+/** The control over a reconciled world; `clamped` says a release order was clamped to now. */
+function control(world: World, clamped: boolean, pending: readonly Pending[]): TickResult {
+  const nowMs = world.now.epochMilliseconds;
   const { rooms: resolved, kinds } = membershipsOf(world);
   const stored = world.stored;
   const held = stored?.config.settings.holdWrites === true;
@@ -677,8 +739,15 @@ export function tick(given: World): TickResult {
       strays.push(valveId);
       continue;
     }
-    if (kind === "not_adopted" || kind === "orphan" || kind === "frozen") {
-      if (kind === "not_adopted") valveProblems.push(problemValveNotAdopted(valveId));
+    if (kind === "pending") {
+      const live = valveLiveness(world, valveId, view?.state, nowMs);
+      const asked = askPending(ctx, valveId, view, live);
+      if (asked.vm !== undefined) valves.set(valveId, asked.vm);
+      if (asked.action !== undefined) valveEffects.push(asked.action);
+      status({ liveness: live });
+      continue;
+    }
+    if (kind === "orphan" || kind === "frozen") {
       if (kind === "orphan") valveProblems.push(problemValveOrphan(valveId));
       status({ liveness: valveLiveness(world, valveId, view?.state, nowMs) });
       continue;
@@ -732,7 +801,7 @@ export function tick(given: World): TickResult {
     saves.push({ kind: "saveLedger", ledger }, { kind: "writeOriginalsCopy", ledger });
   }
   const dropped = [...finished, ...strays];
-  if (stored !== undefined && (dropped.length > 0 || clamp !== undefined)) {
+  if (stored !== undefined && (dropped.length > 0 || clamped)) {
     const releasing = new Map(stored.releasing);
     for (const valveId of dropped) releasing.delete(valveId);
     saves.push({ kind: "saveConfig", stored: { ...stored, releasing } });
@@ -754,11 +823,22 @@ export function tick(given: World): TickResult {
     );
   }
 
+  const houseProblems: Problem[] = pending.map(problemValvePending);
+  if (world.house.kind === "live") {
+    for (const valveId of world.house.notInHa) houseProblems.push(problemValveNotInHa(valveId));
+  }
+
   return {
     memory: { valves, rooms: roomMemory },
     effects: [...saves, ...valveEffects],
     rooms,
-    problems: unique([...systemProblems(world, kinds), ...roomProblemList, ...valveProblems]),
+    problems: unique([
+      ...systemProblems(world, kinds),
+      ...roomProblemList,
+      ...houseProblems,
+      ...valveProblems,
+    ]),
+    pending,
   };
 }
 

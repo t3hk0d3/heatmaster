@@ -156,10 +156,13 @@ export {
   SYSTEM_ID,
   problemConfigUnreadable,
   problemFeedLost,
+  problemHaLinkRequired,
   problemId,
   problemLedgerUnreadable,
   problemLinkDown,
+  problemNoSchedule,
   problemReleaseStalled,
+  problemRoomsFrozen,
   problemRoomNoTemperature,
   problemScheduleClamped,
   problemSensorLivenessUnobservable,
@@ -170,9 +173,10 @@ export {
   problemStoreWriteFailed,
   problemTickFailed,
   problemTransportUnusable,
-  problemValveNotAdopted,
   problemValveNotAuto,
+  problemValveNotInHa,
   problemValveOrphan,
+  problemValvePending,
   problemValveSilent,
   problemValveUnsupported,
   roomStatus,
@@ -248,6 +252,8 @@ export type {
   ChangeRefusedCode,
   SensorInfo,
 } from "./change.ts";
+export { acceptUnknownOriginals, reconcile } from "./join.ts";
+export type { Pending, PendingReason, Reconciliation } from "./join.ts";
 export { PROFILES, findProfile, validateProfile } from "./profiles/index.ts";
 export type { Binding, Profile } from "./profiles/index.ts";
 export { TRVZB_SPEC } from "./profiles/sonoff-trvzb.ts";

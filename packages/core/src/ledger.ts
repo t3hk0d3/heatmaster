@@ -94,7 +94,7 @@ export function withoutUpgradeReport(stored: StoredConfig): StoredConfig {
 
 export type ConfigState = "ok" | "empty" | "unreadable";
 
-export type Membership = "managed" | "not_adopted" | "releasing" | "stray" | "orphan" | "frozen";
+export type Membership = "managed" | "pending" | "releasing" | "stray" | "orphan" | "frozen";
 
 /** A ledger document that cannot be read. `path` names the faulty part. */
 export class LedgerError extends Error {
@@ -167,7 +167,7 @@ export function memberships(
     return result;
   }
   for (const valveId of inRoom) {
-    result.set(valveId, ledger.records.has(valveId) ? "managed" : "not_adopted");
+    result.set(valveId, ledger.records.has(valveId) ? "managed" : "pending");
   }
   if (houseKind !== "live") {
     for (const valveId of [...stored.releasing.keys(), ...ledger.records.keys()]) {

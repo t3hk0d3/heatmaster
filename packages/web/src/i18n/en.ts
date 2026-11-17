@@ -162,7 +162,7 @@ export const en = {
   "sync.frozen": "frozen",
 
   "membership.managed": "managed",
-  "membership.not_adopted": "not adopted",
+  "membership.pending": "waiting to join",
   "membership.releasing": "being returned",
   "membership.stray": "stray",
   "membership.orphan": "orphan",
@@ -202,8 +202,12 @@ export const en = {
     "The saved record of how many writes each valve may still receive cannot be read. Heatmaster starts every valve with an empty budget and writes as it refills, one write per valve every 30 minutes",
   "problem.transport_unusable": "Heatmaster cannot use {transport}: {reason}",
   "problem.link_down": "The connection to {name} is down",
-  "problem.valve_not_adopted":
-    "Valve {name} is in a room but its original settings were never saved",
+  "problem.valve_pending": "Valve {name} is in a room but has not joined yet: {reason}",
+  "problem.ha_link_required": "No Home Assistant link is set up, so no room is managed",
+  "problem.rooms_frozen": "Rooms are frozen on the last known Home Assistant areas: {reason}",
+  "problem.no_schedule": "The configuration has no schedule, so no room is managed",
+  "problem.valve_not_in_ha":
+    "Home Assistant has no device for valve {name}; it stays in its previous room",
   "problem.valve_orphan": "Valve {name} is no longer in any room and was not given back",
   "problem.valve_unsupported": "Valve {name} is not a supported model",
   "problem.valve_silent": "Valve {name} is not responding",
@@ -243,6 +247,8 @@ export const en = {
     "The original settings of valve {valveId} could not be read ({settings}). To add the valve anyway, accept this below and preview again.",
   "error.valve_not_orphan": "Valve {valveId} is not an orphan.",
   "error.valve_managed": "Valve {valveId} is in a room. Take it out of the configuration first.",
+  "error.valve_not_pending":
+    "Valve {valveId} is not waiting for its unknown original settings to be accepted.",
   "error.not_ready": "Heatmaster is still starting. Try again in a moment.",
   "error.mqtt_fault": "The MQTT connection has a fault: {reason}.",
   "error.body_invalid": "The request is not valid.",

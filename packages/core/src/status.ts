@@ -1,4 +1,5 @@
 import { activePoint } from "./schedule.ts";
+import type { Pending } from "./join.ts";
 import type { Membership } from "./ledger.ts";
 import type { Room } from "./model.ts";
 import type { Liveness } from "./observation.ts";
@@ -18,7 +19,11 @@ export type ProblemKind =
   | "pacing_unreadable"
   | "link_down"
   | "transport_unusable"
-  | "valve_not_adopted"
+  | "ha_link_required"
+  | "rooms_frozen"
+  | "no_schedule"
+  | "valve_pending"
+  | "valve_not_in_ha"
   | "valve_orphan"
   | "valve_unsupported"
   | "valve_silent"
@@ -93,7 +98,7 @@ export function valveSync(
   pending: boolean,
   notHolding: boolean,
 ): SyncState {
-  if (membership === "frozen" || membership === "not_adopted" || membership === "orphan")
+  if (membership === "frozen" || membership === "pending" || membership === "orphan")
     return "frozen";
   if (held) return "held";
   if (!verified) return "unverified";
@@ -181,8 +186,33 @@ export function problemTransportUnusable(transport: string, reason: string): Pro
   return problem("transport_unusable", "system", transport, "error", { transport, reason });
 }
 
-export function problemValveNotAdopted(valveId: string): Problem {
-  return problem("valve_not_adopted", "valve", valveId, "error");
+/** No Home Assistant link is configured, so no room is managed. */
+export function problemHaLinkRequired(): Problem {
+  return problem("ha_link_required", "system", SYSTEM_ID, "error");
+}
+
+/** Rooms are frozen on the saved membership: nothing joins or releases. */
+export function problemRoomsFrozen(reason: "not_loaded" | "link_down"): Problem {
+  return problem("rooms_frozen", "system", SYSTEM_ID, "warning", { reason });
+}
+
+/** The config has no schedule while Home Assistant has a room: nothing joins or releases. */
+export function problemNoSchedule(): Problem {
+  return problem("no_schedule", "system", SYSTEM_ID, "warning");
+}
+
+/** `settings` lists the unreadable setting keys, comma separated (empty for other reasons). */
+export function problemValvePending(pending: Pending): Problem {
+  return problem("valve_pending", "valve", pending.valveId, "warning", {
+    reason: pending.reason,
+    roomId: pending.roomId,
+    settings: pending.unreadable.join(","),
+  });
+}
+
+/** Home Assistant has no device for the valve; it is kept in its previous room. */
+export function problemValveNotInHa(valveId: string): Problem {
+  return problem("valve_not_in_ha", "valve", valveId, "warning");
 }
 
 export function problemValveOrphan(valveId: string): Problem {

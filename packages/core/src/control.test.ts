@@ -33,6 +33,7 @@ import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
 import { roomsOf } from "./house.ts";
 import type { HouseInput } from "./house.ts";
+import { reconcile } from "./join.ts";
 import { EMPTY_LEDGER, FRESH_STORED, memberships, withRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
 import { START_TOKENS, mark, newValveMemory } from "./memory.ts";
@@ -162,14 +163,22 @@ function held(world: World): World {
   return { ...world, stored: { ...stored, config: { ...stored.config, settings } } };
 }
 
-/** The world's resolved rooms, changed by `update`: entries and a live house that hold them. */
+/**
+ * The world's resolved rooms, changed by `update`: entries and a live house that hold them, and
+ * the saved membership equal to the house's.
+ */
 function withRooms(world: World, update: (rooms: readonly Room[]) => readonly Room[]): World {
   const stored = storedOf(world);
   const rooms = update(roomsOf(world.configState, stored, world.house) ?? []);
+  const house = liveHouse(rooms);
   return {
     ...world,
-    stored: { ...stored, config: { ...stored.config, rooms: entriesOf(rooms) } },
-    house: liveHouse(rooms),
+    stored: {
+      ...stored,
+      config: { ...stored.config, rooms: entriesOf(rooms) },
+      membership: house.kind === "live" ? house.membership : undefined,
+    },
+    house,
   };
 }
 
@@ -177,6 +186,12 @@ function withRooms(world: World, update: (rooms: readonly Room[]) => readonly Ro
 function kindsIn(world: World): ReadonlyMap<string, Membership> {
   const rooms = roomsOf(world.configState, world.stored, world.house);
   return memberships(world.configState, world.stored, world.ledger, rooms, world.house.kind);
+}
+
+/** Each valve's membership once the tick's reconcile has joined and released. */
+function reconciledKinds(world: World): ReadonlyMap<string, Membership> {
+  const reconciled = reconcile(world);
+  return kindsIn({ ...world, stored: reconciled.stored, ledger: reconciled.ledger });
 }
 
 /** The valve leaves its room and is put in `releasing`, ordered at `orderedAt`. */
@@ -327,6 +342,13 @@ function withWeekDay(world: World, day: ResolvedDay): World {
     ...stored.config,
     schedules: [{ id: BUILDER_SCHEDULE, name: "Other", defaultWeek: week }],
   };
+  return { ...world, stored: { ...stored, config } };
+}
+
+/** The world's config without schedules: nothing joins or is released. */
+function withoutSchedules(world: World): World {
+  const stored = storedOf(world);
+  const config = { ...stored.config, schedules: [], defaultScheduleId: undefined };
   return { ...world, stored: { ...stored, config } };
 }
 
@@ -1091,12 +1113,16 @@ describe("control", () => {
         }
       });
     });
-    describe("With membership not_adopted / orphan / frozen", () => {
+    describe("With membership pending / orphan / frozen", () => {
       it("no effects for the valve and its problem is raised", () => {
         const base = withValues(equalWorld(), { day_sat: OTHER_DAY });
+        // Its sensor source is not observed, so it cannot join and stays pending.
+        const values = { ...sevenDays(BUILDER_DAY), day_sat: OTHER_DAY };
+        const unjoinable = withState(base, { ...stateOf(base), values });
         const cases: readonly [World, ProblemKind][] = [
-          [{ ...base, ledger: EMPTY_LEDGER }, "valve_not_adopted"],
-          [withRooms(base, () => []), "valve_orphan"],
+          [{ ...unjoinable, ledger: EMPTY_LEDGER }, "valve_pending"],
+          // Without a schedule a valve in no room is not released: it stays an orphan.
+          [withoutSchedules(withRooms(base, () => [])), "valve_orphan"],
           [{ ...base, ledger: undefined }, "ledger_unreadable"],
         ];
         for (const [world, kind] of cases) {
@@ -1145,7 +1171,7 @@ describe("control", () => {
     });
     describe("With a valve that is no longer managed or releasing", () => {
       it("the returned memory holds no ValveMemory for it", () => {
-        const world = withRooms(equalWorld(), () => []);
+        const world = { ...withRooms(equalWorld(), () => []), ledger: EMPTY_LEDGER };
         expect(tick(world).memory.valves.has(V)).toBe(false);
       });
     });
@@ -1779,12 +1805,12 @@ describe("control", () => {
         });
       });
     });
-    describe("With a not_adopted valve in a room, last heard 3 h ago", () => {
+    describe("With a pending valve in a room, last heard 3 h ago", () => {
       const base = makeManaged({ state: makeState({ heardAgoMs: 3 * HOUR_MS }) });
       const world = { ...base, ledger: EMPTY_LEDGER };
       it('its ValveStatus has liveness "silent"', () => {
         expect(statusOf(tick(world))).toMatchObject({
-          membership: "not_adopted",
+          membership: "pending",
           liveness: "silent",
         });
       });
@@ -2061,6 +2087,17 @@ describe("control", () => {
           "writeOriginalsCopy",
           "saveConfig",
         ]);
+      });
+    });
+    describe("With a release ordered at the instant the valve was last heard, equal for 15 min and not heard since", () => {
+      it("no saves until the valve is heard after the order", () => {
+        const base = releasedEqual();
+        const world = hear(base, {}, nowOf(base));
+        const first = tick(world);
+        expect(vmOf(first).equalSince).toBe(nowOf(world));
+        const result = tick(next(world, first, RELEASE_HOLD_MS));
+        expect(saves(result)).toEqual([]);
+        expect(valveEffects(result)).toEqual([{ kind: "refresh", valveId: V }]);
       });
     });
     describe("With the same and a refresh sent 1 min ago", () => {
@@ -2383,13 +2420,17 @@ describe("control", () => {
         expect(() => runAll(world, steps)).not.toThrow();
       });
       fcTest.prop([arbRun])(
-        "never returns a publish, publishSetpoint, pushTemperature or refresh for a valve that is not managed or releasing",
+        "never returns a publish, publishSetpoint, pushTemperature or refresh for a valve that is not managed or releasing after the tick's reconcile, except a refresh for a pending one",
         ({ world, steps }) => {
           for (const [w, result] of runAll(world, steps)) {
-            const kinds = kindsIn(w);
+            const kinds = reconciledKinds(w);
             for (const effect of result.effects) {
               if (!("valveId" in effect)) continue;
-              expect(["managed", "releasing"]).toContain(kinds.get(effect.valveId));
+              const allowed =
+                effect.kind === "refresh"
+                  ? ["managed", "releasing", "pending"]
+                  : ["managed", "releasing"];
+              expect(allowed).toContain(kinds.get(effect.valveId));
             }
           }
         },
@@ -2432,7 +2473,7 @@ describe("control", () => {
         "never returns, for a releasing valve, a publish holding a key of a group whose spec says it is not captured",
         ({ world, steps }) => {
           for (const [w, result] of runAll(world, steps)) {
-            const kinds = kindsIn(w);
+            const kinds = reconciledKinds(w);
             for (const effect of result.effects) {
               if (effect.kind !== "publish" || kinds.get(effect.valveId) !== "releasing") continue;
               const spec = w.devices.get(effect.valveId)?.spec;
@@ -2585,7 +2626,7 @@ describe("control", () => {
         ]);
       });
     });
-    describe("With a not_adopted, orphan or frozen valve", () => {
+    describe("With a pending, orphan or frozen valve", () => {
       it("lists nothing for it", () => {
         const base = withValues(equalWorld(), { day_sat: OTHER_DAY });
         expect(preview(base)).toHaveLength(1);
@@ -2595,6 +2636,200 @@ describe("control", () => {
           { ...base, ledger: undefined },
         ];
         for (const world of worlds) expect(preview(world)).toEqual([]);
+      });
+    });
+  });
+
+  describe("tick — joins, pending valves and releases", () => {
+    const V2 = "z2m:0x00124b0000000002";
+    /** The builder room's TRVZB without a ledger record, heard just now holding `values`. */
+    const joining = (values: SettingValues = { sensor_source: "internal" }): World => ({
+      ...makeManaged({ state: makeState({ values, heardAgoMs: 0 }) }),
+      ledger: EMPTY_LEDGER,
+    });
+    /** Adds V2 to the builder room: a TRVZB without a record that has sent no message. */
+    const withPendingV2 = (world: World): World => {
+      const placed = withRooms(world, (rooms) =>
+        rooms.map((room) => ({ ...room, valves: [...room.valves, { valveId: V2 }] })),
+      );
+      return withView(
+        placed,
+        { name: "second", spec: makeSpec("trvzb"), usable: true, state: undefined },
+        V2,
+      );
+    };
+    const VALVE_WRITES = new Set(["publish", "publishSetpoint", "pushTemperature"]);
+
+    describe("With a valve that joins this tick", () => {
+      /** A valve that was pending, has been asked and answered, and now joins: one day differs. */
+      const answered = (): World => ({
+        ...withValues(equalWorld(), { day_sat: OTHER_DAY }),
+        ledger: EMPTY_LEDGER,
+      });
+      it("the effects start with saveLedger and writeOriginalsCopy", () => {
+        expect(kindsOf(tick(answered()).effects).slice(0, 2)).toEqual([
+          "saveLedger",
+          "writeOriginalsCopy",
+        ]);
+        expect(kindsOf(tick(joining()).effects).slice(0, 2)).toEqual([
+          "saveLedger",
+          "writeOriginalsCopy",
+        ]);
+      });
+      it("the valve's writes come after them", () => {
+        const result = tick(answered());
+        expect(kindsOf(result.effects)).toEqual(["saveLedger", "writeOriginalsCopy", "publish"]);
+        expect(publishes(valveEffects(result))).toEqual([{ day_sat: BUILDER_DAY }]);
+      });
+    });
+    describe("With a pending valve that is not observable", () => {
+      it("one paced refresh is its only effect", () => {
+        const world = withState(joining(), undefined);
+        const first = tick(world);
+        expect(first.effects).toEqual([{ kind: "refresh", valveId: V }]);
+        expect(tick(next(world, first, MINUTE_MS)).effects).toEqual([]);
+      });
+    });
+    describe("With a pending valve and a managed valve in one room", () => {
+      it("the managed valve is written as without the pending one", () => {
+        const world = withValues(equalWorld(), { day_sat: OTHER_DAY });
+        const alone = valveEffects(tick(world));
+        expect(publishes(alone)).toHaveLength(1);
+        const shared = tick(withPendingV2(world));
+        expect(valveEffects(shared)).toEqual(alone);
+        expect(valveEffects(shared, V2)).toEqual([{ kind: "refresh", valveId: V2 }]);
+      });
+    });
+    describe("With a valve released this tick while writes are not held", () => {
+      it("its originals are written", () => {
+        const world = withRooms(withValues(equalWorld(), { sensor_source: "external" }), (rooms) =>
+          rooms.map((room) => ({ ...room, valves: [] })),
+        );
+        const result = tick(world);
+        const saved = result.effects.find((e) => e.kind === "saveConfig");
+        expect(saved?.kind === "saveConfig" && saved.stored.releasing.get(V)).toBe(nowOf(world));
+        expect(publishes(valveEffects(result))).toEqual([{ sensor_source: "internal" }]);
+      });
+    });
+    describe("With writes held", () => {
+      it("joins still record originals and no valve is written", () => {
+        const result = tick(held(joining()));
+        expect(kindsOf(result.effects).slice(0, 2)).toEqual(["saveLedger", "writeOriginalsCopy"]);
+        const saved = result.effects[0];
+        expect(saved?.kind === "saveLedger" && saved.ledger.records.get(V)?.originals).toEqual({
+          sensor_source: "internal",
+        });
+        expect(result.effects.filter((e) => VALVE_WRITES.has(e.kind))).toEqual([]);
+      });
+    });
+
+    describe("problems", () => {
+      const frozen = (reason: "not_loaded" | "link_down"): World => {
+        const world = equalWorld();
+        return {
+          ...world,
+          house: { kind: "frozen", membership: storedOf(world).membership, reason },
+        };
+      };
+      describe("With house unlinked", () => {
+        it("ha_link_required", () => {
+          const result = tick({ ...equalWorld(), house: { kind: "unlinked" } });
+          expect(problemsOf(result, "ha_link_required")).toEqual([
+            {
+              kind: "ha_link_required",
+              subject: { kind: "system", id: "heatmaster" },
+              severity: "error",
+              data: {},
+            },
+          ]);
+        });
+      });
+      describe("With house frozen before the first load", () => {
+        it("rooms_frozen with reason not_loaded", () => {
+          expect(problemsOf(tick(frozen("not_loaded")), "rooms_frozen")).toEqual([
+            {
+              kind: "rooms_frozen",
+              subject: { kind: "system", id: "heatmaster" },
+              severity: "warning",
+              data: { reason: "not_loaded" },
+            },
+          ]);
+        });
+      });
+      describe("With house frozen after the link went down", () => {
+        it("rooms_frozen with reason link_down", () => {
+          expect(problemsOf(tick(frozen("link_down")), "rooms_frozen").map((p) => p.data)).toEqual([
+            { reason: "link_down" },
+          ]);
+        });
+      });
+      describe("With a config with no schedule and a room", () => {
+        it("no_schedule", () => {
+          const world = makeWorld({
+            config: {
+              ...storedOf(makeWorld()).config,
+              schedules: [],
+              defaultScheduleId: undefined,
+            },
+            house: {
+              kind: "live",
+              membership: makeMembership({ [BUILDER_ROOM]: [V] }),
+              notInHa: [],
+            },
+          });
+          expect(problemsOf(tick(world), "no_schedule")).toEqual([
+            {
+              kind: "no_schedule",
+              subject: { kind: "system", id: "heatmaster" },
+              severity: "warning",
+              data: {},
+            },
+          ]);
+          expect(problemsOf(tick(makeWorld()), "no_schedule")).toEqual([]);
+        });
+      });
+      describe("With a pending valve", () => {
+        it("valve_pending with its reason and room", () => {
+          const result = tick(joining({}));
+          expect(problemsOf(result, "valve_pending")).toEqual([
+            {
+              kind: "valve_pending",
+              subject: { kind: "valve", id: V },
+              severity: "warning",
+              data: {
+                reason: "originals_unreadable",
+                roomId: BUILDER_ROOM,
+                settings: "sensor_source",
+              },
+            },
+          ]);
+          expect(result.pending).toEqual([
+            {
+              valveId: V,
+              roomId: BUILDER_ROOM,
+              reason: "originals_unreadable",
+              unreadable: ["sensor_source"],
+            },
+          ]);
+        });
+      });
+      describe("With a valve in notInHa", () => {
+        it("valve_not_in_ha", () => {
+          const world = equalWorld();
+          const house: HouseInput = {
+            kind: "live",
+            membership: storedOf(world).membership ?? makeMembership({}),
+            notInHa: [V],
+          };
+          expect(problemsOf(tick({ ...world, house }), "valve_not_in_ha")).toEqual([
+            {
+              kind: "valve_not_in_ha",
+              subject: { kind: "valve", id: V },
+              severity: "warning",
+              data: {},
+            },
+          ]);
+        });
       });
     });
   });

@@ -40,7 +40,8 @@ export type ChangeRefusedCode =
   | "valve_not_observed"
   | "originals_unreadable"
   | "valve_not_orphan"
-  | "valve_managed";
+  | "valve_managed"
+  | "valve_not_pending";
 
 /** A config change, restore or forget that cannot be done. */
 export class ChangeRefused extends Error {

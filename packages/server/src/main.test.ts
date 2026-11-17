@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -396,18 +396,6 @@ const VALVE_DEVICE = { id: "valve", identifiers: [["mqtt", `zigbee2mqtt_${IEEE}`
 function placeValve(ha: FakeHa): void {
   ha.setArea({ area_id: "living", name: "Living" });
   ha.setDevice({ ...VALVE_DEVICE, area_id: "living" });
-}
-
-/**
- * Writes into config.json the saved membership of the valve in the area living, as plan 2's
- * Task 7 saves it with the config: a start whose Home Assistant link has not loaded yet freezes
- * the rooms on it.
- */
-function saveMembership(dataDir: string): void {
-  const file = path.join(dataDir, "config.json");
-  const stored = JSON.parse(readFileSync(file, "utf8")) as { data: Record<string, unknown> };
-  stored.data.membership = { rooms: { living: { name: "Living", valves: [VALVE] } }, ignored: [] };
-  writeFileSync(file, JSON.stringify(stored));
 }
 
 function seedHa(ha: FakeHa): void {
@@ -884,7 +872,6 @@ describe("main (runtime)", () => {
           // days are published, so the link stays down and the sensor pending.
           world.ha.refuseConnections(true);
           await world.running.stop();
-          saveMembership(dirs.dataDir);
           // This story is about what the first start sequence sends. The budget a restart keeps
           // (pacing.json) is tested in runtime.test.ts; here the file is removed, as if the hours
           // the story skips had passed.
@@ -971,10 +958,8 @@ describe("main (runtime)", () => {
           world.ha.setDevice({ ...VALVE_DEVICE, area_id: null });
           world.ha.refuseConnections(false);
           await advanceUntil(() => {
-            expect(world.running.runtime.snapshot().memberships[VALVE]).toBe("orphan");
+            expect(world.running.runtime.snapshot().memberships[VALVE]).toBe("releasing");
           });
-          // Restoring the orphan stands in for the automatic release of plan 2's Task 7.
-          await world.running.runtime.restoreValve(VALVE);
           copyFiles();
           await advanceUntil(() => {
             expect(sets()).toContainEqual({ temperature_sensor_select: "local_temperature" });
@@ -1194,8 +1179,8 @@ function checkStored(file: Record<string, unknown>): string[] {
 // ---- Home Assistant entities ---------------------------------------------------------------------
 
 describe("main (discovery)", () => {
-  /** Stores a config of one room, stops, and starts again on the same folders. */
-  async function restarted(holdWrites: boolean) {
+  /** Starts with the valve in the area living and applies a config of that one room. */
+  async function applied(holdWrites: boolean) {
     const fake = await startFakeZ2m();
     live.push(() => fake.stop());
     const ha = await startFakeHa();
@@ -1217,8 +1202,16 @@ describe("main (discovery)", () => {
     config.settings = { hold_writes: holdWrites, timezone: "Europe/Amsterdam" };
     config.rooms = { living: {} };
     await first.runtime.apply(config, NO_CHANGE);
+    return { fake, ha, options, clock, first };
+  }
+
+  /**
+   * Stores a config of one room, stops, and starts again on the same folders. The tick after the
+   * apply saved the membership, so the start freezes the rooms on it until the link has loaded.
+   */
+  async function restarted(holdWrites: boolean) {
+    const { fake, options, clock, first } = await applied(holdWrites);
     await first.stop();
-    saveMembership(dirs.dataDir);
     const running = await start(options, clock, false);
     live.push(() => running.stop());
     return { fake, running };
@@ -1252,6 +1245,27 @@ describe("main (discovery)", () => {
         await vi.waitFor(() => {
           expect(running.runtime.snapshot().revision).toBe(before + 1);
         }, WAIT);
+      });
+    });
+
+    describe("With the Home Assistant link dropped mid-run", () => {
+      it("the rooms stay as Home Assistant last reported them and the room's device stays published", async () => {
+        const { fake, ha, first } = await applied(true);
+        live.push(() => first.stop());
+        await vi.waitFor(() => {
+          expect(fake.retained(roomConfigTopic("ha_test", "living"))).toBeTruthy();
+        }, WAIT);
+        ha.refuseConnections(true);
+        ha.dropConnections();
+        await vi.waitFor(() => {
+          expect(first.runtime.snapshot().houseFrozenReason).toBe("link_down");
+        }, WAIT);
+        const snapshot = first.runtime.snapshot();
+        expect(snapshot.rooms.map((room) => [room.roomId, room.managed])).toEqual([
+          ["living", true],
+        ]);
+        await first.discovery.sync(stateView(snapshot));
+        expect(fake.retained(roomConfigTopic("ha_test", "living"))).toBeTruthy();
       });
     });
 

@@ -16,7 +16,6 @@ import {
   desiredTexts,
   factoryValve,
   inSyncValve,
-  kindsOf,
   recordedLedger,
   resolvedRooms,
   simRoom,
@@ -158,14 +157,12 @@ function placeIn(sim: SimDriver, rooms: readonly Room[]): void {
 }
 
 /**
- * Home Assistant now holds the rooms, and every valve that left them all is released. Until the
- * tick releases such a valve (plan 2, Task 7), the user restores it.
+ * Home Assistant now holds the rooms, and the tick right after it (no time passes) releases every
+ * valve that left them all.
  */
 function leaveFor(sim: SimDriver, rooms: readonly Room[]): void {
   placeIn(sim, rooms);
-  for (const [valveId, kind] of kindsOf(sim.world())) {
-    if (kind === "orphan") sim.restoreValve(valveId);
-  }
+  sim.step(0);
 }
 
 /** Everything that reached a valve: writes, setpoint writes and pushes, but not refreshes. */
@@ -416,9 +413,9 @@ describe("scenarios", () => {
     });
   });
 
-  // Finished in plan 2, Task 7: the tick joins a valve that Home Assistant puts in a room. A
-  // document names no valve any more, so these scenarios place the valve through the house.
-  describe.skip("join", () => {
+  // The tick joins a valve that Home Assistant puts in a room; the document only gives the room
+  // its entry.
+  describe("join", () => {
     /** Home Assistant puts the valve in the new area `new`; the document gets its entry. */
     function joinNew(built: Built, valveId: string): Config {
       const rooms = [...built.rooms, simRoom("new", [valveId], [sensorRef("new")])];
@@ -787,7 +784,8 @@ describe("scenarios", () => {
         const { sim, id, removedAt } = released();
         const daysBefore = sim.valve(id).truth().schedules[1];
         sim.runTo(removedAt + 25 * MINUTE_MS);
-        const writes = published(sim, id).filter((p) => p.at * 1000 > removedAt);
+        // The release is ordered, and its first write sent, by the tick at removedAt.
+        const writes = published(sim, id).filter((p) => p.at * 1000 >= removedAt);
         expect(writes.map((w) => w.keys)).toEqual([["sensor_source"]]);
         expect(sim.valve(id).truth().select).toBe("local_temperature");
         expect(sim.valve(id).truth().schedules[1]).toEqual(daysBefore);
@@ -1267,7 +1265,7 @@ describe("scenarios", () => {
             },
           ],
         });
-        const { sim, config, rooms } = built;
+        const { sim, rooms } = built;
         const id = valveIdOf(A);
         sim.step(0);
         sim.runTo(10 * MINUTE_MS);
@@ -1276,10 +1274,7 @@ describe("scenarios", () => {
         sim.runTo(sim.elapsed() + 2 * MINUTE_MS);
         expect(sim.config().stored?.releasing.has(id)).toBe(true);
         // The valve now holds the source Heatmaster restored; adding it back must not recapture.
-        // Until the tick takes it out of releasing (plan 2, Task 7), the document is applied again.
         placeIn(sim, rooms);
-        const back = sim.planChange(configToRaw(config));
-        expect(back.ok).toBe(true);
         sim.runTo(sim.elapsed() + 20 * MINUTE_MS);
         expect(sim.ledger()?.records.get(id)).toEqual(first);
         expect(sim.config().stored?.releasing.has(id)).toBe(false);

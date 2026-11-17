@@ -339,7 +339,7 @@ describe("ledger", () => {
         Membership,
       ])[] = [
         ["ok, in a room, record", "ok", stored(), ledgerOf(record(V1)), [V1], "managed"],
-        ["ok, in a room, no record", "ok", stored(), EMPTY_LEDGER, [V1], "not_adopted"],
+        ["ok, in a room, no record", "ok", stored(), EMPTY_LEDGER, [V1], "pending"],
         ["ok, releasing only, record", "ok", stored([V1]), ledgerOf(record(V1)), [], "releasing"],
         ["ok, releasing only, no record", "ok", stored([V1]), EMPTY_LEDGER, [], "stray"],
         ["ok, neither, record", "ok", stored(), ledgerOf(record(V1)), [], "orphan"],
@@ -408,10 +408,10 @@ describe("ledger", () => {
         expect(result.get(V1)).toBe("managed");
       });
     });
-    describe("With rooms holding a valve without a record", () => {
-      it("it is not_adopted", () => {
+    describe("With a room holding a valve without a record", () => {
+      it("it is pending", () => {
         const result = memberships("ok", stored(), EMPTY_LEDGER, roomsWith([V1]), "live");
-        expect(result.get(V1)).toBe("not_adopted");
+        expect(result.get(V1)).toBe("pending");
       });
     });
     describe("With house frozen and a recorded valve that is in no room", () => {

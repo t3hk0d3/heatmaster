@@ -5,11 +5,14 @@ import {
   SYSTEM_ID,
   problemConfigUnreadable,
   problemFeedLost,
+  problemHaLinkRequired,
   problemId,
   problemLedgerUnreadable,
   problemPacingUnreadable,
   problemLinkDown,
+  problemNoSchedule,
   problemReleaseStalled,
+  problemRoomsFrozen,
   problemRoomNoTemperature,
   problemScheduleClamped,
   problemSensorLivenessUnobservable,
@@ -19,9 +22,10 @@ import {
   problemStoreWriteFailed,
   problemTickFailed,
   problemTransportUnusable,
-  problemValveNotAdopted,
   problemValveNotAuto,
+  problemValveNotInHa,
   problemValveOrphan,
+  problemValvePending,
   problemValveSilent,
   problemValveUnsupported,
   roomStatus,
@@ -89,7 +93,7 @@ describe("status", () => {
       it("returns that state", () => {
         const cases: readonly [Membership, boolean, boolean, boolean, boolean, SyncState][] = [
           ["frozen", false, true, false, false, "frozen"],
-          ["not_adopted", false, true, false, false, "frozen"],
+          ["pending", false, true, false, false, "frozen"],
           ["orphan", false, true, false, false, "frozen"],
           ["managed", true, true, false, false, "held"],
           ["managed", false, false, false, false, "unverified"],
@@ -236,7 +240,22 @@ describe("status", () => {
             "error",
             ["reason", "transport"],
           ],
-          [problemValveNotAdopted(V1), "valve_not_adopted", "valve", "error", []],
+          [problemHaLinkRequired(), "ha_link_required", "system", "error", []],
+          [problemRoomsFrozen("link_down"), "rooms_frozen", "system", "warning", ["reason"]],
+          [problemNoSchedule(), "no_schedule", "system", "warning", []],
+          [
+            problemValvePending({
+              valveId: V1,
+              roomId: "living",
+              reason: "originals_unreadable",
+              unreadable: ["active_group", "sensor_source"],
+            }),
+            "valve_pending",
+            "valve",
+            "warning",
+            ["reason", "roomId", "settings"],
+          ],
+          [problemValveNotInHa(V1), "valve_not_in_ha", "valve", "warning", []],
           [problemValveOrphan(V1), "valve_orphan", "valve", "warning", []],
           [problemValveUnsupported(V1), "valve_unsupported", "valve", "error", []],
           [problemValveSilent(V1), "valve_silent", "valve", "error", []],
@@ -270,7 +289,7 @@ describe("status", () => {
           [problemStoreWriteFailed("config"), "store_write_failed", "system", "error", ["store"]],
           [problemTickFailed(), "tick_failed", "system", "error", []],
         ];
-        expect(new Set(table.map((row) => row[1])).size).toBe(20);
+        expect(new Set(table.map((row) => row[1])).size).toBe(24);
         for (const [problem, kind, subjectKind, severity, dataKeys] of table) {
           expect(problem.kind).toBe(kind);
           expect(problem.subject.kind).toBe(subjectKind);
@@ -291,6 +310,29 @@ describe("status", () => {
         const problem = problemTransportUnusable("z2m", "another_instance");
         expect(problem.subject).toEqual({ kind: "system", id: "z2m" });
         expect(problem.data).toEqual({ transport: "z2m", reason: "another_instance" });
+      });
+    });
+    describe('With problemRoomsFrozen("not_loaded")', () => {
+      it('the subject is SYSTEM_ID and data.reason is "not_loaded"', () => {
+        const problem = problemRoomsFrozen("not_loaded");
+        expect(problem.subject).toEqual({ kind: "system", id: SYSTEM_ID });
+        expect(problem.data).toEqual({ reason: "not_loaded" });
+      });
+    });
+    describe("With problemValvePending for a valve whose two originals are unreadable", () => {
+      it("the subject is the valve and data holds the reason, the room and the settings", () => {
+        const problem = problemValvePending({
+          valveId: V1,
+          roomId: "living",
+          reason: "originals_unreadable",
+          unreadable: ["active_group", "sensor_source"],
+        });
+        expect(problem.subject).toEqual({ kind: "valve", id: V1 });
+        expect(problem.data).toEqual({
+          reason: "originals_unreadable",
+          roomId: "living",
+          settings: "active_group,sensor_source",
+        });
       });
     });
     describe("With problemConfigUnreadable and problemLedgerUnreadable", () => {

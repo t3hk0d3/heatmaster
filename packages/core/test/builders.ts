@@ -374,20 +374,23 @@ export function makeConfig(
 /**
  * Config state `ok` (revision 1, nothing releasing), an empty ledger, `z2m` up, no faults, and a
  * live house with no room. With `rooms`, the config's entries and the live house come from them.
+ * The saved membership is the house's (none when unlinked), so the tick has no membership to save.
  */
 export function makeWorld(
   options: Partial<World> & { config?: Config; rooms?: readonly Room[] } = {},
 ): World {
   const { config, rooms, ...rest } = options;
   const base = config ?? makeConfig();
+  const house = rest.house ?? liveHouse(rooms ?? []);
   return {
     configState: "ok",
     stored: {
       ...FRESH_STORED,
       config: rooms === undefined ? base : { ...base, rooms: entriesOf(rooms) },
       revision: 1,
+      membership: house.kind === "unlinked" ? undefined : house.membership,
     },
-    house: liveHouse(rooms ?? []),
+    house,
     ledger: EMPTY_LEDGER,
     devices: new Map(),
     links: { z2m: true },

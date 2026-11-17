@@ -6,6 +6,7 @@ import {
   START_TOKENS,
   findProfile,
   groupOf,
+  reconcile,
   resolveRooms,
   sensorId,
 } from "../../src/index.ts";
@@ -123,7 +124,9 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
   rig.onStep((info: StepInfo) => {
     const { world, effects, result } = info;
     const now = sim.now();
-    const kinds = kindsOf(world);
+    // The memberships the control acted on: after the tick's own joins and releases.
+    const reconciled = reconcile(world);
+    const kinds = kindsOf({ ...world, stored: reconciled.stored, ledger: reconciled.ledger });
     const held = world.stored?.config.settings.holdWrites === true;
     const unreadable =
       world.configState !== "ok" || world.stored === undefined || world.ledger === undefined;
@@ -176,7 +179,8 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
       const binding = sim.valve(valveId).model;
 
       // intent
-      if (kind !== "managed" && kind !== "releasing") {
+      const asked = effect.kind === "refresh" && kind === "pending";
+      if (kind !== "managed" && kind !== "releasing" && !asked) {
         found("intent.unmanaged", `${tag}: valve is ${kind ?? "unknown"}`);
       }
       if (effect.kind !== "refresh" && held) found("intent.hold", `${tag} while held`);
@@ -302,7 +306,7 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
         (j) => j.valveId === record.valveId && j.adoptedAt === record.adoptedAt,
       );
       if (join === undefined) {
-        found("originals.cache", `${key} is a record that no join of a config change made`);
+        found("originals.cache", `${key} is a record that no join made`);
         continue;
       }
       for (const [k, original] of Object.entries(record.originals)) {
@@ -389,8 +393,7 @@ function converge(rig: Rig, found: (id: Id, text: string) => void): void {
     const model = MODELS[slot];
     const kind = kinds.get(valveId);
     if (kind === "releasing") found("convergence.releasing", `${valveId} is still releasing`);
-    if (kind === "not_adopted")
-      found("convergence.values", `${valveId} is in a room but not adopted`);
+    if (kind === "pending") found("convergence.values", `${valveId} is in a room but pending`);
     if (kind !== "managed") continue;
     const room = rooms.find((r) => r.valves.some((v) => v.valveId === valveId));
     if (room === undefined) continue;
@@ -552,7 +555,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
   describe("intent", () => {
     describe("At every moment", () => {
       propertyTest(
-        "no publish, setpoint write, temperature push or refresh reaches a valve that is not managed or releasing (the driver's own `get` after a valve_not_observed refusal aside)",
+        "no publish, setpoint write, temperature push or refresh reaches a valve that is not managed or releasing after the tick's reconcile, except a refresh to a pending valve (the driver's own `get` after a valve_not_observed refusal aside)",
         ["intent.unmanaged"],
       );
       propertyTest(
@@ -637,8 +640,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
       );
     });
 
-    // Finished in plan 2, Task 7: the valve rejoins through the tick once it is placed again.
-    describe.skip("With a crash after the first effect of a join, which the user then asks for again", () => {
+    describe("With a crash after the first effect of a join, made by the tick once the valve is placed again", () => {
       const plan: FaultPlan = {
         initial,
         steps: [
@@ -819,12 +821,10 @@ function previewHolds(change: Change): void {
   const base = modelConfig(change.schedules, false);
   const config = { ...base, presets: { ...base.presets, comfort: change.comfort } };
   const before = sim.log().length;
-  // The devices move in Home Assistant; until the tick releases a valve that left every room
-  // (plan 2, Task 7), it is restored, so the change's writes include its release.
+  // The devices move in Home Assistant and the next tick's reconcile runs at once, so the
+  // change's preview sees the valves it releases (Task 8's planChange reconciles by itself).
   sim.setMembership(modelMembership(change.placement));
-  for (const valveId of VALVE_IDS) {
-    if (kindsOf(sim.world()).get(valveId) === "orphan") sim.restoreValve(valveId);
-  }
+  sim.reconcileNow();
   const result = sim.planChange(configToRaw(config));
   expect(result.ok).toBe(true);
   if (!result.ok) return;
