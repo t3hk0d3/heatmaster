@@ -9,6 +9,7 @@ import {
   makeSpec,
   makeState,
   makeWorld,
+  membershipOf,
 } from "../test/builders.ts";
 import {
   ChangeRefused,
@@ -470,7 +471,28 @@ describe("change", () => {
           ...FRESH_STORED,
           config: validateConfig(raw),
           revision: 1,
+          importedAreas: ["living"],
         });
+      });
+
+      it("every room of the house and every entry of the document count as imported: the import does not run again", () => {
+        const world = makeWorld({
+          configState: "unreadable",
+          stored: undefined,
+          house: {
+            kind: "frozen",
+            membership: membershipOf([room("living", [V1])]),
+            reason: "link_down",
+          },
+        });
+        const result = plan(world, doc({ bedroom: {} }), { overwriteUnreadable: true });
+        expect(result.stored.importedAreas).toEqual(["bedroom", "living"]);
+      });
+    });
+
+    describe("With config state empty (a fresh install's first apply)", () => {
+      it("no area counts as imported", () => {
+        expect(plan(first(), doc({ living: {} })).stored.importedAreas).toEqual([]);
       });
     });
 

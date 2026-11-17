@@ -1,6 +1,6 @@
 import { preview } from "./control.ts";
 import type { Effect, PlannedWrite, World } from "./control.ts";
-import { roomsOf } from "./house.ts";
+import { ascending, roomsOf } from "./house.ts";
 import type { HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import type { Pending } from "./join.ts";
@@ -98,6 +98,13 @@ function entrySensors(config: Config | undefined): readonly SensorRef[] {
   return [...(config?.rooms.values() ?? [])].flatMap((entry) => entry.sensors);
 }
 
+/** The rooms of the world's house and the entries of the config, as area ids in ascending order. */
+function known(world: World, config: Config): readonly string[] {
+  const rooms =
+    world.house.kind === "unlinked" ? [] : [...(world.house.membership?.rooms.keys() ?? [])];
+  return ascending(new Set([...rooms, ...config.rooms.keys()]));
+}
+
 /** Each valve's membership over the rooms of the world's house. */
 function membershipsIn(world: World, ledger: Ledger | undefined): ReadonlyMap<string, Membership> {
   const rooms = roomsOf(world.configState, world.stored, world.house);
@@ -170,7 +177,11 @@ export function planChange(
   }
 
   // The server's own fields (releasing, membership, sensor import, HA changes, report) are kept.
-  const stored: StoredConfig = { ...(old ?? FRESH_STORED), config, revision: revision + 1 };
+  // Over an unreadable config the user's document is the truth: the sensor import does not run
+  // again for the rooms there are, or for the areas the document has entries for.
+  const base =
+    old ?? (unreadable ? { ...FRESH_STORED, importedAreas: known(world, config) } : FRESH_STORED);
+  const stored: StoredConfig = { ...base, config, revision: revision + 1 };
   const next = reconcile({ ...world, configState: "ok", stored });
   const writes = preview({
     ...world,
