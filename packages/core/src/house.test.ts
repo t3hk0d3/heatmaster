@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { makeConfig, makeMembership, makeSnapshot, weekOf } from "../test/builders.ts";
 import {
+  byCodeUnit,
   membershipFrom,
   resolveRooms,
+  roomOfValves,
   roomsOf,
   sameMembership,
   scheduleLabelId,
@@ -11,7 +13,7 @@ import {
 } from "./house.ts";
 import { FRESH_STORED } from "./ledger.ts";
 import type { StoredConfig } from "./ledger.ts";
-import type { Config, RoomEntry, Schedule } from "./model.ts";
+import type { Config, Room, RoomEntry, Schedule } from "./model.ts";
 
 const A = "z2m:0x00124b0000000001";
 const B = "z2m:0x00124b0000000002";
@@ -41,6 +43,42 @@ function storedWith(config: Config): StoredConfig {
 }
 
 describe("house", () => {
+  describe("byCodeUnit", () => {
+    describe("With ids in mixed case and with a letter outside ASCII", () => {
+      it("sorts them by UTF-16 code unit, not by locale", () => {
+        expect(["b", "é", "B", "a", "z"].sort(byCodeUnit)).toEqual(["B", "a", "b", "z", "é"]);
+      });
+    });
+  });
+
+  describe("roomOfValves", () => {
+    const roomWith = (id: string, valveIds: readonly string[]): Room => ({
+      id,
+      name: id,
+      scheduleId: "day",
+      valves: valveIds.map((valveId) => ({ valveId })),
+      sensors: [],
+      presets: NO_PRESETS,
+    });
+
+    describe("With rooms that each list their own valves", () => {
+      it("maps every valve to its room", () => {
+        expect(roomOfValves([roomWith("hall", [A]), roomWith("office", [B])])).toEqual(
+          new Map([
+            [A, "hall"],
+            [B, "office"],
+          ]),
+        );
+      });
+    });
+
+    describe("With a valve two rooms list", () => {
+      it("keeps the first room", () => {
+        expect(roomOfValves([roomWith("hall", [A]), roomWith("office", [A])]).get(A)).toBe("hall");
+      });
+    });
+  });
+
   describe("scheduleLabelId", () => {
     describe('With "day"', () => {
       it('returns "heatmaster_schedule_day"', () => {

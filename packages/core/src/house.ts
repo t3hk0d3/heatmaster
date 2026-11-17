@@ -74,9 +74,26 @@ export function scheduleLabelName(scheduleName: string): string {
   return `Heatmaster: ${scheduleName}`;
 }
 
+/** The order of ids everywhere (valves, areas, entities): ascending UTF-16 code units. */
+export function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** The values in ascending code-unit order. */
 export function ascending(values: Iterable<string>): string[] {
-  return [...values].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...values].sort(byCodeUnit);
+}
+
+/**
+ * Each valve of the rooms with its room id. A valve two rooms list (only a hand-edited saved
+ * membership can do that) keeps the first room, in the rooms' order.
+ */
+export function roomOfValves(rooms: readonly Room[]): ReadonlyMap<string, string> {
+  const roomOf = new Map<string, string>();
+  for (const room of rooms) {
+    for (const ref of room.valves) if (!roomOf.has(ref.valveId)) roomOf.set(ref.valveId, room.id);
+  }
+  return roomOf;
 }
 
 export function membershipFrom(

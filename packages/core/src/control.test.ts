@@ -31,15 +31,15 @@ import type { DeviceView, Effect, TickResult, World } from "./control.ts";
 import type { Desired } from "./desired.ts";
 import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
-import { roomsOf } from "./house.ts";
-import type { HouseInput } from "./house.ts";
+import { NO_PRESETS, roomsOf } from "./house.ts";
+import type { AreaMembership, HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import { EMPTY_LEDGER, FRESH_STORED, memberships, withRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
 import { START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
-import type { Config, Room, SensorRef, SetPoint } from "./model.ts";
+import type { Config, Room, RoomEntry, SensorRef, SetPoint } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
 import { BUCKET, REFILL_MS, charge, chargeAsk, noteDesired } from "./pacing.ts";
@@ -2410,6 +2410,45 @@ describe("control", () => {
         };
         const world: World = { ...base, stored: { ...stored, config } };
         expect(publishes(valveEffects(tick(world)))).toEqual([sevenDays(OTHER_DAY)]);
+      });
+    });
+
+    describe("With a saved membership that lists the valve under two areas (a hand edit)", () => {
+      it("the valve follows the first area's room, the one its pending entry would name", () => {
+        const base = withWeekDay(zbtWorld(), OTHER_DAY);
+        const stored = storedOf(base);
+        const third = {
+          id: "third",
+          name: "Third",
+          defaultWeek: weekOf(THIRD_DAY.map((p) => ({ ...p, preset: undefined }))),
+        };
+        const entry = (scheduleId: string): RoomEntry => ({
+          scheduleId,
+          sensors: [],
+          presets: NO_PRESETS,
+        });
+        const config = {
+          ...stored.config,
+          schedules: [...stored.config.schedules, third],
+          rooms: new Map([
+            ["alpha", entry(BUILDER_SCHEDULE)],
+            ["zeta", entry("third")],
+          ]),
+        };
+        const membership: AreaMembership = {
+          rooms: new Map([
+            ["alpha", { name: "Alpha", valveIds: [V] }],
+            ["zeta", { name: "Zeta", valveIds: [V] }],
+          ]),
+          ignored: [],
+        };
+        const world: World = {
+          ...base,
+          stored: { ...stored, config, membership },
+          house: { kind: "live", membership, notInHa: [] },
+        };
+        expect(publishes(valveEffects(tick(world)))).toEqual([sevenDays(OTHER_DAY)]);
+        expect(preview(world).map((write) => write.values)).toContainEqual(sevenDays(OTHER_DAY));
       });
     });
   });

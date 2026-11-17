@@ -1,3 +1,4 @@
+import { byCodeUnit } from "./house.ts";
 import type { DroppedRoomReason } from "./ledger.ts";
 import { AREA_ID_PATTERN } from "./validation.ts";
 
@@ -21,7 +22,7 @@ function ascending(valveIds: unknown): unknown {
   if (!Array.isArray(valveIds)) return valveIds;
   const list = valveIds as readonly unknown[];
   if (!list.every((id) => typeof id === "string")) return list;
-  return [...list].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...list].sort(byCodeUnit);
 }
 
 /**

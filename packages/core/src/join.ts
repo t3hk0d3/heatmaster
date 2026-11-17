@@ -2,7 +2,7 @@ import { ChangeRefused, capture } from "./change.ts";
 import type { Capture } from "./change.ts";
 import { isObservable, transportFaulted } from "./control.ts";
 import type { Effect, World } from "./control.ts";
-import { roomsOf, sameMembership } from "./house.ts";
+import { byCodeUnit, roomOfValves, roomsOf, sameMembership } from "./house.ts";
 import { withRecord } from "./ledger.ts";
 import type { Ledger, StoredConfig } from "./ledger.ts";
 import type { SettingKey } from "./settings.ts";
@@ -37,10 +37,6 @@ export type Reconciliation = Readonly<{
   released: readonly string[];
 }>;
 
-function byId(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 function unchanged(world: World, pending: readonly Pending[] = []): Reconciliation {
   return {
     stored: world.stored,
@@ -58,15 +54,10 @@ function sameReleasing(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, nu
   return true;
 }
 
-/** Each valve of the rooms with its room id; a valve listed twice keeps its first room. */
+/** Each valve of the rooms with its room id (`roomOfValves`). */
 function wantedValves(world: World): ReadonlyMap<string, string> | undefined {
   const rooms = roomsOf(world.configState, world.stored, world.house);
-  if (rooms === undefined) return undefined;
-  const wanted = new Map<string, string>();
-  for (const room of rooms) {
-    for (const ref of room.valves) if (!wanted.has(ref.valveId)) wanted.set(ref.valveId, room.id);
-  }
-  return wanted;
+  return rooms === undefined ? undefined : roomOfValves(rooms);
 }
 
 type Check =
@@ -106,7 +97,7 @@ export function reconcile(world: World): Reconciliation {
   if (world.configState !== "ok" || stored === undefined) return unchanged(world);
   const wanted = wantedValves(world);
   if (wanted === undefined) return unchanged(world);
-  const ids = [...wanted.keys()].sort(byId);
+  const ids = [...wanted.keys()].sort(byCodeUnit);
   const ledger = world.ledger;
   const house = world.house;
   if (house.kind !== "live") {
@@ -159,7 +150,7 @@ export function reconcile(world: World): Reconciliation {
     }
     nextLedger = grown;
     const notInHa = new Set(house.notInHa);
-    for (const valveId of [...ledger.records.keys()].sort(byId)) {
+    for (const valveId of [...ledger.records.keys()].sort(byCodeUnit)) {
       if (wanted.has(valveId) || releasing.has(valveId) || notInHa.has(valveId)) continue;
       releasing.set(valveId, nowMs);
       released.push(valveId);

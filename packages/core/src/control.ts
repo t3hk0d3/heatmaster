@@ -1,7 +1,7 @@
 import { differing, fitted, managedDesired, releaseDesired } from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { FEED_LOST_AFTER_MS, pushDue, pushed, stopped, trackRoom, wantedSource } from "./feed.ts";
-import { roomsOf } from "./house.ts";
+import { roomOfValves, roomsOf } from "./house.ts";
 import type { HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import type { Pending } from "./join.ts";
@@ -649,13 +649,6 @@ function membershipsOf(
   return { rooms: rooms ?? [], kinds };
 }
 
-/** The room id of each valve in a room. */
-function roomIdsOf(rooms: readonly Room[]): ReadonlyMap<string, string> {
-  const roomOf = new Map<string, string>();
-  for (const room of rooms) for (const ref of room.valves) roomOf.set(ref.valveId, room.id);
-  return roomOf;
-}
-
 /**
  * One control step: `reconcile` first (joins, releases, the saved membership), then the control
  * over the world with the reconciliation's stored config and ledger. The effects are the
@@ -707,7 +700,7 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
   const config = world.configState === "ok" ? stored?.config : undefined;
   const plans =
     config === undefined ? new Map<string, RoomPlan>() : planRooms(config, resolved, world, nowMs);
-  const roomOf = roomIdsOf(resolved);
+  const roomOf = roomOfValves(resolved);
   const ctx: Context = { world, nowMs, held, config };
 
   const valves = new Map<string, ValveMemory>();
@@ -869,7 +862,7 @@ export function preview(world: World): readonly PlannedWrite[] {
   const config = world.configState === "ok" ? world.stored?.config : undefined;
   const plans =
     config === undefined ? new Map<string, RoomPlan>() : planRooms(config, resolved, world, nowMs);
-  const roomOf = roomIdsOf(resolved);
+  const roomOf = roomOfValves(resolved);
   const writes: PlannedWrite[] = [];
   for (const valveId of [...kinds.keys()].sort()) {
     const kind = kinds.get(valveId);
