@@ -279,7 +279,7 @@ export const ru: Dictionary = {
   "error.valve_unsupported": "Модель клапана {valveId} не поддерживается.",
   "error.ledger_unreadable":
     "Не удаётся прочитать сохранённые исходные настройки клапанов, поэтому добавлять клапаны нельзя.",
-  "error.transport_unusable": "Клапан {valveId} сейчас недоступен через {transport}.",
+  "error.transport_unusable": "Клапан {valveId} сейчас недоступен.",
   "error.valve_not_orphan": "Клапан {valveId} не лишён комнаты.",
   "error.valve_managed":
     "Клапан {valveId} находится в комнате. Сначала уберите его из конфигурации.",

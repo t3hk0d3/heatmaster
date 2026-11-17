@@ -842,6 +842,40 @@ describe("render", () => {
   });
 
   describe("renderError", () => {
+    describe("With every error text and the data the server sends for its code", () => {
+      it("shows no raw {placeholder}, in en and ru", () => {
+        const sent: Record<string, Record<string, string>> = {
+          revision_conflict: { expected: "1", current: "2" },
+          ha_link_missing: { sensor: "s" },
+          sensor_unknown: { sensor: "s" },
+          sensor_not_temperature: { sensor: "s" },
+          sensor_on_valve: { sensor: "s" },
+          valve_unknown: { valveId: ID },
+          valve_unsupported: { valveId: ID },
+          ledger_unreadable: { valveId: ID },
+          transport_unusable: { valveId: ID },
+          valve_not_orphan: { valveId: ID },
+          valve_managed: { valveId: ID },
+          valve_not_pending: { valveId: ID },
+          schedule_in_use: { roomId: "hall" },
+          mqtt_fault: { reason: "mqtt_unavailable" },
+          room_unknown: { roomId: "hall" },
+          ask_limited: { valveId: ID },
+          device_unknown: { deviceId: ID },
+          mqtt_refused: { reasonCode: "135" },
+          topic_invalid: { topic: "a/#" },
+        };
+        for (const language of ["en", "ru"] as const) {
+          const tr = translator(language);
+          for (const key of Object.keys(DICTIONARIES[language])) {
+            if (!key.startsWith("error.") || key === "error.http") continue;
+            const code = key.slice("error.".length);
+            const out = text(renderError(apiError(code, sent[code] ?? {}), tr));
+            expect(out, `${language} ${key}`).not.toContain("{");
+          }
+        }
+      });
+    });
     describe("With a known code", () => {
       it("shows the dictionary text with the error's data put in", () => {
         const error = apiError("revision_conflict", { expected: "3", current: "4" });

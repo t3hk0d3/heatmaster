@@ -355,7 +355,7 @@ export const en = {
   "error.valve_unsupported": "Valve {valveId} is not a supported model.",
   "error.ledger_unreadable":
     "The saved original valve settings cannot be read, so valves cannot be added.",
-  "error.transport_unusable": "Valve {valveId} cannot be reached through {transport} now.",
+  "error.transport_unusable": "Valve {valveId} cannot be reached right now.",
   "error.valve_not_orphan": "Valve {valveId} is not an orphan.",
   "error.valve_managed": "Valve {valveId} is in a room. Take it out of the configuration first.",
   "error.valve_not_pending":
