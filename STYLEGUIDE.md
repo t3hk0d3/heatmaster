@@ -42,7 +42,9 @@ commit first; do not mix conventions.
 - Codes (validation issues, refusals, problem kinds, states) are lower-case `snake_case` strings.
 - Effect kinds are the one exception: they are camelCase verbs, as in the architecture
   (`saveLedger`, `writeOriginalsCopy`, `saveConfig`, `publish`, `publishSetpoint`,
-  `pushTemperature`, `refresh`). Event kinds are `snake_case`.
+  `pushTemperature`, `refresh`), and so are the kinds of `LabelOp`, the label operations planned
+  for Home Assistant (`createLabel`, `renameLabel`, `deleteLabel`, `labelArea`, `labelEntity`).
+  Event kinds are `snake_case`.
 - JSON key casing: the stored files, the config document and the MQTT discovery payloads use
   `snake_case` keys; the HTTP API's own shapes (`wire.ts`) and error `data` use `camelCase`.
 - An instant is a field named `at` or `<something>At` (`heardAt`, `messageAt`, `at`), never with a
@@ -59,7 +61,8 @@ commit first; do not mix conventions.
   `Readonly<Record<…>>`.
 - No classes in `core`, except its three error classes: `ConfigError`, `ChangeRefused`,
   `LedgerError`.
-- A fixed set of names is a union of string literals, lower-case `snake_case` except effect kinds:
+- A fixed set of names is a union of string literals, lower-case `snake_case` except effect and
+  `LabelOp` kinds:
   `type Membership = "managed" | "not_adopted" | "releasing" | "stray" | "orphan" | "frozen"`.
 - A union of shapes (effects, events) is told apart by a `kind` field:
   `{ kind: "publish", valveId, values }`.
