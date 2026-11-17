@@ -60,6 +60,7 @@ import type {
   Event,
   Group,
   HaChange,
+  HaEdit,
   HouseInput,
   Inbox,
   Ledger,
@@ -834,7 +835,13 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const previous = accepted?.membership;
     const membership = next.view.membership;
     const current = readableStored();
-    const edit = current === undefined ? undefined : labelSync?.pull(current.config, membership);
+    let edit: HaEdit | undefined;
+    try {
+      edit = current === undefined ? undefined : labelSync?.pull(current.config, membership);
+    } catch (error) {
+      // A failed pull is no edit: the membership is still accepted.
+      log.error("a label pull failed", { error: errorText(error) });
+    }
     let saved = false;
     if (current !== undefined && edit !== undefined) {
       const edited = withHaEdit(current, edit, clock.nowMs());

@@ -4645,6 +4645,85 @@ describe("runtime", () => {
       });
     });
 
+    describe("After a Home Assistant stall that timed out an apply's label writes", () => {
+      const ECO_LABEL = "heatmaster_schedule_eco";
+      const ECO = { id: "eco", name: "Eco", week: [{ days: "all", temperature: { "00:00": 15 } }] };
+      /** Schedules main (the default), night and eco, with these entries; living holds A. */
+      const three = (rooms: RawConfig["rooms"] = { living: {} }): RawConfig => {
+        const next = withNight(raw(), rooms);
+        const document: RawConfig = { ...next, schedules: [...(next.schedules ?? []), ECO] };
+        housesOf.set(document, DEFAULT_HOUSE);
+        return document;
+      };
+
+      async function stalledApply(): Promise<Rig> {
+        const rig = await mirrored({ seed: { config: three(), ledger: [record(A)] } });
+        rig.ha?.stallLabels(rig.clock);
+        await rig.rt.apply(three({ living: { schedule: "night" } }), APPLY);
+        await vi.waitFor(() => {
+          expect(rig.ha?.labelBatches()).toHaveLength(2);
+        });
+        await rig.advance(HA_LABEL_TIMEOUT_MS);
+        rig.ha?.stallLabels(undefined);
+        expect(areaLabels(rig, "living")).toEqual([MAIN]);
+        // Home Assistant has recovered; the user moves living onto eco.
+        relabelArea(rig, "living", [ECO_LABEL]);
+        await rig.advance(HA_SETTLE_MS);
+        return rig;
+      }
+
+      it("a later user edit to the same target becomes a revision", async () => {
+        const rig = await stalledApply();
+        expect(rig.rt.snapshot().revision).toBe(3);
+        expect(rig.rt.exportConfig().config).toMatchObject({
+          rooms: { living: { schedule: "eco" } },
+        });
+      });
+
+      it("the edit is not reverted", async () => {
+        const rig = await stalledApply();
+        await rig.advance(3 * HA_SETTLE_MS);
+        expect(areaLabels(rig, "living")).toEqual([ECO_LABEL]);
+        expect(rig.rt.snapshot().revision).toBe(3);
+      });
+    });
+
+    describe("With a label pull that throws", () => {
+      it("the settle still accepts the membership, and the failure is logged", async () => {
+        const stub = createStubHaLink();
+        let armed = false;
+        const ha: StubHaLink = {
+          ...stub,
+          sensorInfo: (entityId, addresses) => {
+            if (!armed) return stub.sensorInfo(entityId, addresses);
+            armed = false;
+            throw new Error("sensor info failed");
+          },
+        };
+        const rig = await mirrored({
+          ha,
+          seed: managedSeed([A]),
+          snapshot: labelled(DEFAULT_HOUSE, {
+            entities: { [LIVING_T]: { areaId: "living", labels: [] } },
+          }),
+        });
+        const snapshot = labelsOf(rig.ha);
+        rig.ha?.setSnapshot({
+          ...snapshot,
+          areas: new Map([...snapshot.areas, ["office", { name: areaName("office"), labels: [] }]]),
+          valveAreas: new Map([[A, "office"]]),
+          entities: new Map([[LIVING_T, { areaId: "living", labels: [SENSOR_LABEL] }]]),
+        });
+        rig.ha?.emit({ kind: "registries_changed" });
+        // The pull is the first to look the labelled sensor up.
+        armed = true;
+        await rig.advance(HA_SETTLE_MS);
+        expect(armed).toBe(false);
+        expect(rig.rt.snapshot().rooms.map((room) => room.roomId)).toEqual(["office"]);
+        expect(rig.logs).toContain("error a label pull failed");
+      });
+    });
+
     describe("With writes held", () => {
       it("labels are still mirrored", async () => {
         const rig = await mirrored({ seed: { config: raw({ hold: true }), ledger: [record(A)] } });
@@ -4656,6 +4735,8 @@ describe("runtime", () => {
     describe("With the config unreadable", () => {
       it("no mirror and no pull run", async () => {
         const rig = await boot({ seed: { config: "unreadable" } });
+        // Live, so the settle does run and reaches the pull's guard.
+        expect(rig.rt.snapshot().house).toBe("live");
         relabelArea(rig, "living", [MAIN]);
         await rig.advance(2 * HA_SETTLE_MS);
         expect(rig.ha?.labelBatches()).toEqual([]);

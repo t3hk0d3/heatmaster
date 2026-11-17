@@ -42,12 +42,18 @@ export type HaEvent =
  * What a `writeLabels` batch did. `error` is Home Assistant's error code (`unauthorized`,
  * `invalid_info`, …), `link_down`, `timeout`, `not_found` (the link knows no such area or entity)
  * or `label_clash` (a create was answered with another id). `created` maps each created name to
- * the `label_id` Home Assistant answered.
+ * the `label_id` Home Assistant answered. `unanswered` lists the failed ops that were sent but got
+ * no answer (`timeout`, or the connection dropped): Home Assistant may have carried them out. An op
+ * never sent is never in it. `settled` is true when the batch's last reload answered: Home
+ * Assistant handles one connection's commands in order, so `snapshot()` then shows what it did
+ * with every op sent.
  */
 export type LabelWriteResult = Readonly<{
   done: readonly LabelOp[];
   failed: readonly Readonly<{ op: LabelOp; error: string }>[];
   created: ReadonlyMap<string, string>;
+  unanswered: readonly LabelOp[];
+  settled: boolean;
 }>;
 
 export type HaLog = Readonly<{
@@ -68,6 +74,11 @@ export type HaLink = Readonly<{
   areaName(areaId: string): string | undefined;
   /** Areas, device areas and labels as loaded; undefined before `ready()`, the last value while down. */
   snapshot(): HaSnapshot | undefined;
+  /**
+   * Counts the loads and registry reloads Home Assistant answered: a `snapshot()` read after it
+   * rose past a value was loaded after that moment.
+   */
+  loads(): number;
   /** Sends the ops to Home Assistant, in order; never rejects. */
   writeLabels(ops: readonly LabelOp[]): Promise<LabelWriteResult>;
 }>;
@@ -377,6 +388,7 @@ export function createHaLink(
   let areas: ReadonlyMap<string, AreaEntry> = new Map();
   let labels: ReadonlyMap<string, string> = new Map();
   let current: HaSnapshot | undefined;
+  let loads = 0;
   let snapshotSeen = "";
   let byDevice: ReadonlyMap<string, readonly string[]> = new Map();
   // Private and changed in place: one websocket event must not copy the whole house.
@@ -663,6 +675,7 @@ export function createHaLink(
         answered?.(kind);
       }
       if (stale(id) || state !== "up") return LINK_DOWN;
+      loads += 1;
       const before = kinds.map(snapshot);
       const keyBefore = snapshotSeen;
       for (const apply of applies) apply();
@@ -745,10 +758,13 @@ export function createHaLink(
     const done: LabelOp[] = [];
     const failed: { op: LabelOp; error: string }[] = [];
     const created = new Map<string, string>();
+    const unanswered: LabelOp[] = [];
+    let settled = false;
     const conn = connection;
     const id = loadId;
     if (conn === undefined || state !== "up") {
-      return { done, failed: ops.map((op) => ({ op, error: LINK_DOWN })), created };
+      const all = ops.map((op) => ({ op, error: LINK_DOWN }));
+      return { done, failed: all, created, unanswered, settled };
     }
     for (const kind of BATCH_REGISTRIES) folded.add(kind);
     dropQueued(BATCH_REGISTRIES);
@@ -780,8 +796,10 @@ export function createHaLink(
         try {
           answer = await timed(conn.sendMessagePromise<unknown>(message));
         } catch (error) {
-          failed.push({ op, error: errorCode(error) });
-          if (op.kind === "createLabel") missing.set(op.name, errorCode(error));
+          const code = errorCode(error);
+          failed.push({ op, error: code });
+          if (code === TIMEOUT || code === LINK_DOWN) unanswered.push(op);
+          if (op.kind === "createLabel") missing.set(op.name, code);
           continue;
         }
         if (op.kind === "createLabel") {
@@ -803,6 +821,7 @@ export function createHaLink(
       }
       if (!stale(id)) {
         const unreloaded = await reload(conn, BATCH_REGISTRIES, id, (kind) => folded.delete(kind));
+        settled = unreloaded === undefined && !stale(id);
         // The events folded into a reload that failed still need theirs.
         if (unreloaded !== undefined && !stale(id)) {
           for (const kind of BATCH_REGISTRIES) enqueue({ kind: "reload", registry: kind });
@@ -811,7 +830,7 @@ export function createHaLink(
     } finally {
       folded.clear();
     }
-    return { done, failed, created };
+    return { done, failed, created, unanswered, settled };
   }
 
   function onRegistryEvent(kind: RegistryKind): void {
@@ -876,6 +895,7 @@ export function createHaLink(
       applyLabels();
       current = buildSnapshot(entities, devices, areas, labels);
       snapshotSeen = snapshotKey(current);
+      loads += 1;
       states = loaded;
       reindex();
       refresh();
@@ -1027,6 +1047,7 @@ export function createHaLink(
     },
     areaName: (areaId) => areas.get(areaId)?.name,
     snapshot: () => current,
+    loads: () => loads,
     /**
      * Queues the ops as one batch behind the reloads and batches asked for before. The batch
      * reloads the area and entity registries, sends one command per op with no reload between
@@ -1038,7 +1059,15 @@ export function createHaLink(
      * not sent and fails with the create's code.
      */
     writeLabels(ops) {
-      if (ops.length === 0) return Promise.resolve({ done: [], failed: [], created: new Map() });
+      if (ops.length === 0) {
+        return Promise.resolve({
+          done: [],
+          failed: [],
+          created: new Map(),
+          unanswered: [],
+          settled: false,
+        });
+      }
       return new Promise((resolve) => {
         enqueue({
           kind: "batch",
@@ -1051,6 +1080,8 @@ export function createHaLink(
                 done: [],
                 failed: ops.map((op) => ({ op, error: UNKNOWN_ERROR })),
                 created: new Map(),
+                unanswered: [],
+                settled: false,
               });
             }
           },

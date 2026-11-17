@@ -9,9 +9,7 @@ import type {
   RawConfig,
 } from "@heatmaster/core";
 import { describe, expect, it, vi } from "vitest";
-import { createManualClock } from "../test/manual-clock.ts";
 import { createStubHaLink, type StubHaLink } from "../test/stub-ha-link.ts";
-import { HA_LABEL_TIMEOUT_MS } from "./ha-link.ts";
 import { createLabelSync, type LabelSync } from "./label-sync.ts";
 
 // ---- fixtures ------------------------------------------------------------------------------------
@@ -126,6 +124,14 @@ function kinds(sync: LabelSync): string[] {
 }
 
 const OK_SENSOR = { exists: true, isTemperature: true, onValve: false };
+const ECO = "heatmaster_schedule_eco";
+/** Schedules day (the default), night and eco. */
+const THREE: readonly string[] = ["day", "night", "eco"];
+
+/** The office area write fails as sent without an answer. */
+function officeTimesOut(op: LabelOp): string | undefined {
+  return op.kind === "labelArea" && op.areaId === "office" ? "timeout" : undefined;
+}
 
 // ---- tests ---------------------------------------------------------------------------------------
 
@@ -398,23 +404,19 @@ describe("label-sync", () => {
       });
     });
 
-    describe("With a write that timed out and was applied by Home Assistant after a later mirror", () => {
+    describe("With a write sent without an answer, whose batch's last reload got none either, applied by Home Assistant after a later mirror", () => {
       async function late(): Promise<Rig> {
-        const clock = createManualClock(0);
         const { ha, sync } = rig();
-        await sync.mirror(config(), MEMBERSHIP);
-        // The mirror of office on night times out; nothing is reported done.
-        ha.stallLabels(clock);
-        const stalled = sync.mirror(config({ office: { schedule: "night" } }), MEMBERSHIP);
-        await vi.waitFor(() => {
-          expect(ha.labelBatches()).toHaveLength(2);
-        });
-        clock.advance(HA_LABEL_TIMEOUT_MS);
-        await stalled;
-        ha.stallLabels(undefined);
+        await sync.mirror(config({}, THREE), MEMBERSHIP);
+        // The mirror of office on night: its office write gets no answer, nor does the reload.
+        ha.failLabels(officeTimesOut);
+        ha.settleLabels(false);
+        await sync.mirror(config({ office: { schedule: "night" } }, THREE), MEMBERSHIP);
+        ha.failLabels(undefined);
+        ha.settleLabels(true);
         // The user applies office back on the default: Home Assistant still shows day, so nothing
-        // is written. Then Home Assistant carries out the timed-out write.
-        await sync.mirror(config(), MEMBERSHIP);
+        // is written. Then the link loads what Home Assistant did: it carried out the write.
+        await sync.mirror(config({}, THREE), MEMBERSHIP);
         const op = ha
           .labelBatches()[1]
           ?.find((o) => o.kind === "labelArea" && o.areaId === "office");
@@ -425,46 +427,40 @@ describe("label-sync", () => {
 
       it("the pull after its echo returns undefined", async () => {
         const { sync } = await late();
-        expect(sync.pull(config(), MEMBERSHIP)).toBeUndefined();
+        expect(sync.pull(config({}, THREE), MEMBERSHIP)).toBeUndefined();
       });
 
       it("scheduleLabelsMoved is true, so the labels go back to the config", async () => {
         const { sync } = await late();
-        sync.pull(config(), MEMBERSHIP);
+        sync.pull(config({}, THREE), MEMBERSHIP);
         expect(sync.scheduleLabelsMoved()).toBe(true);
       });
 
-      it("once the labels went back, a user edit to that area is taken by the next pull", async () => {
+      it("once a snapshot loaded after the batch was pulled, a user edit to that area is taken by the next pull", async () => {
         const { ha, sync } = await late();
-        sync.pull(config(), MEMBERSHIP);
-        await sync.mirror(config(), MEMBERSHIP, "schedules");
-        expect(current(ha).areas.get("office")?.labels).toEqual([DAY]);
-        relabelArea(ha, "office", [NIGHT]);
-        expect(sync.pull(config(), MEMBERSHIP)?.items).toEqual([
-          { kind: "schedule", areaId: "office", entityId: undefined, scheduleId: "night" },
+        sync.pull(config({}, THREE), MEMBERSHIP);
+        relabelArea(ha, "office", [ECO]);
+        expect(sync.pull(config({}, THREE), MEMBERSHIP)?.items).toEqual([
+          { kind: "schedule", areaId: "office", entityId: undefined, scheduleId: "eco" },
         ]);
       });
     });
 
-    describe("With a write that timed out and was applied by Home Assistant while a later mirror's writes ran", () => {
+    describe("With a write sent without an answer, whose batch's last reload got none either, applied by Home Assistant while a later mirror's writes ran", () => {
       it("the pull after that mirror returns undefined", async () => {
-        const clock = createManualClock(0);
         const { ha, sync } = rig();
         await sync.mirror(config(), MEMBERSHIP);
-        ha.stallLabels(clock);
-        const stalled = sync.mirror(config({ office: { schedule: "night" } }), MEMBERSHIP);
-        await vi.waitFor(() => {
-          expect(ha.labelBatches()).toHaveLength(2);
-        });
-        clock.advance(HA_LABEL_TIMEOUT_MS);
-        await stalled;
-        ha.stallLabels(undefined);
+        ha.failLabels(officeTimesOut);
+        ha.settleLabels(false);
+        await sync.mirror(config({ office: { schedule: "night" } }), MEMBERSHIP);
+        ha.failLabels(undefined);
+        ha.settleLabels(true);
         const op = ha
           .labelBatches()[1]
           ?.find((o) => o.kind === "labelArea" && o.areaId === "office");
         if (op === undefined) throw new Error("no office op");
         // The user applies hall on night and office back on the default; Home Assistant carries
-        // out the timed-out write before it answers the new batch.
+        // out the unanswered write before it answers the new batch.
         ha.onLabelBatch(() => {
           ha.onLabelBatch(undefined);
           ha.setSnapshot(applyLabelOps(current(ha), [op], new Map()));
@@ -473,6 +469,50 @@ describe("label-sync", () => {
         await sync.mirror(wanted, MEMBERSHIP);
         expect(current(ha).areas.get("hall")?.labels).toEqual([NIGHT]);
         expect(sync.pull(wanted, MEMBERSHIP)).toBeUndefined();
+      });
+    });
+
+    describe("With a write sent without an answer in a batch whose last reload answered", () => {
+      it("a later user edit to its target is returned by the next pull", async () => {
+        const { ha, sync } = rig();
+        await sync.mirror(config({}, THREE), MEMBERSHIP);
+        ha.failLabels(officeTimesOut);
+        await sync.mirror(config({ office: { schedule: "night" } }, THREE), MEMBERSHIP);
+        ha.failLabels(undefined);
+        relabelArea(ha, "office", [ECO]);
+        expect(
+          sync.pull(config({ office: { schedule: "night" } }, THREE), MEMBERSHIP)?.items,
+        ).toEqual([{ kind: "schedule", areaId: "office", entityId: undefined, scheduleId: "eco" }]);
+      });
+    });
+
+    describe("With ops failing unsent because the create they rely on got no answer", () => {
+      it("a user edit to their targets in the first snapshot loaded after the batch is returned", async () => {
+        const { ha, sync } = rig();
+        await sync.mirror(
+          config(
+            {},
+            THREE.filter((id) => id !== "night"),
+          ),
+          MEMBERSHIP,
+        );
+        expect(current(ha).labels.has(NIGHT)).toBe(false);
+        // The create of night is sent and gets no answer, nor does the reload; the rename and the
+        // office label that rely on it are never sent.
+        ha.failLabels((op) => (op.kind === "createLabel" ? "timeout" : undefined));
+        ha.settleLabels(false);
+        await sync.mirror(config({ office: { schedule: "night" } }, THREE), MEMBERSHIP);
+        expect(ha.labelBatches()[1]?.map((op) => op.kind)).toEqual([
+          "createLabel",
+          "renameLabel",
+          "labelArea",
+        ]);
+        ha.failLabels(undefined);
+        ha.settleLabels(true);
+        relabelArea(ha, "office", [ECO]);
+        expect(
+          sync.pull(config({ office: { schedule: "night" } }, THREE), MEMBERSHIP)?.items,
+        ).toEqual([{ kind: "schedule", areaId: "office", entityId: undefined, scheduleId: "eco" }]);
       });
     });
 

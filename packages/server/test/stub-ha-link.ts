@@ -34,13 +34,22 @@ export type StubHaLink = HaLink &
     infoAddresses(): readonly ReadonlySet<string>[];
     started(): boolean;
     stopped(): boolean;
-    /** From now on an op for which `fail` gives a code fails with it and changes nothing. */
+    /**
+     * From now on an op for which `fail` gives a code fails with it and changes nothing. With
+     * `timeout` or `link_down` the op was sent and got no answer (`unanswered`).
+     */
     failLabels(fail: ((op: LabelOp) => string | undefined) | undefined): void;
     /**
-     * From now on every batch answers only after HA_LABEL_TIMEOUT_MS on `clock`, each op failed
-     * with `timeout` and nothing changed, as a link whose Home Assistant never answers.
+     * From now on every batch answers only after HA_LABEL_TIMEOUT_MS on `clock`, as a link whose
+     * Home Assistant never answers: its first reload times out, so no op is sent, each fails with
+     * `timeout`, and nothing changes.
      */
     stallLabels(clock: Clock | undefined): void;
+    /**
+     * With false, from now on a batch's last reload gets no answer: `settled` is false, and the
+     * snapshot and `loads()` stay as they were, whatever the ops did.
+     */
+    settleLabels(settle: boolean): void;
     /**
      * The next batch is carried out and announced (`registries_changed`) as usual, but its result
      * is held until the returned function is called.
@@ -61,7 +70,14 @@ export const EMPTY_HA_SNAPSHOT: HaSnapshot = {
   labels: new Map(),
 };
 
-const EMPTY_RESULT: LabelWriteResult = { done: [], failed: [], created: new Map() };
+const EMPTY_RESULT: LabelWriteResult = {
+  done: [],
+  failed: [],
+  created: new Map(),
+  unanswered: [],
+  settled: false,
+};
+const UNANSWERED = new Set(["timeout", "link_down"]);
 
 /** The labels an op needs to exist: a create earlier in its batch may not have given them. */
 function reliesOn(op: LabelOp): readonly string[] {
@@ -99,6 +115,8 @@ export function createStubHaLink(): StubHaLink {
   let stall: Clock | undefined;
   let hold: Promise<void> | undefined;
   let beforeBatch: (() => void) | undefined;
+  let settle = true;
+  let loads = 0;
   const batches: (readonly LabelOp[])[] = [];
 
   /** Carries the ops out on the snapshot; true when something changed. */
@@ -116,18 +134,21 @@ export function createStubHaLink(): StubHaLink {
     const failed: { op: LabelOp; error: string }[] = [];
     const created = new Map<string, string>();
     const missing = new Map<string, string>();
+    const unanswered: LabelOp[] = [];
     for (const op of ops) {
-      const error =
+      // Not sent: it relies on a create that did not give its label, or its target is unknown.
+      const unsent =
         reliesOn(op)
           .map((label) => missing.get(label))
           .find((code) => code !== undefined) ??
-        fail?.(op) ??
         ((op.kind === "labelArea" && !current.areas.has(op.areaId)) ||
         (op.kind === "labelEntity" && !current.entities.has(op.entityId))
           ? "not_found"
           : undefined);
+      const error = unsent ?? fail?.(op);
       if (error !== undefined) {
         failed.push({ op, error });
+        if (unsent === undefined && UNANSWERED.has(error)) unanswered.push(op);
         if (op.kind === "createLabel") missing.set(op.name, error);
         continue;
       }
@@ -143,9 +164,13 @@ export function createStubHaLink(): StubHaLink {
       current = applyLabelOps(current, [op], created);
       done.push(op);
     }
+    if (!settle) {
+      return { result: { done, failed, created, unanswered, settled: false }, changed: false };
+    }
     const changed = current !== snapshot;
     snapshot = current;
-    return { result: { done, failed, created }, changed };
+    loads += 1;
+    return { result: { done, failed, created, unanswered, settled: true }, changed };
   }
 
   return {
@@ -206,6 +231,9 @@ export function createStubHaLink(): StubHaLink {
     stallLabels(next) {
       stall = next;
     },
+    settleLabels(next) {
+      settle = next;
+    },
     holdLabels() {
       let release: () => void = () => undefined;
       hold = new Promise<void>((resolve) => {
@@ -241,7 +269,9 @@ export function createStubHaLink(): StubHaLink {
     },
     setSnapshot(next) {
       snapshot = next;
+      loads += 1;
     },
+    loads: () => loads,
     snapshotReads: () => snapshotReads,
     emit(event) {
       listener?.(event);

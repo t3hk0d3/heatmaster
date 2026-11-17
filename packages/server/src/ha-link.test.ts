@@ -1502,6 +1502,25 @@ describe("ha-link", () => {
         expect(result?.failed).toEqual([{ op: stalled, error: "timeout" }]);
         expect(result?.done).toEqual([next]);
       });
+
+      it("unanswered lists it, and settled is true: the last reload answered after it", async () => {
+        const w = await world({ seed: labelled, probe: true });
+        const stalled = rename(DAY, "Heatmaster: Workday");
+        w.ha.stallNext();
+        let result: LabelWriteResult | undefined;
+        void w.link.writeLabels([stalled, labelArea("kitchen", [DAY])]).then((value) => {
+          result = value;
+        });
+        await until(() => {
+          expect(w.ha.writes()).toHaveLength(1);
+        });
+        w.clock.advance(HA_LABEL_TIMEOUT_MS);
+        await until(() => {
+          expect(result).toBeDefined();
+        });
+        expect(result?.unanswered).toEqual([stalled]);
+        expect(result?.settled).toBe(true);
+      });
     });
 
     describe("With an unauthorized answer", () => {
@@ -1548,6 +1567,13 @@ describe("ha-link", () => {
         expect(result.failed).toEqual(ops.map((op) => ({ op, error: "unknown_error" })));
         expect(writes).toEqual([]);
       });
+
+      it("unanswered is empty: an op never sent is never in it", async () => {
+        const w = await world({ seed: labelled });
+        w.ha.failNext("config/area_registry/list");
+        const { result } = await written(w, [rename(DAY, "Heatmaster: Workday")]);
+        expect(result.unanswered).toEqual([]);
+      });
     });
 
     describe("When the reload after the ops fails", () => {
@@ -1559,6 +1585,19 @@ describe("ha-link", () => {
         await until(() => {
           expect(w.link.snapshot()?.labels.get(DAY)).toBe("Heatmaster: Workday");
         });
+      });
+
+      it("settled is false, and loads rises once a later reload answered", async () => {
+        const w = await world({ seed: labelled });
+        w.ha.failNext("config/label_registry/list");
+        const result = await w.link.writeLabels([rename(DAY, "Heatmaster: Workday")]);
+        const atResult = w.link.loads();
+        expect(result.settled).toBe(false);
+        expect(w.link.snapshot()?.labels.get(DAY)).not.toBe("Heatmaster: Workday");
+        await until(() => {
+          expect(w.link.snapshot()?.labels.get(DAY)).toBe("Heatmaster: Workday");
+        });
+        expect(w.link.loads()).toBeGreaterThan(atResult);
       });
     });
 
@@ -1574,6 +1613,7 @@ describe("ha-link", () => {
           remove(DAY),
         ]);
         expect(result.failed).toEqual([]);
+        expect(result.settled).toBe(true);
         const snapshot = w.link.snapshot();
         expect(snapshot?.labels.get(EVE)).toBe("Heatmaster: Eve");
         expect(snapshot?.labels.has(DAY)).toBe(false);

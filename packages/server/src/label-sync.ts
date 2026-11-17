@@ -45,11 +45,6 @@ export type LabelSync = Readonly<{
 
 type Failure = Readonly<{ op: LabelOp; error: string }>;
 
-/**
- * The codes of a write that may have been applied although it was not reported done: it timed out,
- * or the link dropped after it was sent.
- */
-const UNCERTAIN = new Set(["timeout", "link_down"]);
 const LABEL_CLASH = "label_clash";
 
 /**
@@ -98,34 +93,6 @@ function targetsOf(op: LabelOp, baseline: HaSnapshot): readonly string[] {
       return [`area:${op.areaId}`];
     case "labelEntity":
       return [`entity:${op.entityId}`];
-  }
-}
-
-function holdsAll(
-  labels: readonly string[],
-  add: readonly string[],
-  remove: readonly string[],
-): boolean {
-  return add.every((id) => labels.includes(id)) && !remove.some((id) => labels.includes(id));
-}
-
-/** Whether the snapshot shows the op carried out. */
-function shows(snapshot: HaSnapshot, op: LabelOp): boolean {
-  switch (op.kind) {
-    case "createLabel":
-      return snapshot.labels.has(op.name);
-    case "renameLabel":
-      return snapshot.labels.get(op.labelId) === op.name;
-    case "deleteLabel":
-      return !snapshot.labels.has(op.labelId);
-    case "labelArea": {
-      const area = snapshot.areas.get(op.areaId);
-      return area !== undefined && holdsAll(area.labels, op.add, op.remove);
-    }
-    case "labelEntity": {
-      const entity = snapshot.entities.get(op.entityId);
-      return entity !== undefined && holdsAll(entity.labels, op.add, op.remove);
-    }
   }
 }
 
@@ -193,11 +160,12 @@ export function createLabelSync(ha: HaLink, valveAddresses: () => ReadonlySet<st
   /** The ops of the batch being written: a pull takes their targets as Home Assistant shows them. */
   let inflight: readonly LabelOp[] = [];
   /**
-   * Ops that may have been applied unreported (`UNCERTAIN`): a pull takes their targets as Home
-   * Assistant shows them until the snapshot shows them carried out, or until a later batch was
-   * answered (Home Assistant handles one connection's commands in order, so by then they were).
+   * Ops sent without an answer (`unanswered`), whose batch's last reload got no answer either, each
+   * with `ha.loads()` at the batch's end. Home Assistant may have carried them out. A pull takes
+   * their targets as Home Assistant shows them until a snapshot loaded after that batch: it handles
+   * one connection's commands in order, so that snapshot shows what it did with them.
    */
-  let uncertain: readonly LabelOp[] = [];
+  let uncertain: readonly Readonly<{ op: LabelOp; loadsAt: number }>[] = [];
   let failures: readonly Failure[] = [];
   let unlabellable: readonly string[] = [];
   let moved = false;
@@ -245,16 +213,18 @@ export function createLabelSync(ha: HaLink, valveAddresses: () => ReadonlySet<st
     // they ran took the newer snapshot as its baseline; they go on top of that.
     const base = pulls === pullsAtStart ? snapshot : (baseline ?? snapshot);
     const own = applyLabelOps(base, result.done, result.created);
-    const answered = result.done.length > 0;
     const after = ha.snapshot();
-    baseline =
-      answered && after !== undefined && uncertain.length > 0
-        ? absorb(own, after, new Set(uncertain.flatMap((op) => targetsOf(op, own))))
-        : own;
-    uncertain = [
-      ...(answered ? [] : uncertain),
-      ...result.failed.filter((failure) => UNCERTAIN.has(failure.error)).map((f) => f.op),
-    ];
+    if (result.settled && after !== undefined) {
+      // The batch's last reload answered after every op sent, in this batch or before: the
+      // snapshot shows what Home Assistant did with the unanswered ones.
+      const open = [...uncertain.map((entry) => entry.op), ...result.unanswered];
+      baseline = absorb(own, after, new Set(open.flatMap((op) => targetsOf(op, own))));
+      uncertain = [];
+    } else {
+      baseline = own;
+      const loadsAt = ha.loads();
+      uncertain = [...uncertain, ...result.unanswered.map((op) => ({ op, loadsAt }))];
+    }
     // A clash means Home Assistant had the wanted label already: the rename and the area labels
     // that relied on it were skipped. One more mirror sees it, unless a newer one is queued.
     const clashed = result.failed.some((failure) => failure.error === LABEL_CLASH);
@@ -275,14 +245,21 @@ export function createLabelSync(ha: HaLink, valveAddresses: () => ReadonlySet<st
       if (before === undefined) return undefined;
       const snapshot = ha.snapshot();
       if (snapshot === undefined) return undefined;
-      const unsettled = new Set([...uncertain, ...inflight].flatMap((op) => targetsOf(op, before)));
-      const compared = absorb(before, snapshot, unsettled);
-      uncertain = uncertain.filter((op) => !shows(snapshot, op));
+      const open = [...uncertain.map((entry) => entry.op), ...inflight];
+      const compared = absorb(
+        before,
+        snapshot,
+        new Set(open.flatMap((op) => targetsOf(op, before))),
+      );
+      // A snapshot loaded after an uncertain op's batch shows what became of it: taken once, done.
+      const loads = ha.loads();
+      uncertain = uncertain.filter((entry) => loads <= entry.loadsAt);
       baseline = snapshot;
       // With no schedule nothing is managed, labels included.
       if (config.schedules.length === 0) return undefined;
       // Against the baseline itself: a write's late echo that the config no longer wants moved a
-      // label, and the schedules mirror this asks for moves it back.
+      // label, and the schedules mirror this asks for moves it back. Sensor labels are not
+      // compared: like one the user added, such an echo stays until the next full mirror.
       moved = scheduleLabelsDiffer(before, snapshot);
       const infos = sensorInfos(ha, snapshot, valveAddresses());
       return labelEdits(compared, snapshot, config, membership, infos);
