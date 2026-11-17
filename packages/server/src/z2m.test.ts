@@ -462,6 +462,50 @@ describe("z2m", () => {
     });
   });
 
+  describe("hasDeviceList", () => {
+    describe("Before bridge/devices", () => {
+      it("reports no device list yet", async () => {
+        const made = await harness();
+        made.mqtt.deliver(topic("bridge/info"), INFO);
+        expect(made.transport.hasDeviceList()).toBe(false);
+      });
+    });
+
+    describe("With a first bridge/devices that is not a JSON array", () => {
+      it("reports no device list yet", async () => {
+        const made = await harness();
+        made.mqtt.deliver(topic("bridge/devices"), "{}");
+        expect(made.transport.hasDeviceList()).toBe(false);
+      });
+    });
+
+    describe("After the first bridge/devices", () => {
+      it("reports a device list", async () => {
+        const { transport } = await withDevices();
+        expect(transport.hasDeviceList()).toBe(true);
+      });
+    });
+
+    describe("With a first bridge/devices that lists no device", () => {
+      it("sends devices_changed", async () => {
+        const made = await harness();
+        made.mqtt.deliver(topic("bridge/devices"), []);
+        expect(kinds(made.events)).toEqual(["devices_changed"]);
+      });
+    });
+
+    describe("After the first bridge/devices, the MQTT connection lost and back", () => {
+      it("still reports a device list", async () => {
+        const made = await withDevices();
+        made.mqtt.set("disconnected");
+        made.mqtt.emit({ kind: "disconnected" });
+        made.mqtt.set("connected");
+        made.mqtt.emit({ kind: "connected", first: false });
+        expect(made.transport.hasDeviceList()).toBe(true);
+      });
+    });
+  });
+
   describe("messages", () => {
     async function following(): Promise<Harness> {
       const made = await withDevices();

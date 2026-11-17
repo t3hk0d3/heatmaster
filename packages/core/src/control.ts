@@ -99,8 +99,10 @@ export type BucketStart = Readonly<{ stamps: ReadonlyMap<string, number>; fallba
  * Everything one tick reads. `house` says where the rooms come from (`roomsOf`). `ledger`
  * undefined: the ledger could not be read. `links` holds one
  * entry per transport (and `ha` when configured); a transport with no entry counts as down.
- * `transportFaults` maps a transport key to why it is unusable. `sensors` and
- * `unobservableSensors` are keyed by sensor id. `now` is in the house's time zone.
+ * `transportFaults` maps a transport key to why it is unusable. `deviceLists` holds, per
+ * transport, the ids of every device it lists (followed or not), once it has delivered its device
+ * list since the start; a transport with no entry has not, and its list vouches for nothing.
+ * `sensors` and `unobservableSensors` are keyed by sensor id. `now` is in the house's time zone.
  */
 export type World = Readonly<{
   configState: ConfigState;
@@ -110,6 +112,7 @@ export type World = Readonly<{
   devices: ReadonlyMap<string, DeviceView>;
   links: Readonly<Record<string, boolean>>;
   transportFaults: Readonly<Record<string, string>>;
+  deviceLists: Readonly<Record<string, ReadonlySet<string>>>;
   sensors: ReadonlyMap<string, SensorReading>;
   unobservableSensors: ReadonlySet<string>;
   memory: Memory;

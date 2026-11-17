@@ -315,6 +315,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       devices,
       links: { ...links, ...linkOverride },
       transportFaults: {},
+      deviceLists: { z2m: new Set(devices.keys()) },
       sensors: sensorReadings(),
       unobservableSensors: new Set(),
       memory: inbox.memory,

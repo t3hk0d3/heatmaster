@@ -31,6 +31,11 @@ export type Transport = Readonly<{
   linkUp(): boolean;
   /** Keyed by `deviceId`. */
   devices(): ReadonlyMap<string, DeviceInfo>;
+  /**
+   * Whether the transport has delivered its device list at least once since the start. Until then
+   * `devices()` is empty for want of a list, not because the devices are gone.
+   */
+  hasDeviceList(): boolean;
   start(listener: (event: RawEvent) => void): Promise<void>;
   /** The devices to deliver messages for; replaces the previous set. */
   follow(deviceIds: ReadonlySet<string>): void;

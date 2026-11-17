@@ -1,4 +1,4 @@
-import { preview } from "./control.ts";
+import { preview, transportOf } from "./control.ts";
 import type { Effect, PlannedWrite, World } from "./control.ts";
 import { ascending, roomsOf } from "./house.ts";
 import type { HouseInput } from "./house.ts";
@@ -207,9 +207,26 @@ export function restoreValve(world: World, valveId: string): readonly Effect[] {
 }
 
 /**
+ * Whether the valve's transport may still have it: the transport lists it, or cannot vouch for
+ * its list (it has a fault, or has not delivered a device list since the start). Only a valve this
+ * returns false for can be stranded (`strandedValve`).
+ */
+export function transportListed(
+  world: Pick<World, "transportFaults" | "deviceLists">,
+  valveId: string,
+): boolean {
+  const transport = transportOf(valveId);
+  if (Object.hasOwn(world.transportFaults, transport)) return true;
+  const list = Object.hasOwn(world.deviceLists, transport)
+    ? world.deviceLists[transport]
+    : undefined;
+  return list === undefined || list.has(valveId);
+}
+
+/**
  * A managed valve that Home Assistant no longer has (the live house keeps it in its previous room,
- * listed in `notInHa`) and that no transport lists (`listed` false): nothing can reach it, so it
- * may be forgotten.
+ * listed in `notInHa`) and that its transport does not list (`listed` false, see
+ * `transportListed`): nothing can reach it, so it may be forgotten.
  */
 export function strandedValve(house: HouseInput, valveId: string, listed: boolean): boolean {
   return house.kind === "live" && house.notInHa.includes(valveId) && !listed;
@@ -232,7 +249,7 @@ export function forgetValve(world: World, valveId: string): readonly Effect[] {
   if (!ledger.records.has(valveId)) throw new ChangeRefused("valve_unknown", { valveId });
   const kind = membershipsIn(world, ledger).get(valveId);
   const stranded =
-    kind === "managed" && strandedValve(world.house, valveId, world.devices.has(valveId));
+    kind === "managed" && strandedValve(world.house, valveId, transportListed(world, valveId));
   if (kind === "managed" && !stranded) throw new ChangeRefused("valve_managed", { valveId });
   // The rest is frozen: the config is unreadable or missing while the ledger has records, or the
   // house is not live (no Home Assistant link, or rooms frozen).

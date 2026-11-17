@@ -9,8 +9,10 @@ export type StubSend = Readonly<{
 
 export type StubTransport = Transport &
   Readonly<{
-    /** Replaces the listed devices and sends `devices_changed`. */
+    /** Replaces the listed devices, counts as a delivered device list and sends `devices_changed`. */
     setDevices(devices: readonly DeviceInfo[]): void;
+    /** Sets what `hasDeviceList` reports; false also empties the list. Sends nothing. */
+    setHasDeviceList(has: boolean): void;
     emit(event: RawEvent): void;
     setFault(fault: string | undefined): void;
     /** Sets the link and sends `link_up` or `link_down`. */
@@ -32,6 +34,7 @@ export type StubTransport = Transport &
 
 export function createStubTransport(key: string): StubTransport {
   let devices = new Map<string, DeviceInfo>();
+  let hasDeviceList = false;
   let fault: string | undefined;
   let link = true;
   let listener: ((event: RawEvent) => void) | undefined;
@@ -65,6 +68,7 @@ export function createStubTransport(key: string): StubTransport {
     fault: () => fault,
     linkUp: () => link,
     devices: () => devices,
+    hasDeviceList: () => hasDeviceList,
     start(next) {
       listener = next;
       started = true;
@@ -83,7 +87,12 @@ export function createStubTransport(key: string): StubTransport {
     },
     setDevices(list) {
       devices = new Map(list.map((device) => [device.deviceId, device]));
+      hasDeviceList = true;
       listener?.({ kind: "devices_changed" });
+    },
+    setHasDeviceList(has) {
+      hasDeviceList = has;
+      if (!has) devices = new Map();
     },
     emit(event) {
       listener?.(event);

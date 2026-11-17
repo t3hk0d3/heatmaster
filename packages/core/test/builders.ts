@@ -372,9 +372,10 @@ export function makeConfig(
 }
 
 /**
- * Config state `ok` (revision 1, nothing releasing), an empty ledger, `z2m` up, no faults, and a
- * live house with no room. With `rooms`, the config's entries and the live house come from them.
- * The saved membership is the house's (none when unlinked), so the tick has no membership to save.
+ * Config state `ok` (revision 1, nothing releasing), an empty ledger, `z2m` up, no faults, `z2m`'s
+ * device list holding the given devices, and a live house with no room. With `rooms`, the
+ * config's entries and the live house come from them. The saved membership is the house's (none
+ * when unlinked), so the tick has no membership to save.
  */
 export function makeWorld(
   options: Partial<World> & { config?: Config; rooms?: readonly Room[] } = {},
@@ -395,6 +396,7 @@ export function makeWorld(
     devices: new Map(),
     links: { z2m: true },
     transportFaults: {},
+    deviceLists: { z2m: new Set(rest.devices?.keys()) },
     sensors: new Map(),
     unobservableSensors: new Set(),
     memory: EMPTY_MEMORY,

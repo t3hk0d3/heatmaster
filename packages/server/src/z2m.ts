@@ -89,6 +89,9 @@ export function createZ2mTransport(mqtt: MqttClient, options: Z2mOptions): Trans
   let listener: ((event: RawEvent) => void) | undefined;
   let removers: (() => void)[] = [];
   let devices: ReadonlyMap<string, DeviceInfo> = new Map();
+  // Kept across link losses: the last list stays the best knowledge, and the transport's fault
+  // covers a broker that is down.
+  let hasDeviceList = false;
   let followed: ReadonlySet<string> = new Set();
   const deviceTopics = new Map<string, () => void>();
   let info: BridgeInfo | undefined;
@@ -163,8 +166,10 @@ export function createZ2mTransport(mqtt: MqttClient, options: Z2mOptions): Trans
   function onBridgeDevices(payload: Buffer): void {
     const next = parseDevices(payload);
     if (next === undefined) return;
-    const changed = !sameDevices(devices, next);
+    // The first list is news even when it is empty: the devices are now known.
+    const changed = !hasDeviceList || !sameDevices(devices, next);
     devices = next;
+    hasDeviceList = true;
     syncDeviceTopics();
     if (changed) send({ kind: "devices_changed" });
   }
@@ -218,6 +223,7 @@ export function createZ2mTransport(mqtt: MqttClient, options: Z2mOptions): Trans
     },
     linkUp,
     devices: () => devices,
+    hasDeviceList: () => hasDeviceList,
     start(next) {
       listener = next;
       mqttUp = mqtt.state() === "connected";

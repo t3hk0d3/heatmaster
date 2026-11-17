@@ -639,6 +639,7 @@ const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) =>
           devices,
           links,
           transportFaults: r.fault === undefined ? {} : { z2m: r.fault },
+          deviceLists: { z2m: new Set(devices.keys()) },
           sensors,
           unobservableSensors: new Set(r.unobservable),
           memory,

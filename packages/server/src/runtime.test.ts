@@ -3522,6 +3522,54 @@ describe("runtime", () => {
       });
     });
 
+    describe("With a recorded notInHa valve and the broker down at start", () => {
+      it("the valve is not in stranded; Forget not offered", async () => {
+        const rig = await boot({ seed: managedSeed([A, B]), house: { living: [B] }, start: false });
+        rig.z2m.setHasDeviceList(false);
+        rig.z2m.setFault("mqtt_unavailable");
+        rig.z2m.setLink(false);
+        await rig.rt.start();
+        await rig.rt.settled();
+        expect(rig.rt.snapshot().stranded).toEqual([]);
+        expect(codeOf(await rejectionOf(rig.rt.forgetValve(A)))).toBe("valve_managed");
+      });
+    });
+
+    describe("With a recorded notInHa valve before bridge/devices arrived", () => {
+      it("the valve is not in stranded", async () => {
+        const rig = await boot({ seed: managedSeed([A, B]), house: { living: [B] }, start: false });
+        rig.z2m.setHasDeviceList(false);
+        await rig.rt.start();
+        await rig.rt.settled();
+        expect(rig.rt.snapshot().stranded).toEqual([]);
+      });
+    });
+
+    describe("After bridge/devices arrives without the valve", () => {
+      it("the valve is in stranded", async () => {
+        const rig = await boot({ seed: managedSeed([A, B]), house: { living: [B] }, start: false });
+        rig.z2m.setHasDeviceList(false);
+        await rig.rt.start();
+        await rig.rt.settled();
+        rig.z2m.setDevices([trvzb(B)]);
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        expect(rig.rt.snapshot().stranded).toEqual([A]);
+      });
+    });
+
+    describe("With a recorded notInHa valve its transport lists but Heatmaster cannot follow", () => {
+      it("the valve is not in stranded and forgetValve is refused with valve_managed", async () => {
+        const unfollowable = { ...trvzb(A), name: "living/valve+1" };
+        const rig = await boot({
+          seed: managedSeed([A, B]),
+          devices: [unfollowable, trvzb(B)],
+          house: { living: [B] },
+        });
+        expect(rig.rt.snapshot().stranded).toEqual([]);
+        expect(codeOf(await rejectionOf(rig.rt.forgetValve(A)))).toBe("valve_managed");
+      });
+    });
+
     describe("When the core refuses", () => {
       it("the ChangeRefused reaches the caller and nothing is saved", async () => {
         const rig = await boot({ seed: managedSeed([A]) });

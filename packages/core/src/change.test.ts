@@ -965,6 +965,56 @@ describe("change", () => {
       });
     });
 
+    describe("With a notInHa managed valve whose transport has a fault", () => {
+      it("refused (valve_managed); ledger record kept", () => {
+        const world = notInHa(
+          current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) }),
+          [V1],
+        );
+        const faulty: World = { ...world, transportFaults: { z2m: "mqtt_unavailable" } };
+        expect(codeOf(() => forgetValve(faulty, V1))).toBe("valve_managed");
+        expect(faulty.ledger?.records.has(V1)).toBe(true);
+      });
+    });
+
+    describe("With a notInHa managed valve whose transport has not delivered its device list", () => {
+      it("refused (valve_managed); ledger record kept", () => {
+        const world = notInHa(
+          current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) }),
+          [V1],
+        );
+        const unlisted: World = { ...world, deviceLists: {} };
+        expect(codeOf(() => forgetValve(unlisted, V1))).toBe("valve_managed");
+        expect(unlisted.ledger?.records.has(V1)).toBe(true);
+      });
+    });
+
+    describe("With a notInHa managed valve, transport healthy and listed once, valve not in its list", () => {
+      it("accepted as today (record dropped)", () => {
+        const world = notInHa(
+          current({ rooms: [room("living", [V1, V2])], ledger: ledgerOf(record(V1), record(V2)) }),
+          [V1],
+        );
+        const listedOnce: World = { ...world, deviceLists: { z2m: new Set([V2]) } };
+        expect(savedLedger(forgetValve(listedOnce, V1)).records.has(V1)).toBe(false);
+      });
+    });
+
+    describe("With a notInHa managed valve its transport lists but Heatmaster does not follow", () => {
+      it("refused (valve_managed)", () => {
+        const world = notInHa(
+          current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) }),
+          [V1],
+        );
+        const unfollowed: World = {
+          ...world,
+          devices: new Map(),
+          deviceLists: { z2m: new Set([V1]) },
+        };
+        expect(codeOf(() => forgetValve(unfollowed, V1))).toBe("valve_managed");
+      });
+    });
+
     describe("For a managed valve no transport lists that Home Assistant has", () => {
       it("throws ChangeRefused valve_managed", () => {
         const world = current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) });

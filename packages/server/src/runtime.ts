@@ -41,6 +41,7 @@ import {
   storedToRaw,
   strandedValve,
   tick,
+  transportListed,
   transportOf,
   validateConfig,
   withHaEdit,
@@ -199,7 +200,10 @@ export type Snapshot = Readonly<{
   upgrade: UpgradeReport | undefined;
   problems: readonly Problem[];
   memberships: Readonly<Record<string, Membership>>;
-  /** Managed valves that Home Assistant no longer has and no transport lists (`strandedValve`). */
+  /**
+   * Managed valves that Home Assistant no longer has and their transport does not list, while that
+   * transport can vouch for its list (`strandedValve`, `transportListed`).
+   */
   stranded: readonly string[];
   devices: readonly DeviceSnapshot[];
   unassigned: readonly UnassignedValve[];
@@ -594,11 +598,6 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return followed.get(transportOf(deviceId))?.has(deviceId) === true;
   }
 
-  /** As `buildWorld` sees a device: followed and listed by its transport. */
-  function followedAndListed(deviceId: string): boolean {
-    return isFollowed(deviceId) && listed(deviceId) !== undefined;
-  }
-
   /** Spec by valve id, for every followed device with a profile. */
   function specs(): ReadonlyMap<string, ValveSpec> {
     const map = new Map<string, ValveSpec>();
@@ -635,6 +634,16 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     for (const key of keys) links[key] = transports[key]?.linkUp() === true;
     if (ha !== undefined) links[HA_LINK_KEY] = ha.up();
     return links;
+  }
+
+  /** Every device each transport lists, for the transports that have delivered a list. */
+  function deviceLists(): Record<string, ReadonlySet<string>> {
+    const lists: Record<string, ReadonlySet<string>> = {};
+    for (const key of keys) {
+      const transport = transports[key];
+      if (transport?.hasDeviceList() === true) lists[key] = new Set(transport.devices().keys());
+    }
+    return lists;
   }
 
   function faults(): Record<string, string> {
@@ -989,6 +998,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       devices,
       links: linkStates(),
       transportFaults: faults(),
+      deviceLists: deviceLists(),
       sensors,
       unobservableSensors: unobservable,
       memory: inbox.memory,
@@ -1475,8 +1485,12 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     for (const [id, kind] of sorted(kinds, ([id]) => id)) membershipRecord[id] = kind;
 
     const house = houseInput();
+    const listing = { transportFaults: faults(), deviceLists: deviceLists() };
     const stranded = [...kinds]
-      .filter(([id, kind]) => kind === "managed" && strandedValve(house, id, followedAndListed(id)))
+      .filter(
+        ([id, kind]) =>
+          kind === "managed" && strandedValve(house, id, transportListed(listing, id)),
+      )
       .map(([id]) => id)
       .sort();
     const membership = house.kind === "unlinked" ? stored?.membership : house.membership;
