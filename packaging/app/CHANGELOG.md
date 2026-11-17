@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Rooms come from Home Assistant: every area that holds a supported valve is a room (the label `heatmaster_ignore` opts an
   area out). New rooms join, and changes to managed rooms are written, with no Apply. Config document version 3: a
