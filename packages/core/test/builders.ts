@@ -4,6 +4,7 @@ import {
   EMPTY_LEDGER,
   EMPTY_MEMORY,
   EMPTY_READINGS,
+  FRESH_STORED,
   applyEvent,
   memberships,
   roomsOf,
@@ -382,9 +383,9 @@ export function makeWorld(
   return {
     configState: "ok",
     stored: {
+      ...FRESH_STORED,
       config: rooms === undefined ? base : { ...base, rooms: entriesOf(rooms) },
       revision: 1,
-      releasing: new Map(),
     },
     house: liveHouse(rooms ?? []),
     ledger: EMPTY_LEDGER,

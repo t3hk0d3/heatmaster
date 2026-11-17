@@ -33,7 +33,7 @@ import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
 import { roomsOf } from "./house.ts";
 import type { HouseInput } from "./house.ts";
-import { EMPTY_LEDGER, memberships, withRecord } from "./ledger.ts";
+import { EMPTY_LEDGER, FRESH_STORED, memberships, withRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
 import { START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
@@ -604,6 +604,7 @@ const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) =>
           configState: r.configState,
           stored: r.hasStored
             ? {
+                ...FRESH_STORED,
                 config: { ...config, settings },
                 revision: 3,
                 releasing: new Map(

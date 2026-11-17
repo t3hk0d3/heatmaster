@@ -81,6 +81,8 @@ export {
 export type { Decoded, DeviceState, Liveness } from "./observation.ts";
 export {
   EMPTY_LEDGER,
+  FRESH_STORED,
+  HA_CHANGES_KEPT,
   LedgerError,
   ledgerFromRaw,
   ledgerToRaw,
@@ -89,15 +91,24 @@ export {
   storedToRaw,
   withRecord,
   withoutRecord,
+  withoutUpgradeReport,
 } from "./ledger.ts";
 export type {
   ConfigState,
+  DroppedRoom,
+  DroppedRoomReason,
+  HaChange,
+  HaChangeItem,
+  HaChangeKind,
   Ledger,
   Membership,
   ReleasedRecord,
+  SensorImport,
   StoredConfig,
+  UpgradeReport,
   ValveRecord,
 } from "./ledger.ts";
+export { upgradeStoredV2 } from "./upgrade.ts";
 export {
   EMPTY_MEMORY,
   START_TOKENS,

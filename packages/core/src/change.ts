@@ -1,7 +1,7 @@
 import { isObservable, preview, transportFaulted, transportOf } from "./control.ts";
 import type { DeviceView, Effect, PlannedWrite, World } from "./control.ts";
 import { roomsOf } from "./house.ts";
-import { memberships, withRecord, withoutRecord } from "./ledger.ts";
+import { FRESH_STORED, memberships, withRecord, withoutRecord } from "./ledger.ts";
 import type { Ledger, Membership, StoredConfig } from "./ledger.ts";
 import { sensorId } from "./model.ts";
 import type { Config, Room, SensorRef } from "./model.ts";
@@ -156,10 +156,11 @@ export function planChange(
   const nowMs = world.now.epochMilliseconds;
   const old = readable(world);
   const before = new Set(roomValves(roomsOf(world.configState, world.stored, world.house)));
+  // The server's own fields (releasing, membership, sensor import, HA changes, report) are kept.
   const draft: StoredConfig = {
+    ...(old ?? FRESH_STORED),
     config,
     revision: (old?.revision ?? 0) + 1,
-    releasing: old?.releasing ?? new Map(),
   };
   const afterList = roomValves(roomsOf("ok", draft, world.house));
   const after = new Set(afterList);

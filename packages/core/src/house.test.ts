@@ -9,6 +9,7 @@ import {
   scheduleLabelName,
   type AreaMembership,
 } from "./house.ts";
+import { FRESH_STORED } from "./ledger.ts";
 import type { StoredConfig } from "./ledger.ts";
 import type { Config, RoomEntry, Schedule } from "./model.ts";
 
@@ -36,7 +37,7 @@ const OFFICE_ENTRY: RoomEntry = {
 };
 
 function storedWith(config: Config): StoredConfig {
-  return { config, revision: 1, releasing: new Map() };
+  return { ...FRESH_STORED, config, revision: 1 };
 }
 
 describe("house", () => {

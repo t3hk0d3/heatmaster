@@ -1,8 +1,10 @@
 import { fc, test as fcTest } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import { arbConfig, makeConfig, validRaw } from "../test/builders.ts";
+import type { AreaMembership } from "./house.ts";
 import {
   EMPTY_LEDGER,
+  FRESH_STORED,
   LedgerError,
   ledgerFromRaw,
   ledgerToRaw,
@@ -11,11 +13,15 @@ import {
   storedToRaw,
   withRecord,
   withoutRecord,
+  withoutUpgradeReport,
   type ConfigState,
+  type HaChange,
+  type HaChangeItem,
   type Ledger,
   type Membership,
   type ReleasedRecord,
   type StoredConfig,
+  type UpgradeReport,
   type ValveRecord,
 } from "./ledger.ts";
 import { ConfigError, type Room } from "./model.ts";
@@ -56,6 +62,7 @@ function roomsWith(valveIds: readonly string[]): readonly Room[] {
 
 function stored(releasing: readonly string[] = []): StoredConfig {
   return {
+    ...FRESH_STORED,
     config: makeConfig(),
     revision: 1,
     releasing: new Map(releasing.map((id) => [id, T0])),
@@ -119,12 +126,52 @@ const arbLedger: fc.Arbitrary<Ledger> = fc
       released,
     })),
   );
+const text = fc.string({ maxLength: 12 });
+const arbMembership: fc.Arbitrary<AreaMembership> = fc.record({
+  rooms: fc
+    .uniqueArray(
+      fc.tuple(
+        text,
+        fc.record({ name: text, valveIds: fc.uniqueArray(address, { maxLength: 3 }) }),
+      ),
+      { selector: ([id]) => id, maxLength: 3 },
+    )
+    .map((entries) => new Map(entries)),
+  ignored: fc.uniqueArray(text, { maxLength: 2 }),
+});
+const arbHaChangeItem: fc.Arbitrary<HaChangeItem> = fc.record({
+  kind: fc.constantFrom("schedule", "sensor_added", "sensor_removed", "sensors_imported"),
+  areaId: fc.option(text, { nil: undefined }),
+  entityId: fc.option(text, { nil: undefined }),
+  scheduleId: fc.option(text, { nil: undefined }),
+});
+const arbHaChange: fc.Arbitrary<HaChange> = fc.record({
+  revision: fc.nat(),
+  at: arbInstant,
+  items: fc.array(arbHaChangeItem, { maxLength: 3 }),
+});
+const arbUpgrade: fc.Arbitrary<UpgradeReport> = fc.record({
+  fromVersion: fc.constant(2 as const),
+  droppedRooms: fc.array(
+    fc.record({
+      roomId: text,
+      name: text,
+      valveIds: fc.array(address, { maxLength: 3 }),
+      reason: fc.constantFrom("no_area", "area_duplicate", "area_id_invalid"),
+    }),
+    { maxLength: 3 },
+  ),
+});
 const arbStored: fc.Arbitrary<StoredConfig> = fc.record({
   config: arbConfig,
   revision: fc.nat(),
   releasing: fc
     .uniqueArray(fc.tuple(address, arbInstant), { selector: ([id]) => id, maxLength: 3 })
     .map((entries) => new Map(entries)),
+  membership: fc.option(arbMembership, { nil: undefined }),
+  sensorImport: fc.constantFrom("pending", "done"),
+  haChanges: fc.array(arbHaChange, { maxLength: 3 }),
+  upgrade: fc.option(arbUpgrade, { nil: undefined }),
 });
 
 /** The error `fn` throws, or undefined. */
@@ -155,7 +202,69 @@ function aRawStored(): Record<string, unknown> {
     revision: 7,
     releasing: { [V1]: "2026-11-14T09:30:00.000Z" },
     config: validRaw(),
+    sensor_import: "pending",
+    ha_changes: [],
   };
+}
+
+/** A stored config with a membership, two HA changes and an upgrade report. */
+function aFullStored(): StoredConfig {
+  return {
+    config: makeConfig(),
+    revision: 9,
+    releasing: new Map([[V2, T0]]),
+    membership: {
+      rooms: new Map([
+        ["office", { name: "Office", valveIds: [V1] }],
+        ["mancave", { name: "Кабинет", valveIds: [] }],
+      ]),
+      ignored: ["garage"],
+    },
+    sensorImport: "done",
+    haChanges: [
+      {
+        revision: 7,
+        at: T0,
+        items: [
+          {
+            kind: "schedule",
+            areaId: "office",
+            entityId: undefined,
+            scheduleId: "default",
+          },
+        ],
+      },
+      {
+        revision: 8,
+        at: T0 + 1000,
+        items: [
+          {
+            kind: "sensor_added",
+            areaId: "office",
+            entityId: "sensor.office_temperature",
+            scheduleId: undefined,
+          },
+          {
+            kind: "sensor_removed",
+            areaId: undefined,
+            entityId: "sensor.hall_temperature",
+            scheduleId: undefined,
+          },
+        ],
+      },
+    ],
+    upgrade: {
+      fromVersion: 2,
+      droppedRooms: [{ roomId: "attic", name: "Attic", valveIds: [V2], reason: "no_area" }],
+    },
+  };
+}
+
+/** The issues of the ConfigError `storedFromRaw` throws on `raw`; fails when it throws nothing. */
+function storedIssues(raw: unknown): readonly Readonly<{ path: string; code: string }>[] {
+  const error = thrown(() => storedFromRaw(raw));
+  expect(error).toBeInstanceOf(ConfigError);
+  return (error as ConfigError).issues;
 }
 
 // Tests -----------------------------------------------------------------------------------------
@@ -494,7 +603,54 @@ describe("ledger", () => {
     });
   });
 
-  describe("storedFromRaw / storedToRaw", () => {
+  describe("storedToRaw and storedFromRaw", () => {
+    describe("For a stored config with a membership, two HA changes and an upgrade report", () => {
+      it("storedFromRaw(storedToRaw(stored)) equals stored", () => {
+        const value = aFullStored();
+        const raw: unknown = JSON.parse(JSON.stringify(storedToRaw(value)));
+        expect(storedFromRaw(raw)).toEqual(value);
+      });
+    });
+    describe("With membership and upgrade undefined", () => {
+      it("both keys are left out and read back undefined", () => {
+        const value: StoredConfig = { ...aFullStored(), membership: undefined, upgrade: undefined };
+        const raw = storedToRaw(value);
+        expect(Object.keys(raw)).not.toContain("membership");
+        expect(Object.keys(raw)).not.toContain("upgrade");
+        const back = storedFromRaw(JSON.parse(JSON.stringify(raw)));
+        expect([back.membership, back.upgrade]).toEqual([undefined, undefined]);
+      });
+    });
+    describe('With sensor_import missing or "maybe"', () => {
+      it.each([
+        ["missing", { ...aRawStored(), sensor_import: undefined }],
+        ['"maybe"', { ...aRawStored(), sensor_import: "maybe" }],
+      ])("storedFromRaw throws (%s)", (_, raw) => {
+        expect(storedIssues(JSON.parse(JSON.stringify(raw)))).toContainEqual(
+          expect.objectContaining({ path: "sensor_import" }),
+        );
+      });
+    });
+    describe("With a membership room whose valves is not a list", () => {
+      it("storedFromRaw throws", () => {
+        const raw = {
+          ...aRawStored(),
+          membership: { rooms: { office: { name: "Office", valves: V1 } }, ignored: [] },
+        };
+        expect(storedIssues(raw)).toContainEqual(
+          expect.objectContaining({ path: "membership.rooms.office.valves" }),
+        );
+      });
+    });
+    describe('With a document key "membership" inside config', () => {
+      it("storedFromRaw throws (a caller cannot set it)", () => {
+        const membership = { rooms: { office: { name: "Office", valves: [V1] } }, ignored: [] };
+        const raw = { ...aRawStored(), config: { ...validRaw(), membership } };
+        expect(storedIssues(raw)).toContainEqual(
+          expect.objectContaining({ path: "config.membership", code: "key_unknown" }),
+        );
+      });
+    });
     describe("With any stored config (fast-check)", () => {
       fcTest.prop([arbStored])("the round trip returns an equal value", (value) => {
         const raw: unknown = JSON.parse(JSON.stringify(storedToRaw(value)));
@@ -536,6 +692,21 @@ describe("ledger", () => {
           if (error !== undefined) expect(error).toBeInstanceOf(ConfigError);
         },
       );
+    });
+  });
+
+  describe("withoutUpgradeReport", () => {
+    describe("With a report", () => {
+      it("upgrade is undefined, the revision is unchanged, everything else is equal", () => {
+        const value = aFullStored();
+        expect(withoutUpgradeReport(value)).toEqual({ ...value, upgrade: undefined });
+      });
+    });
+    describe("Without one", () => {
+      it("returns the given value itself", () => {
+        const value: StoredConfig = { ...aFullStored(), upgrade: undefined };
+        expect(withoutUpgradeReport(value)).toBe(value);
+      });
     });
   });
 });

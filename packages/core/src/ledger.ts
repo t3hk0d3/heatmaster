@@ -1,5 +1,5 @@
-import type { HouseInput } from "./house.ts";
-import { ConfigError } from "./model.ts";
+import type { AreaMembership, AreaRoom, HouseInput } from "./house.ts";
+import { ConfigError, EMPTY_CONFIG } from "./model.ts";
 import { SETTING_KEYS, groupOf } from "./settings.ts";
 import { configToRaw, validateConfig } from "./validation.ts";
 import type { Config, ConfigIssue, Room } from "./model.ts";
@@ -30,12 +30,67 @@ export type Ledger = Readonly<{
 
 export const EMPTY_LEDGER: Ledger = { records: new Map(), released: [] };
 
-/** `releasing` maps a valve id to the time its release was ordered. */
+/** How many Home Assistant changes the stored config keeps, oldest dropped first. */
+export const HA_CHANGES_KEPT = 20;
+
+/** Whether the one-time import of `room_temperature_sensor` sensors has run. */
+export type SensorImport = "pending" | "done";
+
+export type HaChangeKind = "schedule" | "sensor_added" | "sensor_removed" | "sensors_imported";
+
+export type HaChangeItem = Readonly<{
+  kind: HaChangeKind;
+  areaId: string | undefined;
+  entityId: string | undefined;
+  scheduleId: string | undefined;
+}>;
+
+/** A config revision made from label edits in Home Assistant; `at` is when it was saved. */
+export type HaChange = Readonly<{ revision: number; at: number; items: readonly HaChangeItem[] }>;
+
+export type DroppedRoomReason = "no_area" | "area_duplicate" | "area_id_invalid";
+
+/** A version 2 room the conversion to version 3 could not keep. */
+export type DroppedRoom = Readonly<{
+  roomId: string;
+  name: string;
+  valveIds: readonly string[];
+  reason: DroppedRoomReason;
+}>;
+
+export type UpgradeReport = Readonly<{ fromVersion: 2; droppedRooms: readonly DroppedRoom[] }>;
+
+/**
+ * `releasing` maps a valve id to the time its release was ordered. `releasing`, `membership` (the
+ * saved membership), `sensorImport`, `haChanges` (oldest first) and `upgrade` are the server's: no
+ * document carries or sets them. Whoever rebuilds a stored config spreads the old one and replaces
+ * only what it changes.
+ */
 export type StoredConfig = Readonly<{
   config: Config;
   revision: number;
   releasing: ReadonlyMap<string, number>;
+  membership: AreaMembership | undefined;
+  sensorImport: SensorImport;
+  haChanges: readonly HaChange[];
+  upgrade: UpgradeReport | undefined;
 }>;
+
+/** A fresh install's stored config: the empty config (writes held), revision 0, nothing else. */
+export const FRESH_STORED: StoredConfig = {
+  config: EMPTY_CONFIG,
+  revision: 0,
+  releasing: new Map(),
+  membership: undefined,
+  sensorImport: "pending",
+  haChanges: [],
+  upgrade: undefined,
+};
+
+/** The stored config without its upgrade report, the revision unchanged; itself without one. */
+export function withoutUpgradeReport(stored: StoredConfig): StoredConfig {
+  return stored.upgrade === undefined ? stored : { ...stored, upgrade: undefined };
+}
 
 export type ConfigState = "ok" | "empty" | "unreadable";
 
@@ -356,6 +411,44 @@ export function ledgerFromRaw(raw: unknown): Ledger {
   return { records, released };
 }
 
+function membershipToRaw(membership: AreaMembership): Record<string, unknown> {
+  return {
+    rooms: Object.fromEntries(
+      [...membership.rooms].map(([areaId, room]) => [
+        areaId,
+        { name: room.name, valves: [...room.valveIds] },
+      ]),
+    ),
+    ignored: [...membership.ignored],
+  };
+}
+
+function haChangeToRaw(path: string, change: HaChange): Record<string, unknown> {
+  return {
+    revision: change.revision,
+    at: writeInstant(at(path, "at"), change.at),
+    items: change.items.map((item) => ({
+      kind: item.kind,
+      ...(item.areaId === undefined ? {} : { area_id: item.areaId }),
+      ...(item.entityId === undefined ? {} : { entity_id: item.entityId }),
+      ...(item.scheduleId === undefined ? {} : { schedule_id: item.scheduleId }),
+    })),
+  };
+}
+
+function upgradeToRaw(upgrade: UpgradeReport): Record<string, unknown> {
+  return {
+    from_version: upgrade.fromVersion,
+    dropped_rooms: upgrade.droppedRooms.map((room) => ({
+      room_id: room.roomId,
+      name: room.name,
+      valves: [...room.valveIds],
+      reason: room.reason,
+    })),
+  };
+}
+
+/** The stored config file's data; `membership` and `upgrade` only when defined. */
 export function storedToRaw(stored: StoredConfig): Record<string, unknown> {
   return {
     revision: stored.revision,
@@ -366,10 +459,203 @@ export function storedToRaw(stored: StoredConfig): Record<string, unknown> {
       ]),
     ),
     config: configToRaw(stored.config),
+    ...(stored.membership === undefined ? {} : { membership: membershipToRaw(stored.membership) }),
+    sensor_import: stored.sensorImport,
+    ha_changes: stored.haChanges.map((change, i) =>
+      haChangeToRaw(`ha_changes[${String(i)}]`, change),
+    ),
+    ...(stored.upgrade === undefined ? {} : { upgrade: upgradeToRaw(stored.upgrade) }),
   };
 }
 
-const STORED_KEYS = ["revision", "releasing", "config"];
+const STORED_REQUIRED = ["revision", "releasing", "config", "sensor_import", "ha_changes"];
+const STORED_OPTIONAL = ["membership", "upgrade"];
+const SENSOR_IMPORTS: readonly SensorImport[] = ["pending", "done"];
+const HA_CHANGE_KINDS: readonly HaChangeKind[] = [
+  "schedule",
+  "sensor_added",
+  "sensor_removed",
+  "sensors_imported",
+];
+const DROPPED_ROOM_REASONS: readonly DroppedRoomReason[] = [
+  "no_area",
+  "area_duplicate",
+  "area_id_invalid",
+];
+
+/** Collects the issues of a stored config document while its parts are read. */
+type StoredReader = Readonly<{
+  issue: (path: string, code: string, message: string) => void;
+  /** The object at `path` with only the given keys, the `required` ones present; or undefined. */
+  object: (
+    path: string,
+    value: unknown,
+    required: readonly string[],
+    optional?: readonly string[],
+  ) => Readonly<Record<string, unknown>> | undefined;
+  text: (path: string, value: unknown) => string | undefined;
+  texts: (path: string, value: unknown) => readonly string[] | undefined;
+  wholeNumber: (path: string, value: unknown) => number | undefined;
+  instant: (path: string, value: unknown) => number | undefined;
+  oneOf: <T extends string>(path: string, value: unknown, names: readonly T[]) => T | undefined;
+}>;
+
+function storedReader(issues: ConfigIssue[]): StoredReader {
+  const issue = (path: string, code: string, message: string): void => {
+    issues.push({ path, code, message });
+  };
+  const typeInvalid = (path: string, expected: string): void => {
+    issue(path, "type_invalid", `expected ${expected}`);
+  };
+  const text = (path: string, value: unknown): string | undefined => {
+    if (typeof value === "string") return value;
+    typeInvalid(path, "a text");
+    return undefined;
+  };
+  return {
+    issue,
+    object: (path, value, required, optional = []) => {
+      if (!isRecord(value)) {
+        typeInvalid(path, "an object");
+        return undefined;
+      }
+      for (const key of Object.keys(value)) {
+        if (!required.includes(key) && !optional.includes(key)) {
+          issue(at(path, key), "key_unknown", `unknown key "${key}"`);
+        }
+      }
+      for (const key of required) {
+        if (value[key] === undefined) {
+          issue(at(path, key), "key_missing", `missing required key "${key}"`);
+        }
+      }
+      return value;
+    },
+    text,
+    texts: (path, value) => {
+      if (!Array.isArray(value)) {
+        typeInvalid(path, "a list of texts");
+        return undefined;
+      }
+      const list = value as readonly unknown[];
+      const result = list.map((item, i) => text(`${path}[${String(i)}]`, item));
+      return result.every((item) => item !== undefined) ? result : undefined;
+    },
+    wholeNumber: (path, value) => {
+      if (Number.isInteger(value) && (value as number) >= 0) return value as number;
+      typeInvalid(path, "a whole number");
+      return undefined;
+    },
+    instant: (path, value) => {
+      const ms = instantFromRaw(value);
+      if (ms === undefined) typeInvalid(path, "an ISO 8601 UTC instant with milliseconds");
+      return ms;
+    },
+    oneOf: (path, value, names) => {
+      const found = names.find((name) => name === value);
+      if (found === undefined) typeInvalid(path, `one of ${names.join(", ")}`);
+      return found;
+    },
+  };
+}
+
+function membershipFromRaw(read: StoredReader, value: unknown): AreaMembership | undefined {
+  const obj = read.object("membership", value, ["rooms", "ignored"]);
+  if (obj === undefined) return undefined;
+  const rooms = new Map<string, AreaRoom>();
+  const rawRooms = obj.rooms;
+  if (isRecord(rawRooms)) {
+    for (const [areaId, rawRoom] of Object.entries(rawRooms)) {
+      const path = at("membership.rooms", areaId);
+      const room = read.object(path, rawRoom, ["name", "valves"]);
+      if (room === undefined) continue;
+      const name = read.text(at(path, "name"), room.name);
+      const valveIds = read.texts(at(path, "valves"), room.valves);
+      if (name !== undefined && valveIds !== undefined) rooms.set(areaId, { name, valveIds });
+    }
+  } else if (rawRooms !== undefined) {
+    read.issue("membership.rooms", "type_invalid", "expected an object");
+  }
+  const ignored = obj.ignored === undefined ? [] : read.texts("membership.ignored", obj.ignored);
+  return { rooms, ignored: ignored ?? [] };
+}
+
+function haChangesFromRaw(read: StoredReader, value: unknown): readonly HaChange[] {
+  if (!Array.isArray(value)) {
+    read.issue("ha_changes", "type_invalid", "expected a list");
+    return [];
+  }
+  const changes: HaChange[] = [];
+  for (const [i, rawChange] of (value as readonly unknown[]).entries()) {
+    const path = `ha_changes[${String(i)}]`;
+    const change = read.object(path, rawChange, ["revision", "at", "items"]);
+    if (change === undefined) continue;
+    const revision = read.wholeNumber(at(path, "revision"), change.revision);
+    const changedAt = read.instant(at(path, "at"), change.at);
+    if (!Array.isArray(change.items)) {
+      read.issue(at(path, "items"), "type_invalid", "expected a list");
+      continue;
+    }
+    const items: HaChangeItem[] = [];
+    for (const [j, rawItem] of (change.items as readonly unknown[]).entries()) {
+      const itemPath = `${at(path, "items")}[${String(j)}]`;
+      const item = read.object(
+        itemPath,
+        rawItem,
+        ["kind"],
+        ["area_id", "entity_id", "schedule_id"],
+      );
+      if (item === undefined) continue;
+      const optionalText = (key: string): string | undefined =>
+        item[key] === undefined ? undefined : read.text(at(itemPath, key), item[key]);
+      const kind = read.oneOf(at(itemPath, "kind"), item.kind, HA_CHANGE_KINDS);
+      if (kind === undefined) continue;
+      items.push({
+        kind,
+        areaId: optionalText("area_id"),
+        entityId: optionalText("entity_id"),
+        scheduleId: optionalText("schedule_id"),
+      });
+    }
+    if (revision !== undefined && changedAt !== undefined) {
+      changes.push({ revision, at: changedAt, items });
+    }
+  }
+  return changes;
+}
+
+function upgradeFromRaw(read: StoredReader, value: unknown): UpgradeReport | undefined {
+  const obj = read.object("upgrade", value, ["from_version", "dropped_rooms"]);
+  if (obj === undefined) return undefined;
+  if (obj.from_version !== undefined && obj.from_version !== 2) {
+    read.issue("upgrade.from_version", "type_invalid", "expected 2");
+  }
+  if (!Array.isArray(obj.dropped_rooms)) {
+    if (obj.dropped_rooms !== undefined) {
+      read.issue("upgrade.dropped_rooms", "type_invalid", "expected a list");
+    }
+    return undefined;
+  }
+  const droppedRooms: DroppedRoom[] = [];
+  for (const [i, rawRoom] of (obj.dropped_rooms as readonly unknown[]).entries()) {
+    const path = `upgrade.dropped_rooms[${String(i)}]`;
+    const room = read.object(path, rawRoom, ["room_id", "name", "valves", "reason"]);
+    if (room === undefined) continue;
+    const roomId = read.text(at(path, "room_id"), room.room_id);
+    const name = read.text(at(path, "name"), room.name);
+    const valveIds = read.texts(at(path, "valves"), room.valves);
+    const reason = read.oneOf(at(path, "reason"), room.reason, DROPPED_ROOM_REASONS);
+    if (
+      roomId !== undefined &&
+      name !== undefined &&
+      valveIds !== undefined &&
+      reason !== undefined
+    ) {
+      droppedRooms.push({ roomId, name, valveIds, reason });
+    }
+  }
+  return { fromVersion: 2, droppedRooms };
+}
 
 /**
  * Reads a stored config document; throws ConfigError listing every issue. Issues of the config
@@ -381,43 +667,28 @@ export function storedFromRaw(raw: unknown): StoredConfig {
       { path: "", code: "type_invalid", message: "the document must be an object" },
     ]);
   }
-  const read = (key: string): unknown => (Object.hasOwn(raw, key) ? raw[key] : undefined);
   const issues: ConfigIssue[] = [];
-  for (const key of Object.keys(raw)) {
-    if (!STORED_KEYS.includes(key)) {
-      issues.push({ path: key, code: "key_unknown", message: `unknown key "${key}"` });
-    }
-  }
-  for (const key of STORED_KEYS) {
-    if (read(key) === undefined) {
-      issues.push({ path: key, code: "key_missing", message: `missing required key "${key}"` });
-    }
-  }
+  const read = storedReader(issues);
+  read.object("", raw, STORED_REQUIRED, STORED_OPTIONAL);
+  const value = (key: string): unknown => (Object.hasOwn(raw, key) ? raw[key] : undefined);
 
-  const revision = read("revision");
-  if (revision !== undefined && !(Number.isInteger(revision) && (revision as number) >= 0)) {
-    issues.push({ path: "revision", code: "type_invalid", message: "expected a whole number" });
-  }
+  const rawRevision = value("revision");
+  const revision =
+    rawRevision === undefined ? undefined : read.wholeNumber("revision", rawRevision);
 
   const releasing = new Map<string, number>();
-  const rawReleasing = read("releasing");
+  const rawReleasing = value("releasing");
   if (rawReleasing !== undefined && !isRecord(rawReleasing)) {
-    issues.push({ path: "releasing", code: "type_invalid", message: "expected an object" });
+    read.issue("releasing", "type_invalid", "expected an object");
   } else if (rawReleasing !== undefined) {
-    for (const [valveId, value] of Object.entries(rawReleasing)) {
-      const ms = instantFromRaw(value);
-      if (ms === undefined) {
-        issues.push({
-          path: at("releasing", valveId),
-          code: "type_invalid",
-          message: "expected an ISO 8601 UTC instant with milliseconds",
-        });
-      } else releasing.set(valveId, ms);
+    for (const [valveId, item] of Object.entries(rawReleasing)) {
+      const ms = read.instant(at("releasing", valveId), item);
+      if (ms !== undefined) releasing.set(valveId, ms);
     }
   }
 
   let config: Config | undefined;
-  const rawConfig = read("config");
+  const rawConfig = value("config");
   if (rawConfig !== undefined) {
     try {
       config = validateConfig(rawConfig);
@@ -429,6 +700,24 @@ export function storedFromRaw(raw: unknown): StoredConfig {
     }
   }
 
-  if (issues.length > 0 || config === undefined) throw new ConfigError(issues);
-  return { config, revision: revision as number, releasing };
+  const rawMembership = value("membership");
+  const membership =
+    rawMembership === undefined ? undefined : membershipFromRaw(read, rawMembership);
+  const rawImport = value("sensor_import");
+  const sensorImport =
+    rawImport === undefined ? undefined : read.oneOf("sensor_import", rawImport, SENSOR_IMPORTS);
+  const rawChanges = value("ha_changes");
+  const haChanges = rawChanges === undefined ? [] : haChangesFromRaw(read, rawChanges);
+  const rawUpgrade = value("upgrade");
+  const upgrade = rawUpgrade === undefined ? undefined : upgradeFromRaw(read, rawUpgrade);
+
+  if (
+    issues.length > 0 ||
+    config === undefined ||
+    revision === undefined ||
+    sensorImport === undefined
+  ) {
+    throw new ConfigError(issues);
+  }
+  return { config, revision, releasing, membership, sensorImport, haChanges, upgrade };
 }

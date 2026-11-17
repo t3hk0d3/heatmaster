@@ -20,7 +20,7 @@ import {
 } from "./change.ts";
 import type { ChangeOptions, ChangePlan, ChangeRefusedCode, SensorInfo } from "./change.ts";
 import type { DeviceView, Effect, World } from "./control.ts";
-import { EMPTY_LEDGER, withRecord } from "./ledger.ts";
+import { EMPTY_LEDGER, FRESH_STORED, withRecord } from "./ledger.ts";
 import type { Ledger, StoredConfig, ValveRecord } from "./ledger.ts";
 import { ConfigError } from "./model.ts";
 import type { Room, SensorRef } from "./model.ts";
@@ -618,9 +618,9 @@ describe("change", () => {
         const world = makeWorld({
           configState: "unreadable",
           stored: {
+            ...FRESH_STORED,
             config: makeConfig({ rooms: [room("living", [V1], [HA_MODEL])] }),
             revision: 4,
-            releasing: new Map(),
           },
           ledger: ledgerOf(record(V1)),
           devices: devicesOf({ [V1]: observedView() }),
@@ -819,7 +819,7 @@ describe("change", () => {
       releasing = new Map<string, number>(),
     ): StoredConfig => {
       const config = makeConfig({ rooms: [room("living", [V2])], holdWrites });
-      return { config, revision: 5, releasing };
+      return { ...FRESH_STORED, config, revision: 5, releasing };
     };
 
     describe("With hold off and on true", () => {

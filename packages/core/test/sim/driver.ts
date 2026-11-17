@@ -2,6 +2,7 @@ import {
   ChangeRefused,
   EMPTY_LEDGER,
   EMPTY_MEMORY,
+  FRESH_STORED,
   TRVZB_SPEC,
   TRV_ZBT_SPEC,
   WEEKDAYS,
@@ -66,8 +67,9 @@ export type SimValveSetup = Readonly<
 export type SimSensorSetup = Readonly<{ ref: string; value: number; alive?: boolean }>;
 
 /**
- * `membership` is what Home Assistant says (areas and their valves); the house is live on it. No
- * membership: no area holds a valve.
+ * `membership` is what Home Assistant says (areas and their valves); the house is live on it, and
+ * the config file's saved membership starts as it. No membership: no area holds a valve, and
+ * nothing is saved.
  */
 export type SimSetup = Readonly<{
   config: Config;
@@ -203,9 +205,11 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     config: {
       state: "ok",
       stored: {
+        ...FRESH_STORED,
         config: setup.config,
         revision: setup.revision ?? 1,
         releasing: setup.releasing ?? new Map(),
+        membership: setup.membership,
       },
     },
     ledger: setup.ledger === undefined ? { state: "lost" } : { state: "ok", ledger: setup.ledger },
@@ -229,8 +233,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   /**
    * The runtime's rule for a ledger file that did not load (plan 1's load rule, with the version 3
    * "expected" rule: the config is unreadable, the saved membership holds a valve, or a valve is
-   * releasing). Until the stored config carries the saved membership, Home Assistant's current
-   * membership stands in for it.
+   * releasing).
    */
   const loadLedger = (): Ledger | undefined => {
     if (disk.ledger.state === "ok") return disk.ledger.ledger;
@@ -239,7 +242,10 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     const configFile = disk.config;
     if (configFile.state === "unreadable") return undefined;
     if (configFile.state === "ok") {
-      const holdsValve = [...membership.rooms.values()].some((room) => room.valveIds.length > 0);
+      const saved = configFile.stored.membership;
+      const holdsValve = [...(saved?.rooms.values() ?? [])].some(
+        (room) => room.valveIds.length > 0,
+      );
       if (holdsValve || configFile.stored.releasing.size > 0) return undefined;
     }
     if (copyUnreadable || (copy?.records.size ?? 0) > 0) return undefined;
