@@ -412,6 +412,8 @@ export function createHaLink(
   let working = false;
   // The registries whose events the running batch's final reload takes in.
   const folded = new Set<RegistryKind>();
+  // The registries whose failed reload is asked for again, with the cancel of its timer.
+  const retries = new Map<RegistryKind, () => void>();
 
   function emit(event: HaEvent): void {
     if (!stopped) listener?.(event);
@@ -659,20 +661,20 @@ export function createHaLink(
 
   /**
    * Reloads these registries, one after the other, each command timed out, and applies them
-   * together: at most one event is sent. `answered` hears each registry as its answer arrives. A
-   * failure is logged and changes nothing. Returns undefined, or the code of the failure.
+   * together: at most one event is sent. `sending` hears each registry just before its command is
+   * sent. A failure is logged and changes nothing. Returns undefined, or the code of the failure.
    */
   async function reload(
     conn: Connection,
     kinds: readonly RegistryKind[],
     id: number,
-    answered?: (kind: RegistryKind) => void,
+    sending?: (kind: RegistryKind) => void,
   ): Promise<string | undefined> {
     try {
       const applies: (() => void)[] = [];
       for (const kind of kinds) {
+        sending?.(kind);
         applies.push(await fetchRegistry(conn, kind, true));
-        answered?.(kind);
       }
       if (stale(id) || state !== "up") return LINK_DOWN;
       loads += 1;
@@ -714,12 +716,34 @@ export function createHaLink(
         if (job.kind === "batch") await job.run();
         else if (connection !== undefined && state === "up") {
           // A reload the link missed while it was not up comes with the next loading.
-          await reload(connection, [job.registry], loadId);
+          const failure = await reload(connection, [job.registry], loadId);
+          if (failure !== undefined && failure !== LINK_DOWN) retryLater(job.registry);
         }
       }
     } finally {
       working = false;
     }
+  }
+
+  /**
+   * A reload that failed or timed out while the link was up is asked for again after HA_RETRY_MS,
+   * once per registry: else its change would wait for the next change of the same registry. A
+   * reload lost to a dropped link needs none: the next loading reloads everything.
+   */
+  function retryLater(kind: RegistryKind): void {
+    if (retries.has(kind) || stopped) return;
+    retries.set(
+      kind,
+      clock.after(HA_RETRY_MS, () => {
+        retries.delete(kind);
+        enqueue({ kind: "reload", registry: kind });
+      }),
+    );
+  }
+
+  function cancelRetries(): void {
+    for (const cancel of retries.values()) cancel();
+    retries.clear();
   }
 
   /** Takes queued reloads of these registries out: the running batch does them. */
@@ -820,6 +844,8 @@ export function createHaLink(
         done.push(op);
       }
       if (!stale(id)) {
+        // A registry stops folding as its command is sent: its answer may predate an event that
+        // arrives before it (in the same coalesced frame), and that event needs its own reload.
         const unreloaded = await reload(conn, BATCH_REGISTRIES, id, (kind) => folded.delete(kind));
         settled = unreloaded === undefined && !stale(id);
         // The events folded into a reload that failed still need theirs.
@@ -933,6 +959,7 @@ export function createHaLink(
     loadId += 1;
     cancelRetry?.();
     cancelRetry = undefined;
+    cancelRetries();
     cancelPoll?.();
     cancelPoll = undefined;
     if (stopped) return;
@@ -1002,6 +1029,7 @@ export function createHaLink(
       loadId += 1;
       cancelRetry?.();
       cancelRetry = undefined;
+      cancelRetries();
       cancelPoll?.();
       cancelPoll = undefined;
       stopController.abort();
@@ -1053,7 +1081,9 @@ export function createHaLink(
      * reloads the area and entity registries, sends one command per op with no reload between
      * them, then reloads the label, area and entity registries once, so `snapshot()` shows every
      * done op when it resolves. Label, area and entity events that arrive meanwhile fold into that
-     * last reload; device and config events queue their reload behind the batch. When the first
+     * last reload, until its command for their registry is sent; later ones, and device and config
+     * events, queue their reload behind the batch. A queued reload that fails is asked again
+     * HA_RETRY_MS later. When the first
      * reload fails, no op is sent and each fails with that reload's code. An op that relies on a
      * label whose create in the batch failed, or was answered with another id (`label_clash`), is
      * not sent and fails with the create's code.

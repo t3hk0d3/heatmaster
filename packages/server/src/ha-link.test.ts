@@ -1301,6 +1301,105 @@ describe("ha-link", () => {
         expect(w.link.snapshot()).toBe(before);
         expect(w.kinds()).toEqual(["link_up"]);
       });
+
+      it("it is asked again after HA_RETRY_MS: snapshot shows the move and registries_changed is sent", async () => {
+        const w = await world({ seed: place });
+        w.ha.failNext("config/device_registry/list");
+        w.ha.setDevice({
+          id: "dv",
+          identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+          area_id: "kitchen",
+        });
+        await until(() => {
+          expect(w.warnings).toContain("a registry reload failed");
+        });
+        // An unrelated change of another registry does not bring it.
+        w.ha.setArea({ area_id: "attic", name: "Attic" });
+        await until(() => {
+          expect(w.link.snapshot()?.areas.has("attic")).toBe(true);
+        });
+        expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("office");
+        w.clock.advance(HA_RETRY_MS);
+        await until(() => {
+          expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("kitchen");
+        });
+        expect(w.kinds().filter((kind) => kind === "registries_changed")).toHaveLength(2);
+      });
+
+      it("only one retry is asked for, however many reloads of it failed meanwhile", async () => {
+        const w = await world({ seed: place, probe: true });
+        const lists = (): number =>
+          w.ha.commands().filter((type) => type === "config/device_registry/list").length;
+        const before = lists();
+        w.ha.failNext("config/device_registry/list");
+        w.ha.setDevice({ id: "d2", identifiers: [["mqtt", "zigbee2mqtt_0x02"]] });
+        await until(() => {
+          expect(w.warnings.filter((m) => m === "a registry reload failed")).toHaveLength(1);
+        });
+        w.ha.failNext("config/device_registry/list");
+        w.ha.setDevice({ id: "d3", identifiers: [["mqtt", "zigbee2mqtt_0x03"]] });
+        await until(() => {
+          expect(w.warnings.filter((m) => m === "a registry reload failed")).toHaveLength(2);
+        });
+        w.clock.advance(HA_RETRY_MS);
+        await until(() => {
+          expect(lists()).toBe(before + 3);
+        });
+        await w.sync();
+        expect(lists()).toBe(before + 3);
+      });
+    });
+
+    describe("When a registry reload gets no answer within HA_LABEL_TIMEOUT_MS", () => {
+      it("it is asked again HA_RETRY_MS later and the change arrives", async () => {
+        const w = await world({ seed: place });
+        w.ha.failNext("stall:config/device_registry/list");
+        w.ha.setDevice({
+          id: "dv",
+          identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+          area_id: "kitchen",
+        });
+        await until(() => {
+          expect(
+            w.ha.commands().filter((type) => type === "config/device_registry/list"),
+          ).toHaveLength(2);
+        });
+        w.clock.advance(HA_LABEL_TIMEOUT_MS);
+        await until(() => {
+          expect(w.warnings).toContain("a registry reload failed");
+        });
+        expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("office");
+        w.clock.advance(HA_RETRY_MS);
+        await until(() => {
+          expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("kitchen");
+        });
+      });
+    });
+
+    describe("When the link drops while a retry waits", () => {
+      it("the retry is not sent; the next loading brings the change", async () => {
+        const w = await world({ seed: place, probe: true });
+        w.ha.failNext("config/device_registry/list");
+        w.ha.setDevice({
+          id: "dv",
+          identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+          area_id: "kitchen",
+        });
+        await until(() => {
+          expect(w.warnings).toContain("a registry reload failed");
+        });
+        w.ha.dropConnections();
+        await until(() => {
+          expect(w.kinds().filter((kind) => kind === "link_up")).toHaveLength(2);
+        });
+        expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("kitchen");
+        const lists = w.ha.commands().filter((t) => t === "config/device_registry/list").length;
+        w.clock.advance(HA_RETRY_MS);
+        await w.sync();
+        expect(w.ha.commands().filter((t) => t === "config/device_registry/list")).toHaveLength(
+          lists,
+        );
+      });
     });
   });
 
@@ -1598,6 +1697,64 @@ describe("ha-link", () => {
           expect(w.link.snapshot()?.labels.get(DAY)).toBe("Heatmaster: Workday");
         });
         expect(w.link.loads()).toBeGreaterThan(atResult);
+      });
+    });
+
+    describe("When the reload after the ops fails twice", () => {
+      it("the registries are asked again HA_RETRY_MS later and snapshot shows the done op", async () => {
+        const w = await world({ seed: labelled });
+        w.ha.failNext("config/label_registry/list");
+        const result = await w.link.writeLabels([rename(DAY, "Heatmaster: Workday")]);
+        expect(result.settled).toBe(false);
+        // The batch's own re-reload of the labels fails too.
+        w.ha.failNext("config/label_registry/list");
+        await until(() => {
+          expect(w.warnings.filter((m) => m === "a registry reload failed")).toHaveLength(2);
+        });
+        expect(w.link.snapshot()?.labels.get(DAY)).toBe("Heatmaster: Day");
+        w.clock.advance(HA_RETRY_MS);
+        await until(() => {
+          expect(w.link.snapshot()?.labels.get(DAY)).toBe("Heatmaster: Workday");
+        });
+      });
+    });
+
+    describe("With a user's label change coalesced with the answer of the batch's last label reload", () => {
+      it("the label registry is reloaded again and snapshot shows the user's change", async () => {
+        const w = await world({ seed: labelled, probe: true });
+        w.ha.coalesceNext("config/label_registry/list", () => {
+          w.ha.setLabel({ label_id: "guests", name: "Guests" });
+        });
+        const result = await w.link.writeLabels([rename(DAY, "Heatmaster: Workday")]);
+        expect(result.settled).toBe(true);
+        await until(() => {
+          expect(w.link.snapshot()?.labels.get("guests")).toBe("Guests");
+        });
+      });
+    });
+
+    describe("With a user's area change coalesced with the answer of the batch's last area reload", () => {
+      it("the area registry is reloaded again and snapshot shows the user's change", async () => {
+        const w = await world({ seed: labelled, probe: true });
+        let areaLists = 0;
+        const hook = (): void => {
+          // The batch's first area list is its reload before the ops; the second is its last.
+          areaLists += 1;
+          if (areaLists === 1) {
+            w.ha.coalesceNext("config/area_registry/list", hook);
+            return;
+          }
+          w.ha.setArea({
+            area_id: "office",
+            name: "Office",
+            labels: [DAY, "kids", "heatmaster_ignore"],
+          });
+        };
+        w.ha.coalesceNext("config/area_registry/list", hook);
+        await w.link.writeLabels([rename(DAY, "Heatmaster: Workday")]);
+        await until(() => {
+          expect(w.link.snapshot()?.areas.get("office")?.labels).toContain("heatmaster_ignore");
+        });
       });
     });
 

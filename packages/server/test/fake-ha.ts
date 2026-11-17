@@ -63,9 +63,16 @@ export type FakeHa = Readonly<{
    * The next command of that type gets an error result. "close" closes the socket instead of the
    * next answer (the library's own handshake commands excepted); "close:<type>" does so for the next
    * command of that type and also refuses new connections until `refuseConnections(false)`; "rest"
-   * fails the next REST request.
+   * fails the next REST request; "stall:<type>" receives the next command of that type and never
+   * answers it.
    */
   failNext(type: string): void;
+  /**
+   * The next command of that type is answered with what Home Assistant held when it arrived, and
+   * `run`'s changes follow it in the same websocket frame (their events after the result), as Home
+   * Assistant's coalesced messages do.
+   */
+  coalesceNext(type: string, run: () => void): void;
   dropConnections(): void;
   refuseConnections(on: boolean): void;
   setToken(token: string): void;
@@ -157,6 +164,9 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
   const written: Readonly<Record<string, unknown>>[] = [];
   let unauthorized = false;
   let stalling = false;
+  const coalesced = new Map<string, () => void>();
+  // While set, what is sent to `frame.socket` is gathered into one frame.
+  let frame: { socket: WebSocket; messages: unknown[] } | undefined;
 
   const server = http.createServer((request, response) => {
     const method = request.method ?? "GET";
@@ -204,7 +214,8 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
   });
 
   function send(socket: WebSocket, message: unknown): void {
-    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
+    if (frame?.socket === socket) frame.messages.push(message);
+    else if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
   }
 
   function result(socket: WebSocket, id: number, value: unknown): void {
@@ -420,6 +431,18 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
         socket.terminate();
         return;
       }
+      if (failures.delete(`stall:${type}`)) return;
+      const run = coalesced.get(type);
+      if (run !== undefined) {
+        coalesced.delete(type);
+        frame = { socket, messages: [] };
+        answer(socket, message);
+        run();
+        const messages = frame.messages;
+        frame = undefined;
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(messages));
+        return;
+      }
       if (failures.delete(type)) {
         send(socket, {
           id: message.id,
@@ -495,6 +518,9 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
     upgrades: () => upgraded,
     failNext(type) {
       failures.add(type);
+    },
+    coalesceNext(type, run) {
+      coalesced.set(type, run);
     },
     dropConnections() {
       for (const socket of sockets) socket.terminate();
