@@ -215,6 +215,8 @@ export type {
   ResolvedRooms,
   UnplacedReason,
 } from "./house.ts";
+export { applyLabelOps, mirrorLabels } from "./labels.ts";
+export type { LabelOp, LabelPlan } from "./labels.ts";
 export { applyEvent } from "./events.ts";
 export type { Event, Inbox } from "./events.ts";
 export {
