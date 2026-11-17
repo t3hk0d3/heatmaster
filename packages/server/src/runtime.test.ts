@@ -33,6 +33,7 @@ import { rejectionOf } from "../test/rejection.ts";
 import { createStubHaLink, type StubHaLink } from "../test/stub-ha-link.ts";
 import { createStubTransport, type StubTransport } from "../test/stub-transport.ts";
 import { HeatmasterError } from "./errors.ts";
+import { HA_LABEL_TIMEOUT_MS } from "./ha-link.ts";
 import {
   CLOCK_JUMP_MS,
   DIRECT_ASK_SPACING_MS,
@@ -1209,6 +1210,7 @@ describe("runtime", () => {
         const ha = createStubHaLink();
         const rig = await boot({ ha, seed: managedSeed([A]) });
         const before = ha.snapshotReads();
+        const ticks = rig.snapshots.length;
         for (const areaId of ["office", "hall", "kitchen"]) {
           if (areaId !== "office") await rig.advance(2000);
           ha.setSnapshot(haSnapshot({ [areaId]: [A] }));
@@ -1217,7 +1219,10 @@ describe("runtime", () => {
         await rig.advance(HA_SETTLE_MS - 1);
         expect(ha.snapshotReads()).toBe(before);
         await rig.advance(1);
-        expect(ha.snapshotReads()).toBe(before + 1);
+        // One settle: it reads the snapshot (for the membership, the label pull and the snapshot's
+        // label problems) and runs one tick.
+        expect(ha.snapshotReads()).toBeGreaterThan(before);
+        expect(rig.snapshots.length).toBe(ticks + 1);
         expect(roomIds(rig)).toEqual(["kitchen"]);
       });
     });
@@ -1500,16 +1505,16 @@ describe("runtime", () => {
     describe("With a config file of version 2", () => {
       const seed: Seed = { configFile: readFileSync(V2_FIXTURE, "utf8") };
 
-      it("the converted file is saved once, then once more by the tick with Home Assistant's membership", async () => {
+      it("the converted file is saved once, then by the sensor import, then once more by the tick with Home Assistant's membership", async () => {
         const rig = await boot({ seed });
-        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(2);
+        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(3);
         const file = readJson(path.join(rig.dataDir, "config.json"));
         expect(file.version).toBe(3);
         expect(file).toMatchObject({
           data: { revision: 3, membership: { rooms: { living: {} } } },
         });
         await rig.advance(TICK_INTERVAL_MS);
-        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(2);
+        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(3);
       });
 
       it('"config converted" is logged once', async () => {
@@ -1788,9 +1793,11 @@ describe("runtime", () => {
       it("a tick runs EVENT_DEBOUNCE_MS later", async () => {
         const rig = await boot({ seed: managedSeed([A]) });
         await rig.advance(5000);
+        // The echo of the start's label mirror settles at T + 5 s, with a tick.
+        const before = rig.rt.snapshot().tickedAt;
         rig.say(A, "a1");
         rig.clock.advance(EVENT_DEBOUNCE_MS - 1);
-        expect(rig.rt.snapshot().tickedAt).toBe(T);
+        expect(rig.rt.snapshot().tickedAt).toBe(before);
         await rig.advance(1);
         expect(rig.rt.snapshot().tickedAt).toBe(T + 5000 + EVENT_DEBOUNCE_MS);
       });
@@ -4202,6 +4209,604 @@ describe("runtime", () => {
       expect(problemKinds(rig.rt.snapshot())).not.toContain("release_stalled");
       await rig.advance(2 * MINUTE);
       expect(problemKinds(rig.rt.snapshot())).toContain("release_stalled");
+    });
+  });
+
+  describe("label sync", () => {
+    const MAIN = "heatmaster_schedule_main";
+    const NIGHT = "heatmaster_schedule_night";
+    const SENSOR_LABEL = "heatmaster_temp_sensor";
+    const LIVING_T = "sensor.living_t";
+    const NIGHT_SCHEDULE = {
+      id: "night",
+      name: "Night",
+      week: [{ days: "all", temperature: { "00:00": 17 } }],
+    } as const;
+
+    /** `document` with schedule night after main, and these entries when given; same house. */
+    function withNight(document: RawConfig, rooms?: RawConfig["rooms"]): RawConfig {
+      const next: RawConfig = {
+        ...document,
+        schedules: [...(document.schedules ?? []), NIGHT_SCHEDULE],
+        ...(rooms === undefined ? {} : { rooms }),
+      };
+      const house = housesOf.get(document);
+      if (house !== undefined) housesOf.set(next, house);
+      return next;
+    }
+
+    function labelsOf(ha: StubHaLink | undefined): HaSnapshot {
+      const snapshot = ha?.snapshot();
+      if (snapshot === undefined) throw new Error("no snapshot");
+      return snapshot;
+    }
+
+    function areaLabels(rig: Rig, areaId: string): readonly string[] | undefined {
+      return labelsOf(rig.ha).areas.get(areaId)?.labels;
+    }
+
+    function entityLabels(rig: Rig, entityId: string): readonly string[] | undefined {
+      return labelsOf(rig.ha).entities.get(entityId)?.labels;
+    }
+
+    /** The user changes an area's labels in Home Assistant, which announces it. */
+    function relabelArea(rig: Rig, areaId: string, labels: readonly string[]): void {
+      const snapshot = labelsOf(rig.ha);
+      const area = snapshot.areas.get(areaId);
+      if (area === undefined) throw new Error(`no area ${areaId}`);
+      rig.ha?.setSnapshot({
+        ...snapshot,
+        areas: new Map([...snapshot.areas, [areaId, { ...area, labels }]]),
+      });
+      rig.ha?.emit({ kind: "registries_changed" });
+    }
+
+    /** The user changes an entity's labels in Home Assistant, which announces it. */
+    function relabelEntity(rig: Rig, entityId: string, labels: readonly string[]): void {
+      const snapshot = labelsOf(rig.ha);
+      const entity = snapshot.entities.get(entityId);
+      if (entity === undefined) throw new Error(`no entity ${entityId}`);
+      rig.ha?.setSnapshot({
+        ...snapshot,
+        entities: new Map([...snapshot.entities, [entityId, { ...entity, labels }]]),
+      });
+      rig.ha?.emit({ kind: "registries_changed" });
+    }
+
+    /** Home Assistant's snapshot of `house` with these labels named and these entities. */
+    function labelled(
+      house: House,
+      options: Readonly<{
+        labels?: Readonly<Record<string, string>>;
+        areaLabels?: Readonly<Record<string, readonly string[]>>;
+        entities?: Readonly<
+          Record<string, Readonly<{ areaId: string; labels: readonly string[] }>>
+        >;
+      }>,
+    ): HaSnapshot {
+      const base = haSnapshot(house);
+      const areas = new Map(base.areas);
+      for (const [areaId, labels] of Object.entries(options.areaLabels ?? {})) {
+        areas.set(areaId, { name: areaName(areaId), labels });
+      }
+      return {
+        ...base,
+        areas,
+        labels: new Map(Object.entries(options.labels ?? {})),
+        entities: new Map(Object.entries(options.entities ?? {})),
+      };
+    }
+
+    /** Booted, its start's mirror written and its echo settled. */
+    async function mirrored(options: Parameters<typeof boot>[0]): Promise<Rig> {
+      const rig = await boot(options);
+      await vi.waitFor(() => {
+        expect(rig.ha?.labelBatches().length).toBeGreaterThan(0);
+      });
+      await rig.advance(HA_SETTLE_MS);
+      return rig;
+    }
+
+    const stored = (rig: Rig): Record<string, unknown> =>
+      readJson(path.join(rig.dataDir, "config.json")).data as Record<string, unknown>;
+
+    const OK_SENSOR = { exists: true, isTemperature: true, onValve: false };
+
+    describe("At start, once Home Assistant has loaded", () => {
+      async function movedWhileDown(): Promise<Rig> {
+        const config = withNight(raw());
+        return mirrored({
+          seed: { config, ledger: [record(A)] },
+          snapshot: labelled(DEFAULT_HOUSE, {
+            labels: { [MAIN]: "Heatmaster: Main", [NIGHT]: "Heatmaster: Night" },
+            areaLabels: { living: [NIGHT] },
+          }),
+        });
+      }
+
+      it("a schedule label moved while Heatmaster was down is moved back", async () => {
+        const rig = await movedWhileDown();
+        expect(areaLabels(rig, "living")).toEqual([MAIN]);
+      });
+
+      it("no revision is made", async () => {
+        const rig = await movedWhileDown();
+        await rig.advance(HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(1);
+        expect(rig.rt.snapshot().haChanges).toEqual([]);
+      });
+    });
+
+    describe("On a reconnect", () => {
+      it("labels are set to match the config", async () => {
+        const rig = await mirrored({ seed: { config: withNight(raw()), ledger: [record(A)] } });
+        expect(areaLabels(rig, "living")).toEqual([MAIN]);
+        rig.ha?.setReady(true);
+        rig.ha?.setState("down");
+        rig.ha?.emit({ kind: "link_down" });
+        relabelArea(rig, "living", [NIGHT]);
+        await rig.advance(HA_SETTLE_MS);
+        rig.ha?.setState("up");
+        rig.ha?.emit({ kind: "link_up" });
+        await vi.waitFor(() => {
+          expect(areaLabels(rig, "living")).toEqual([MAIN]);
+        });
+        await rig.advance(HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(1);
+      });
+    });
+
+    describe("After an apply", () => {
+      it("labels follow the new config", async () => {
+        const rig = await mirrored({ seed: managedSeed([A]) });
+        expect(labelsOf(rig.ha).labels.has(NIGHT)).toBe(false);
+        await rig.rt.apply(withNight(raw(), { living: { schedule: "night" } }), APPLY);
+        await vi.waitFor(() => {
+          expect(areaLabels(rig, "living")).toEqual([NIGHT]);
+        });
+        expect(labelsOf(rig.ha).labels.get(NIGHT)).toBe("Heatmaster: Night");
+      });
+    });
+
+    describe("When the user moves a schedule label onto a room while running", () => {
+      async function moved(): Promise<Rig> {
+        const rig = await mirrored({ seed: { config: withNight(raw()), ledger: [record(A)] } });
+        relabelArea(rig, "living", [MAIN, NIGHT]);
+        return rig;
+      }
+
+      it("after HA_SETTLE_MS one revision is saved and haChanges names it", async () => {
+        const rig = await moved();
+        await rig.advance(HA_SETTLE_MS - 1);
+        expect(rig.rt.snapshot().revision).toBe(1);
+        await rig.advance(1);
+        expect(rig.rt.snapshot().revision).toBe(2);
+        expect(rig.rt.snapshot().haChanges).toEqual([
+          {
+            revision: 2,
+            at: rig.clock.nowMs(),
+            items: [
+              { kind: "schedule", areaId: "living", entityId: undefined, scheduleId: "night" },
+            ],
+          },
+        ]);
+        expect(rig.rt.exportConfig().config).toMatchObject({
+          rooms: { living: { schedule: "night" } },
+        });
+      });
+
+      it("the room's other schedule label is removed", async () => {
+        const rig = await moved();
+        await rig.advance(HA_SETTLE_MS);
+        await vi.waitFor(() => {
+          expect(areaLabels(rig, "living")).toEqual([NIGHT]);
+        });
+        await rig.advance(HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(2);
+      });
+
+      it("the room's valves get the new schedule with no apply", async () => {
+        const rig = await moved();
+        await inSync(rig, [A]);
+        const before = sends(rig, A).length;
+        await rig.advance(HA_SETTLE_MS);
+        rig.say(A, "a-9");
+        await rig.advance(2 * MINUTE);
+        expect(
+          sends(rig, A)
+            .slice(before)
+            .filter((s) => s.kind === "publish")
+            .map((s) => (s.payload as Record<string, unknown>).weekly_schedule_monday),
+        ).toContain("00:00/17 00:00/17 00:00/17 00:00/17 00:00/17 00:00/17");
+      });
+    });
+
+    describe("With a label moved as a remove and an add 1 s apart", () => {
+      it("exactly one revision is saved", async () => {
+        const rig = await mirrored({ seed: { config: withNight(raw()), ledger: [record(A)] } });
+        relabelArea(rig, "living", []);
+        await rig.advance(1000);
+        relabelArea(rig, "living", [NIGHT]);
+        await rig.advance(3 * HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(2);
+        expect(rig.rt.snapshot().haChanges.map((change) => change.revision)).toEqual([2]);
+        expect(rig.rt.exportConfig().config).toMatchObject({
+          rooms: { living: { schedule: "night" } },
+        });
+      });
+    });
+
+    describe("When the user adds heatmaster_temp_sensor to an entity in a room", () => {
+      it("one revision adds it to that room with weight 1", async () => {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        const rig = await mirrored({
+          ha,
+          seed: managedSeed([A]),
+          snapshot: labelled(DEFAULT_HOUSE, {
+            entities: { [LIVING_T]: { areaId: "living", labels: [] } },
+          }),
+        });
+        relabelEntity(rig, LIVING_T, [SENSOR_LABEL]);
+        await rig.advance(3 * HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(2);
+        expect(rig.rt.exportConfig().config).toMatchObject({
+          rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } },
+        });
+      });
+    });
+
+    describe("When the user removes it", () => {
+      it("one revision removes it from every room", async () => {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        const rig = await mirrored({
+          ha,
+          seed: managedSeed([A], [`ha:${LIVING_T}`]),
+          snapshot: labelled(DEFAULT_HOUSE, {
+            entities: { [LIVING_T]: { areaId: "living", labels: [] } },
+          }),
+        });
+        expect(entityLabels(rig, LIVING_T)).toEqual([SENSOR_LABEL]);
+        relabelEntity(rig, LIVING_T, []);
+        await rig.advance(3 * HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(2);
+        expect(JSON.stringify(rig.rt.exportConfig().config)).not.toContain(LIVING_T);
+        expect(entityLabels(rig, LIVING_T)).toEqual([]);
+      });
+    });
+
+    describe("When the user adds it to an entity in an area that is no room", () => {
+      async function unused(): Promise<Rig> {
+        const ha = createStubHaLink();
+        ha.setSensorInfo("sensor.garage_t", OK_SENSOR);
+        const rig = await mirrored({
+          ha,
+          seed: managedSeed([A]),
+          snapshot: labelled(
+            { living: [A], garage: [] },
+            { entities: { "sensor.garage_t": { areaId: "garage", labels: [] } } },
+          ),
+        });
+        relabelEntity(rig, "sensor.garage_t", [SENSOR_LABEL]);
+        await rig.advance(3 * HA_SETTLE_MS);
+        return rig;
+      }
+
+      it("no revision; sensor_label_unused is shown; the label stays", async () => {
+        const rig = await unused();
+        expect(rig.rt.snapshot().revision).toBe(1);
+        expect(rig.rt.snapshot().problems).toContainEqual({
+          kind: "sensor_label_unused",
+          subject: { kind: "sensor", id: "ha:sensor.garage_t" },
+          severity: "warning",
+          data: { reason: "area_not_room" },
+        });
+        expect(entityLabels(rig, "sensor.garage_t")).toEqual([SENSOR_LABEL]);
+      });
+    });
+
+    describe("When a new area becomes a room", () => {
+      it("it gets the default's label", async () => {
+        const rig = await mirrored({
+          devices: [trvzb(A), trvzb(B)],
+          seed: managedSeed([A]),
+          house: { living: [A], office: [] },
+        });
+        expect(areaLabels(rig, "office")).toEqual([]);
+        const snapshot = labelsOf(rig.ha);
+        rig.ha?.setSnapshot({
+          ...snapshot,
+          valveAreas: new Map([...snapshot.valveAreas, [B, "office"]]),
+        });
+        rig.ha?.emit({ kind: "registries_changed" });
+        await rig.advance(HA_SETTLE_MS);
+        await vi.waitFor(() => {
+          expect(areaLabels(rig, "office")).toEqual([MAIN]);
+        });
+        expect(rig.rt.snapshot().revision).toBe(1);
+      });
+    });
+
+    describe("When Zigbee2MQTT lists a valve that makes an area a room", () => {
+      it("it gets the default's label with no settle", async () => {
+        const rig = await mirrored({ seed: managedSeed([A]), house: { living: [A], office: [B] } });
+        expect(areaLabels(rig, "office")).toEqual([]);
+        rig.z2m.setDevices([trvzb(A), trvzb(B)]);
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        await vi.waitFor(() => {
+          expect(areaLabels(rig, "office")).toEqual([MAIN]);
+        });
+      });
+    });
+
+    describe("When the user removes the default's label from a room on the default", () => {
+      it("it is put back and no revision is saved", async () => {
+        const rig = await mirrored({ seed: managedSeed([A]) });
+        relabelArea(rig, "living", []);
+        await rig.advance(HA_SETTLE_MS);
+        await vi.waitFor(() => {
+          expect(areaLabels(rig, "living")).toEqual([MAIN]);
+        });
+        await rig.advance(HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(1);
+      });
+    });
+
+    describe("With a label write failing", () => {
+      async function failing(fail: boolean): Promise<Rig> {
+        const ha = createStubHaLink();
+        if (fail) ha.failLabels(() => "unauthorized");
+        const rig = await boot({ ha, seed: managedSeed([A]) });
+        await vi.waitFor(() => {
+          expect(ha.labelBatches().length).toBeGreaterThan(0);
+        });
+        await rig.advance(HA_SETTLE_MS);
+        return rig;
+      }
+
+      it("ha_label_failed is shown", async () => {
+        const rig = await failing(true);
+        expect(rig.rt.snapshot().problems).toContainEqual({
+          kind: "ha_label_failed",
+          subject: { kind: "area", id: "living" },
+          severity: "warning",
+          data: { op: "labelArea", error: "unauthorized" },
+        });
+      });
+
+      it("the valves are written in the same tick as without the failure", async () => {
+        const firstScheduleAt = async (rig: Rig): Promise<number | undefined> => {
+          await hear(rig, [A]);
+          for (let i = 0; i < 180; i += 1) {
+            if (
+              sends(rig, A).some((s) =>
+                Object.hasOwn(s.payload as object, "weekly_schedule_monday"),
+              )
+            ) {
+              return rig.clock.nowMs();
+            }
+            await rig.advance(1000);
+          }
+          return undefined;
+        };
+        const failed = await firstScheduleAt(await failing(true));
+        const clean = await firstScheduleAt(await failing(false));
+        expect(failed).toBeDefined();
+        expect(failed).toBe(clean);
+      });
+
+      it("a label problem that names an area carries the area's name in areaNames", async () => {
+        const ha = createStubHaLink();
+        ha.setAreaName("living", "Living room");
+        ha.failLabels(() => "unauthorized");
+        const rig = await boot({ ha, seed: managedSeed([A]) });
+        await vi.waitFor(() => {
+          expect(problemKinds(rig.rt.snapshot())).toContain("ha_label_failed");
+        });
+        expect(rig.rt.snapshot().areaNames).toEqual({ living: "Living room" });
+      });
+    });
+
+    describe("With a label write that never answers", () => {
+      async function stalled(): Promise<Rig> {
+        const rig = await boot({ seed: managedSeed([A]), start: false });
+        rig.ha?.stallLabels(rig.clock);
+        await rig.rt.start();
+        await rig.rt.settled();
+        await vi.waitFor(() => {
+          expect(rig.ha?.labelBatches().length).toBe(1);
+        });
+        return rig;
+      }
+
+      it("ticks keep running", async () => {
+        const rig = await stalled();
+        rig.say(A, "a-1");
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        expect(rig.rt.snapshot().tickedAt).toBe(T + EVENT_DEBOUNCE_MS);
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.rt.snapshot().tickedAt).toBe(T + EVENT_DEBOUNCE_MS + TICK_INTERVAL_MS);
+      });
+
+      it("ha_label_failed with error timeout is shown after HA_LABEL_TIMEOUT_MS", async () => {
+        const rig = await stalled();
+        await rig.advance(HA_LABEL_TIMEOUT_MS - 1);
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("ha_label_failed");
+        await rig.advance(1);
+        await vi.waitFor(() => {
+          expect(rig.rt.snapshot().problems).toContainEqual({
+            kind: "ha_label_failed",
+            subject: { kind: "area", id: "living" },
+            severity: "warning",
+            data: { op: "labelArea", error: "timeout" },
+          });
+        });
+      });
+    });
+
+    describe("With writes held", () => {
+      it("labels are still mirrored", async () => {
+        const rig = await mirrored({ seed: { config: raw({ hold: true }), ledger: [record(A)] } });
+        expect(rig.rt.snapshot().held).toBe(true);
+        expect(areaLabels(rig, "living")).toEqual([MAIN]);
+      });
+    });
+
+    describe("With the config unreadable", () => {
+      it("no mirror and no pull run", async () => {
+        const rig = await boot({ seed: { config: "unreadable" } });
+        relabelArea(rig, "living", [MAIN]);
+        await rig.advance(2 * HA_SETTLE_MS);
+        expect(rig.ha?.labelBatches()).toEqual([]);
+        expect(readFileSync(path.join(rig.dataDir, "config.json"), "utf8")).toBe("{ not json");
+      });
+    });
+
+    describe("With a label edit while the user changes the hold before the settle", () => {
+      it("the revision holds the label edit and the user's hold: an HA label edit never changes hold_writes", async () => {
+        const rig = await mirrored({ seed: { config: withNight(raw()), ledger: [record(A)] } });
+        relabelArea(rig, "living", [NIGHT]);
+        await rig.rt.setHold(true);
+        await rig.advance(HA_SETTLE_MS);
+        expect(rig.rt.snapshot().revision).toBe(3);
+        expect(stored(rig)).toMatchObject({
+          revision: 3,
+          config: { settings: { hold_writes: true }, rooms: { living: { schedule: "night" } } },
+        });
+        expect(rig.rt.snapshot().held).toBe(true);
+      });
+    });
+  });
+
+  describe("sensor import", () => {
+    const LEGACY = "room_temperature_sensor";
+    const SENSOR_LABEL = "heatmaster_temp_sensor";
+    const LIVING_T = "sensor.living_t";
+    const OK_SENSOR = { exists: true, isTemperature: true, onValve: false };
+
+    /** The version 2 fixture, its room in area living with valve A and no sensors. */
+    function v2WithoutSensors(): string {
+      const file = JSON.parse(readFileSync(V2_FIXTURE, "utf8")) as {
+        data: { releasing: object; config: { rooms: Record<string, unknown>[] } };
+      };
+      file.data.releasing = {};
+      const room = file.data.config.rooms[0] ?? {};
+      room.area_id = "living";
+      room.valves = [{ id: A }];
+      delete room.sensors;
+      return JSON.stringify(file);
+    }
+
+    function legacyHouse(): HaSnapshot {
+      return {
+        ...haSnapshot(DEFAULT_HOUSE),
+        entities: new Map([[LIVING_T, { areaId: "living", labels: [LEGACY] }]]),
+      };
+    }
+
+    const storedData = (rig: Rig): Record<string, unknown> =>
+      readJson(path.join(rig.dataDir, "config.json")).data as Record<string, unknown>;
+
+    describe("On the first start after a v2 conversion, with a room without sensors whose temperature entity carries room_temperature_sensor", () => {
+      async function converted(): Promise<Rig> {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        return boot({
+          ha,
+          seed: { configFile: v2WithoutSensors(), ledger: [record(A)] },
+          snapshot: legacyHouse(),
+        });
+      }
+
+      it("the room gets that sensor, sensorImport is done and one revision is saved", async () => {
+        const rig = await converted();
+        expect(storedData(rig)).toMatchObject({
+          revision: 4,
+          sensor_import: "done",
+          config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
+        });
+        expect(rig.rt.snapshot().haChanges).toEqual([
+          {
+            revision: 4,
+            at: T,
+            items: [
+              {
+                kind: "sensors_imported",
+                areaId: "living",
+                entityId: undefined,
+                scheduleId: undefined,
+              },
+            ],
+          },
+        ]);
+      });
+
+      it("the entity gets heatmaster_temp_sensor", async () => {
+        const rig = await converted();
+        await vi.waitFor(() => {
+          expect(rig.ha?.snapshot()?.entities.get(LIVING_T)?.labels).toEqual([
+            LEGACY,
+            SENSOR_LABEL,
+          ]);
+        });
+      });
+
+      it("legacy_label_present names the room", async () => {
+        const rig = await converted();
+        expect(rig.rt.snapshot().problems).toContainEqual({
+          kind: "legacy_label_present",
+          subject: { kind: "room", id: "living" },
+          severity: "warning",
+          data: { entities: LIVING_T },
+        });
+      });
+    });
+
+    describe("On a later start", () => {
+      it("nothing is imported", async () => {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        const rig = await boot({ ha, seed: managedSeed([A]), snapshot: legacyHouse() });
+        expect(storedData(rig)).toMatchObject({ revision: 1, sensor_import: "done" });
+        expect(JSON.stringify(rig.rt.exportConfig().config)).not.toContain(LIVING_T);
+      });
+    });
+
+    describe("On a fresh install with Home Assistant loaded before Zigbee2MQTT lists the room's valve", () => {
+      it("the import waits for the room, then runs", async () => {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        const rig = await boot({ ha, devices: [], snapshot: legacyHouse() });
+        expect(rig.rt.snapshot().house).toBe("live");
+        expect(storedData(rig)).toMatchObject({ sensor_import: "pending" });
+        rig.z2m.setDevices([trvzb(A)]);
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        await vi.waitFor(() => {
+          expect(storedData(rig)).toMatchObject({
+            sensor_import: "done",
+            config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
+          });
+        });
+      });
+    });
+
+    describe("On a fresh install", () => {
+      it("the import runs once Home Assistant has loaded", async () => {
+        const ha = createStubHaLink();
+        ha.setSensorInfo(LIVING_T, OK_SENSOR);
+        ha.setState("connecting");
+        const rig = await boot({ ha, snapshot: legacyHouse() });
+        expect(storedData(rig)).toMatchObject({ sensor_import: "pending" });
+        ha.setState("up");
+        ha.emit({ kind: "link_up" });
+        await vi.waitFor(() => {
+          expect(storedData(rig)).toMatchObject({
+            sensor_import: "done",
+            config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
+          });
+        });
+      });
     });
   });
 });

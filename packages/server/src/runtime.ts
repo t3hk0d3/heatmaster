@@ -20,6 +20,8 @@ import {
   exportBucket,
   findProfile,
   forgetValve as coreForgetValve,
+  importSensors,
+  labelProblems,
   ledgerToRaw,
   liveness,
   membershipFrom,
@@ -33,11 +35,13 @@ import {
   resolveRooms,
   restoreValve as coreRestoreValve,
   roomsOf,
+  sameMembership,
   sensorId,
   storedToRaw,
   tick,
   transportOf,
   validateConfig,
+  withHaEdit,
   withHold,
   withoutUpgradeReport,
 } from "@heatmaster/core";
@@ -81,6 +85,7 @@ import type {
 import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
 import type { HaEvent, HaLink } from "./ha-link.ts";
+import { createLabelSync, sensorInfos, type LabelScope } from "./label-sync.ts";
 import type { ConfigStore, LedgerStore, PacingStamps, PacingStore } from "./stores.ts";
 import type { DeviceInfo, RawEvent, Transport } from "./transport.ts";
 
@@ -478,6 +483,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   let tickError: string | undefined;
   const directAsks = new Map<string, number[]>();
   const listeners = new Set<(snapshot: Snapshot) => void>();
+  /** Keeps Home Assistant's labels and the config in step; see label-sync.ts. */
+  const labelSync = ha === undefined ? undefined : createLabelSync(ha, valveAddresses);
 
   /** The membership acted on while the house is live, and the valves it was placed for. */
   let accepted: MembershipView | undefined;
@@ -678,6 +685,17 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
 
   // ---- rooms from Home Assistant ---------------------------------------------------------------
 
+  /** The transport addresses of every listed device that has a valve profile. */
+  function valveAddresses(): ReadonlySet<string> {
+    const addresses = new Set<string>();
+    for (const transport of Object.values(transports)) {
+      for (const info of transport.devices().values()) {
+        if (findProfile(info.modelId, transport.key) !== undefined) addresses.add(info.address);
+      }
+    }
+    return addresses;
+  }
+
   /**
    * The valves Home Assistant may place in a room: every followed valve with a profile, and every
    * valve with a ledger record or in releasing, listed by its transport or not.
@@ -696,24 +714,154 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return a.size === b.size && [...a].every((id) => b.has(id));
   }
 
+  type Placing = Readonly<{ view: MembershipView; placed: ReadonlySet<string> }>;
+
+  /** The membership Home Assistant gives now, not yet accepted; undefined before its first load. */
+  function placing(previous: AreaMembership | undefined): Placing | undefined {
+    const snapshot = ha?.snapshot();
+    if (snapshot === undefined) return undefined;
+    const placed = placedValves();
+    return { view: membershipFrom(snapshot, placed, previous), placed };
+  }
+
+  function commit(next: Placing): void {
+    accepted = next.view;
+    acceptedFor = next.placed;
+  }
+
   /**
    * Takes the membership Home Assistant gives now. Runs under the lock; its callers then queue a
    * tick at once (a debounce would only delay one change).
    */
   function accept(previous: AreaMembership | undefined): boolean {
-    const snapshot = ha?.snapshot();
-    if (snapshot === undefined) return false;
-    const placed = placedValves();
-    accepted = membershipFrom(snapshot, placed, previous);
-    acceptedFor = placed;
+    const next = placing(previous);
+    if (next === undefined) return false;
+    commit(next);
     return true;
   }
 
-  /** The link_up handler: after the link's full load the house is live at once. */
-  function linkUp(at: number): void {
+  /**
+   * Queues a label mirror; a failed one is logged and never fails its caller. When it changes the
+   * label problems, the listeners hear of it at once.
+   */
+  function queueMirror(
+    config: Config,
+    membership: AreaMembership,
+    scope: LabelScope = "all",
+  ): void {
+    if (labelSync === undefined) return;
+    const shown = (): string =>
+      labelSync
+        .problems()
+        .map((p) => JSON.stringify([p.kind, p.subject, p.data]))
+        .join("\n");
+    const before = shown();
+    labelSync.mirror(config, membership, scope).then(
+      () => {
+        if (started && !stopping && shown() !== before) notify();
+      },
+      (error: unknown) => {
+        log.error("a label mirror failed", { error: errorText(error) });
+      },
+    );
+  }
+
+  /** After an apply saved its config: the labels follow it while the house is live. */
+  function mirrorApplied(): void {
+    const current = readableStored();
+    if (current !== undefined && accepted !== undefined && houseInput().kind === "live") {
+      queueMirror(current.config, accepted.membership);
+    }
+  }
+
+  /**
+   * The one-time sensor import, after a fresh install or a version 2 conversion. It runs on the
+   * first accepted membership that holds a room: Home Assistant may load before the transports
+   * list the valves, and an import over no room would be done for nothing. True when it saved.
+   */
+  async function importIfDue(membership: AreaMembership): Promise<boolean> {
+    const current = readableStored();
+    const snapshot = ha?.snapshot();
+    if (
+      ha === undefined ||
+      snapshot === undefined ||
+      current?.sensorImport !== "pending" ||
+      membership.rooms.size === 0
+    ) {
+      return false;
+    }
+    const infos = sensorInfos(ha, snapshot, valveAddresses());
+    const next = importSensors(current, membership, snapshot, infos, clock.nowMs());
+    const outcome = await execute([{ kind: "saveConfig", stored: next }], false);
+    if (outcome.stores.config !== true) return false;
+    if (next.revision !== current.revision) {
+      log.info("room sensors imported from room_temperature_sensor", { revision: next.revision });
+    }
+    refollow();
+    return true;
+  }
+
+  /**
+   * The link_up handler: after the link's full load the house is live at once. With a readable
+   * config the sensor import runs when it is due, then the labels are mirrored: the config wins.
+   */
+  async function linkUp(at: number): Promise<void> {
     if (!started || stopping || at !== connection || ha?.up() !== true) return;
     if (!accept(accepted?.membership ?? stored?.membership)) return;
     acceptedLive = true;
+    const membership = accepted?.membership;
+    try {
+      if (membership !== undefined) {
+        await importIfDue(membership);
+        const current = readableStored();
+        if (current !== undefined) queueMirror(current.config, membership);
+      }
+    } catch (error) {
+      log.error("the sensor import or the label mirror failed", { error: errorText(error) });
+    }
+    queueTick();
+  }
+
+  /**
+   * The settle: the user's label edits since the last mirror or pull become one config revision,
+   * computed from the stored config and saved under this one hold of the lock, so an apply or a
+   * hold change is never lost to it; then the membership is accepted. Without an edit, a changed
+   * membership or a moved schedule label is answered by a mirror of the schedule labels.
+   */
+  async function settle(): Promise<void> {
+    const next = placing(accepted?.membership);
+    if (next === undefined) return;
+    const previous = accepted?.membership;
+    const membership = next.view.membership;
+    const current = readableStored();
+    const edit = current === undefined ? undefined : labelSync?.pull(current.config, membership);
+    let saved = false;
+    if (current !== undefined && edit !== undefined) {
+      const edited = withHaEdit(current, edit, clock.nowMs());
+      const outcome = await execute([{ kind: "saveConfig", stored: edited }], false);
+      saved = outcome.stores.config === true;
+      if (saved) {
+        log.info("a label edit in Home Assistant was saved", {
+          revision: edited.revision,
+          items: edit.items,
+        });
+      }
+    }
+    commit(next);
+    if (saved) refollow();
+    if (await importIfDue(membership)) saved = true;
+    // An edit that could not be saved: the config wins, and the labels go back to it.
+    const full = saved || edit !== undefined;
+    const config = readableStored()?.config;
+    if (config !== undefined && full) {
+      queueMirror(config, membership);
+    } else if (
+      config !== undefined &&
+      (!sameMembership(previous, membership) || labelSync?.scheduleLabelsMoved() === true)
+    ) {
+      // A heatmaster_temp_sensor the user added stays until the next full mirror.
+      queueMirror(config, membership, "schedules");
+    }
     queueTick();
   }
 
@@ -723,11 +871,13 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     cancelSettle?.();
     cancelSettle = clock.after(HA_SETTLE_MS, () => {
       cancelSettle = undefined;
-      void withLock(() => {
-        if (!stopping && houseInput().kind === "live" && accept(accepted?.membership)) {
-          queueTick();
+      void withLock(async () => {
+        if (stopping || houseInput().kind !== "live") return;
+        try {
+          await settle();
+        } catch (error) {
+          log.error("a settle failed", { error: errorText(error) });
         }
-        return Promise.resolve();
       });
     });
   }
@@ -741,16 +891,30 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       return;
     }
     placingAgain = true;
-    void withLock(() => {
+    void withLock(async () => {
       placingAgain = false;
+      const previous = accepted?.membership;
       if (
-        houseInput().kind === "live" &&
-        !sameSet(placedValves(), acceptedFor) &&
-        accept(accepted?.membership)
+        houseInput().kind !== "live" ||
+        sameSet(placedValves(), acceptedFor) ||
+        !accept(previous)
       ) {
-        queueTick();
+        return;
       }
-      return Promise.resolve();
+      const membership = accepted?.membership;
+      try {
+        if (membership !== undefined) {
+          const imported = await importIfDue(membership);
+          const config = readableStored()?.config;
+          if (config !== undefined && imported) queueMirror(config, membership);
+          else if (config !== undefined && !sameMembership(previous, membership)) {
+            queueMirror(config, membership, "schedules");
+          }
+        }
+      } catch (error) {
+        log.error("the sensor import or the label mirror failed", { error: errorText(error) });
+      }
+      queueTick();
     });
   }
 
@@ -759,15 +923,13 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     switch (event.kind) {
       case "link_up": {
         const at = connection;
-        void withLock(() => {
-          linkUp(at);
-          return Promise.resolve();
-        });
+        void withLock(() => linkUp(at));
         break;
       }
       case "link_down":
         connection += 1;
         acceptedLive = false;
+        labelSync?.reset();
         cancelSettle?.();
         cancelSettle = undefined;
         requestTick();
@@ -1232,13 +1394,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const config = validateConfig(raw);
     const nowMs = clock.nowMs();
     const world = buildWorld(nowMs, roomSensors(config));
-    const valveAddresses = new Set<string>();
-    for (const transport of Object.values(transports)) {
-      for (const info of transport.devices().values()) {
-        if (findProfile(info.modelId, transport.key) !== undefined)
-          valveAddresses.add(info.address);
-      }
-    }
+    const addresses = valveAddresses();
     const infos = new Map<string, SensorInfo>();
     for (const sensor of roomSensors(config)) {
       const entity = entityOf(sensor.ref);
@@ -1246,7 +1402,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         sensorId(sensor),
         ha === undefined || entity === undefined
           ? { exists: false, isTemperature: false, onValve: false }
-          : ha.sensorInfo(entity, valveAddresses),
+          : ha.sensorInfo(entity, addresses),
       );
     }
     const changeOptions: ChangeOptions = {
@@ -1284,6 +1440,15 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return STORE_NAMES.filter((name) => storeFailed[name] === true).map((name) =>
       problemStoreWriteFailed(name),
     );
+  }
+
+  /** The label problems Home Assistant shows, while the house is live and the config readable. */
+  function haLabelProblems(house: HouseInput, readable: StoredConfig | undefined): Problem[] {
+    if (ha === undefined || house.kind !== "live" || readable === undefined) return [];
+    const snapshot = ha.snapshot();
+    if (snapshot === undefined) return [];
+    const infos = sensorInfos(ha, snapshot, valveAddresses());
+    return [...labelProblems(readable.config, house.membership, snapshot, infos)];
   }
 
   function makeSnapshot(): Snapshot {
@@ -1379,7 +1544,10 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         ? [problemPacingUnreadable()]
         : []),
       ...(tickError === undefined ? [] : [problemTickFailed()]),
+      ...(labelSync?.problems() ?? []),
+      ...haLabelProblems(house, readable),
     ];
+    // After every problem is in: the label problems name areas.
     const areaNames: Record<string, string> = {};
     for (const { subject } of problems) {
       const name = subject.kind === "area" ? ha?.areaName(subject.id) : undefined;
@@ -1612,7 +1780,11 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       return withLock(async () => {
         requireStarted();
         const result = await plan(raw, options, false);
-        await carryOut(result.effects, options.overwriteUnreadable);
+        const outcome = await execute(result.effects, options.overwriteUnreadable);
+        refollow();
+        await runTick();
+        if (outcome.stores.config === true) mirrorApplied();
+        raise(outcome);
         return result;
       });
     },
