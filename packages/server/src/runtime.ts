@@ -6,7 +6,6 @@
 
 import {
   BUCKET,
-  ChangeRefused,
   EMPTY_CONFIG,
   EMPTY_MEMORY,
   EMPTY_READINGS,
@@ -117,7 +116,6 @@ export type RuntimeDeps = Readonly<{
 
 export type ApplyOptions = Readonly<{
   expectedRevision: number | undefined;
-  acceptUnknownOriginals: readonly string[];
   overwriteUnreadable: boolean;
 }>;
 
@@ -1237,20 +1235,14 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const changeOptions: ChangeOptions = {
       expectedRevision: options.expectedRevision,
       dryRun,
-      acceptUnknownOriginals: new Set(options.acceptUnknownOriginals),
       overwriteUnreadable: options.overwriteUnreadable,
       haLinked: ha?.ready() === true,
     };
-    let result: ChangePlan;
-    try {
-      result = planChange(world, raw, changeOptions, infos);
-    } catch (error) {
-      if (error instanceof ChangeRefused && error.code === "valve_not_observed") {
-        await askQuietly((error.data.valveIds ?? "").split(",").filter((id) => id !== ""));
-      }
-      throw error;
-    }
-    if (result.joining.length > 0) await askQuietly(result.joining.map((c) => c.valveId));
+    const result = planChange(world, raw, changeOptions, infos);
+    // The joining valves, and those that wait because they have not reported, are asked to report.
+    const unobserved = result.pending.filter((p) => p.reason === "valve_not_observed");
+    const asked = [...result.joining, ...unobserved].map((entry) => entry.valveId);
+    if (asked.length > 0) await askQuietly(asked);
     return result;
   }
 

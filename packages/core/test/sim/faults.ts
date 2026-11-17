@@ -446,26 +446,17 @@ export function createRig(start: Initial): Rig {
     });
   }
 
-  /** Asks for the model; true when Heatmaster accepted the change (a crash may still have cut it). */
+  /**
+   * Asks for the model; true when Heatmaster accepted the change (a crash may still have cut it).
+   * The change joins nothing: the next tick does, and `beforeTick` records it.
+   */
   const submit = (): boolean => {
     sim.deliver();
-    const cache = SLOTS.map((s) => decoded(sim, s, "cache"));
-    const truth = SLOTS.map((s) => decoded(sim, s, "truth"));
     const asked = modelConfig(schedules, hold, intervalMs);
     const result = sim.planChange(configToRaw(asked));
     if (!result.ok) return false;
     // A crash that cut the change leaves the saved revision behind the planned one.
     cut = sim.config().stored?.revision !== result.plan.stored.revision;
-    for (const taken of result.plan.joining) {
-      const s: Slot = taken.valveId === VALVE_IDS[0] ? 0 : 1;
-      joins.push({
-        valveId: taken.valveId,
-        adoptedAt: sim.now(),
-        cache: cache[s] ?? {},
-        truth: truth[s] ?? {},
-        originals: taken.originals,
-      });
-    }
     return true;
   };
 

@@ -8,6 +8,7 @@ import type {
   HaChangeView,
   JoiningView,
   OriginalView,
+  PendingView,
   PlanView,
   ProblemView,
   RoomView,
@@ -16,7 +17,6 @@ import type {
   UnassignedValveView,
   UpgradeReport,
   UpgradeView,
-  ValveRefView,
   ValveStatus,
   ValveView,
   WriteView,
@@ -190,8 +190,6 @@ function evidenceOf(device: DeviceSnapshot | undefined, setting: SettingKey): Ev
 export function planView(plan: ChangePlan, applied: boolean, snapshot: Snapshot): PlanView {
   const devices = new Map(snapshot.devices.map((device) => [device.deviceId, device]));
   const nameOf = (valveId: string): string => devices.get(valveId)?.name ?? valveId;
-  const refs = (ids: readonly string[]): ValveRefView[] =>
-    ids.map((valveId) => ({ valveId, name: nameOf(valveId) }));
 
   const joining = plan.joining.map((capture): JoiningView => {
     const device = devices.get(capture.valveId);
@@ -229,8 +227,13 @@ export function planView(plan: ChangePlan, applied: boolean, snapshot: Snapshot)
     revision: plan.stored.revision,
     held: plan.stored.config.settings.holdWrites,
     joining,
-    rejoining: refs(plan.rejoining),
-    leaving: refs(plan.leaving),
+    pending: plan.pending.map((waiting): PendingView => ({
+      valveId: waiting.valveId,
+      name: nameOf(waiting.valveId),
+      roomId: waiting.roomId,
+      reason: waiting.reason,
+      unreadable: waiting.unreadable,
+    })),
     writes,
   };
 }

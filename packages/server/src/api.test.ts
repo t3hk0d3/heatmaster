@@ -65,11 +65,9 @@ function planOf(revision = 3): ChangePlan {
       config: { ...EMPTY_CONFIG, settings: { ...EMPTY_CONFIG.settings, holdWrites: true } },
       revision,
     },
-    ledger: undefined,
     effects: [],
     joining: [],
-    rejoining: [],
-    leaving: [],
+    pending: [],
     writes: [],
   };
 }
@@ -727,31 +725,44 @@ describe("api", () => {
     });
 
     describe("With no option fields", () => {
-      it("apply receives expectedRevision undefined, an empty accept list and overwriteUnreadable false", async () => {
+      it("apply receives expectedRevision undefined and overwriteUnreadable false", async () => {
         const { app, stub: runtime } = await rig();
         await post(app, "/api/config", { config: DOCUMENT });
         expect(runtime.apply.mock.calls[0]?.[1]).toEqual({
           expectedRevision: undefined,
-          acceptUnknownOriginals: [],
           overwriteUnreadable: false,
         });
       });
     });
 
-    describe("With expectedRevision 4, acceptUnknownOriginals of two ids and overwriteUnreadable true", () => {
-      it("apply receives 4, a list of the two ids, and true", async () => {
+    describe("With expectedRevision 4 and overwriteUnreadable true", () => {
+      it("apply receives 4 and true", async () => {
         const { app, stub: runtime } = await rig();
         await post(app, "/api/config", {
           config: DOCUMENT,
           expectedRevision: 4,
-          acceptUnknownOriginals: ["z2m:0xa1", "z2m:0xb2"],
           overwriteUnreadable: true,
         });
         expect(runtime.apply.mock.calls[0]?.[1]).toEqual({
           expectedRevision: 4,
-          acceptUnknownOriginals: ["z2m:0xa1", "z2m:0xb2"],
           overwriteUnreadable: true,
         });
+      });
+    });
+
+    describe("With acceptUnknownOriginals in the body", () => {
+      it("answers 400 (the field is unknown)", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/config", {
+          config: DOCUMENT,
+          acceptUnknownOriginals: ["z2m:0xa1"],
+        });
+        expect(response.statusCode).toBe(400);
+        expect(errorOf(response).code).toBe("body_invalid");
+        expect(errorOf(response).data.issues).toContainEqual(
+          expect.objectContaining({ path: "acceptUnknownOriginals" }),
+        );
+        expect(runtime.apply).not.toHaveBeenCalled();
       });
     });
 
@@ -829,17 +840,15 @@ describe("api", () => {
       });
     });
 
-    describe('With apply throwing ChangeRefused("originals_unreadable") naming a valve', () => {
-      it("answers 409 with that code and data.valveId", async () => {
+    describe('With apply throwing ChangeRefused("schedule_in_use") naming a room', () => {
+      it("answers 409 with that code and data.roomId", async () => {
         const { app, stub: runtime } = await rig();
-        runtime.apply.mockRejectedValue(
-          new ChangeRefused("originals_unreadable", { valveId: VALVE }),
-        );
+        runtime.apply.mockRejectedValue(new ChangeRefused("schedule_in_use", { roomId: "office" }));
         const response = await post(app, "/api/config", { config: DOCUMENT });
         expect(response.statusCode).toBe(409);
         expect(errorOf(response)).toMatchObject({
-          code: "originals_unreadable",
-          data: { valveId: VALVE },
+          code: "schedule_in_use",
+          data: { roomId: "office" },
         });
       });
     });

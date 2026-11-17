@@ -1,6 +1,6 @@
 import type { StateView } from "@heatmaster/core";
 import { describe, expect, it } from "vitest";
-import { acceptToggled, edited, loaded, previewed, refused, request } from "./editor.ts";
+import { edited, loaded, previewed, refused, request } from "./editor.ts";
 import { DICTIONARIES, translator } from "./i18n.ts";
 import {
   formatTemperature,
@@ -498,15 +498,23 @@ describe("render", () => {
         expect(text(renderPlan(planView({ held: false }), t, []))).toContain(en["plan.not_held"]);
       });
     });
-    describe("With leaving and rejoining valves", () => {
-      it("lists each by name", () => {
+    describe("With a plan", () => {
+      it("no rejoining or leaving list is shown", () => {
         const plan = planView({
-          rejoining: [{ valveId: "z2m:a", name: "Back again" }],
-          leaving: [{ valveId: "z2m:b", name: "Going away" }],
+          pending: [
+            {
+              valveId: "z2m:a",
+              name: "Waiting valve",
+              roomId: "office",
+              reason: "valve_not_observed",
+              unreadable: [],
+            },
+          ],
         });
-        const out = text(renderPlan(plan, t, []));
-        expect(out).toContain("Back again");
-        expect(out).toContain("Going away");
+        const headings = [...renderPlan(plan, t, []).querySelectorAll("h4")].map(
+          (heading) => heading.textContent,
+        );
+        expect(headings).toEqual([en["plan.writes"]]);
       });
     });
   });
@@ -591,15 +599,28 @@ describe("render", () => {
         expect(out.querySelector('input[data-action="overwrite"]')).toBeNull();
       });
     });
-    describe("With an accept offer", () => {
-      it("shows one switch naming that valve", () => {
-        const editor = refused(clean(), apiError("originals_unreadable", { valveId: ID }));
+    describe("With a plan holding pending valves", () => {
+      it("no accept checkbox is shown", () => {
+        const plan = planView({
+          pending: [
+            {
+              valveId: ID,
+              name: "Hall valve",
+              roomId: "hall",
+              reason: "originals_unreadable",
+              unreadable: ["sensor_source"],
+            },
+          ],
+        });
+        const editor = previewed(clean(), request(clean()), plan);
         const state = stateView({ valves: [valveView({ valveId: ID, name: "Hall valve" })] });
         const out = renderEditorControls(editor, state, false, t);
-        const switches = out.querySelectorAll('input[data-action="accept"]');
-        expect(switches).toHaveLength(1);
-        expect(text(out)).toContain("Hall valve");
-        expect(acceptToggled(editor, ID, true).accept).toEqual([ID]);
+        expect(out.querySelectorAll('input[data-action="accept"]')).toHaveLength(0);
+        expect(out.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+        // Nor after a refusal that names a valve, as plan 1's flow offered one.
+        const named = refused(clean(), apiError("originals_unreadable", { valveId: ID }));
+        const after = renderEditorControls(named, state, false, t);
+        expect(after.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
       });
     });
     describe("With serverChanged", () => {

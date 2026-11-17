@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  acceptOffers,
-  acceptToggled,
   applied,
   canApply,
   edited,
@@ -104,53 +102,42 @@ describe("editor", () => {
     });
   });
 
-  describe("acceptToggled / overwriteToggled", () => {
+  describe("overwriteToggled", () => {
     describe("After a preview", () => {
       it("the switch is stored and the plan is dropped", () => {
-        const accepted = acceptToggled(withPlan(), "z2m:a", true);
-        expect(accepted.accept).toEqual(["z2m:a"]);
-        expect(accepted.plan).toBeUndefined();
         const overwritten = overwriteToggled(withPlan(), true);
         expect(overwritten.overwrite).toBe(true);
         expect(overwritten.plan).toBeUndefined();
-      });
-    });
-    describe("With a valve turned on and then off", () => {
-      it("accept is empty again", () => {
-        const state = acceptToggled(acceptToggled(clean(), "z2m:a", true), "z2m:a", false);
-        expect(state.accept).toEqual([]);
       });
     });
   });
 
   describe("request", () => {
     describe("Always", () => {
-      it("holds the text as yaml, the base revision, the accepted valves and the overwrite switch", () => {
-        const state = overwriteToggled(acceptToggled(clean(), "z2m:a", true), true);
+      it("holds the text as yaml, the base revision and the overwrite switch", () => {
+        const state = overwriteToggled(clean(), true);
         expect(request(state)).toEqual({
           yaml: "a: 1\n",
           expectedRevision: 3,
-          acceptUnknownOriginals: ["z2m:a"],
           overwriteUnreadable: true,
         });
+      });
+    });
+    describe("When Apply is pressed", () => {
+      it("the request sent has no acceptUnknownOriginals field", () => {
+        const state = withPlan();
+        expect(canApply(state)).toBe(true);
+        expect(Object.hasOwn(request(state), "acceptUnknownOriginals")).toBe(false);
       });
     });
   });
 
   describe("refused", () => {
-    describe("With originals_unreadable naming a valve", () => {
-      it("the text is kept, the plan is dropped and acceptOffers lists that valve", () => {
-        const state = refused(withPlan(), apiError("originals_unreadable", { valveId: "z2m:b" }));
+    describe("With schedule_in_use naming a room", () => {
+      it("the text is kept and the plan is dropped", () => {
+        const state = refused(withPlan(), apiError("schedule_in_use", { roomId: "office" }));
         expect(state.text).toBe("a: 2\n");
         expect(state.plan).toBeUndefined();
-        expect(acceptOffers(state)).toEqual(["z2m:b"]);
-      });
-      it("keeps a valve that was already accepted in the offers", () => {
-        const state = refused(
-          acceptToggled(clean(), "z2m:a", true),
-          apiError("originals_unreadable", { valveId: "z2m:b" }),
-        );
-        expect(acceptOffers(state)).toEqual(["z2m:b", "z2m:a"]);
       });
     });
     describe("With revision_conflict", () => {
@@ -165,7 +152,7 @@ describe("editor", () => {
 
   describe("applied", () => {
     describe("With a plan of revision 5", () => {
-      const sentState = overwriteToggled(acceptToggled(withPlan(), "z2m:a", true), true);
+      const sentState = overwriteToggled(withPlan(), true);
       const state = applied(sentState, request(sentState), planView({ revision: 5 }));
       it("baseRevision is 5, dirty is false, the plan is dropped and appliedRevision is 5", () => {
         expect(state.baseRevision).toBe(5);
@@ -173,8 +160,7 @@ describe("editor", () => {
         expect(state.plan).toBeUndefined();
         expect(state.appliedRevision).toBe(5);
       });
-      it("accept is empty and overwrite is false", () => {
-        expect(state.accept).toEqual([]);
+      it("overwrite is false", () => {
         expect(state.overwrite).toBe(false);
       });
     });

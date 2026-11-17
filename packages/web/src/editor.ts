@@ -7,7 +7,6 @@ export type EditorState = Readonly<{
   previewedText: string | undefined;
   plan: PlanView | undefined;
   error: ApiError | undefined;
-  accept: readonly string[];
   overwrite: boolean;
   serverChanged: boolean;
   appliedRevision: number | undefined;
@@ -22,7 +21,6 @@ export function loaded(config: ConfigView): EditorState {
     previewedText: undefined,
     plan: undefined,
     error: undefined,
-    accept: [],
     overwrite: false,
     serverChanged: false,
     appliedRevision: undefined,
@@ -48,11 +46,6 @@ function changed(state: EditorState, fields: Partial<EditorState>): EditorState 
 
 export function edited(state: EditorState, text: string): EditorState {
   return changed(state, { text, dirty: true });
-}
-
-export function acceptToggled(state: EditorState, valveId: string, on: boolean): EditorState {
-  const others = state.accept.filter((id) => id !== valveId);
-  return changed(state, { accept: on ? [...others, valveId] : others });
 }
 
 export function overwriteToggled(state: EditorState, on: boolean): EditorState {
@@ -82,7 +75,6 @@ export function applied(state: EditorState, sent: ApplyRequest, plan: PlanView):
     previewedText: undefined,
     plan: undefined,
     error: undefined,
-    accept: [],
     overwrite: false,
     serverChanged: false,
     appliedRevision: plan.revision,
@@ -115,16 +107,6 @@ export function request(state: EditorState): ApplyRequest {
   return {
     yaml: state.text,
     expectedRevision: state.baseRevision,
-    acceptUnknownOriginals: state.accept,
     overwriteUnreadable: state.overwrite,
   };
-}
-
-/** The valve named by an `originals_unreadable` error, plus those already accepted. */
-export function acceptOffers(state: EditorState): readonly string[] {
-  const offered =
-    state.error?.code === "originals_unreadable" && typeof state.error.data.valveId === "string"
-      ? [state.error.data.valveId]
-      : [];
-  return [...new Set([...offered, ...state.accept])];
 }

@@ -1046,11 +1046,20 @@ describe("scenarios", () => {
         ).toEqual([]);
       });
 
-      it("applying the config again is refused with ledger_unreadable", () => {
-        const { sim, config } = lost();
+      it("applying the config again joins nothing: every valve is pending with ledger_unreadable", () => {
+        const { sim, config, ids } = lost();
         const result = sim.planChange(configToRaw(config));
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.refused.code).toBe("ledger_unreadable");
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.plan.joining).toEqual([]);
+        expect(result.plan.pending.map((p) => [p.valveId, p.reason])).toEqual(
+          [...ids].sort().map((id) => [id, "ledger_unreadable"]),
+        );
+        sim.step(STEP_MS);
+        expect(sim.ledger()).toBeUndefined();
+        expect(
+          sim.log().filter((e) => e.effect.kind === "saveLedger" && e.at > sim.now() - HOUR_MS),
+        ).toEqual([]);
       });
 
       it("after the copy is imported and the config applied again, each valve's originals are the ones captured the first time", () => {
@@ -1378,26 +1387,25 @@ describe("scenarios", () => {
     });
 
     describe("crashAfterEffects in a config change", () => {
-      it("cuts the join's effects after the ledger and loses the config", () => {
+      it("cuts the effects of the tick that joins a valve after the ledger", () => {
         const built = build({
           rooms: [{ id: "r1", valves: [[A, "trvzb"]] }],
           extra: [[B, "trvzb"]],
         });
-        const { sim, config } = built;
+        const { sim } = built;
         sim.runTo(5 * MINUTE_MS);
-        // A document joins a valve only while no room is managed: here the config file was lost.
-        sim.loseConfig("lost");
-        sim.restart();
+        const savedConfigs = sim.log().filter((e) => e.effect.kind === "saveConfig").length;
         placeIn(sim, [simRoom("r1", [valveIdOf(A), valveIdOf(B)], [sensorRef("r1")])]);
         sim.valve(valveIdOf(B)).person({}, sim.now());
         sim.deliver();
         sim.crashAfterEffects(1);
-        expect(sim.planChange(configToRaw(config)).ok).toBe(true);
+        sim.step(0);
         const ledgerFile = sim.disk().ledger;
         expect(ledgerFile.state === "ok" && ledgerFile.ledger.records.has(valveIdOf(B))).toBe(true);
-        expect(sim.disk().config.state).toBe("empty");
+        expect(sim.copy()?.records.has(valveIdOf(B))).toBe(false);
         expect(sim.memory().valves.size).toBe(0);
-        expect(sim.log().filter((e) => e.effect.kind === "saveConfig")).toHaveLength(0);
+        // The membership save that followed the join was cut too.
+        expect(sim.log().filter((e) => e.effect.kind === "saveConfig")).toHaveLength(savedConfigs);
       });
       it("stays armed while a change has fewer effects", () => {
         const built = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }] });

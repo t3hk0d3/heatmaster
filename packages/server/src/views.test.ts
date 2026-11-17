@@ -582,11 +582,9 @@ describe("views", () => {
           config: { ...EMPTY_CONFIG, settings: { ...EMPTY_CONFIG.settings, holdWrites } },
           revision: 4,
         },
-        ledger: undefined,
         effects: [],
         joining: [],
-        rejoining: [],
-        leaving: [],
+        pending: [],
         writes: [],
         ...over,
       };
@@ -675,17 +673,38 @@ describe("views", () => {
       });
     });
 
-    describe("With rejoining and leaving valves", () => {
-      it("each is listed with its id and name", () => {
+    describe("With a plan with a pending valve", () => {
+      it("pending lists it with its name, room and reason", () => {
         const view = planView(
-          plan({ rejoining: [A], leaving: [TRV_ZBT, "z2m:0xff"] }),
+          plan({
+            pending: [
+              { valveId: A, roomId: "office", reason: "valve_not_observed", unreadable: [] },
+              {
+                valveId: "z2m:0xff",
+                roomId: "attic",
+                reason: "originals_unreadable",
+                unreadable: ["sensor_source"],
+              },
+            ],
+          }),
           false,
           snap,
         );
-        expect(view.rejoining).toEqual([{ valveId: A, name: "valve 0xa1" }]);
-        expect(view.leaving).toEqual([
-          { valveId: TRV_ZBT, name: "zbt valve" },
-          { valveId: "z2m:0xff", name: "z2m:0xff" },
+        expect(view.pending).toEqual([
+          {
+            valveId: A,
+            name: "valve 0xa1",
+            roomId: "office",
+            reason: "valve_not_observed",
+            unreadable: [],
+          },
+          {
+            valveId: "z2m:0xff",
+            name: "z2m:0xff",
+            roomId: "attic",
+            reason: "originals_unreadable",
+            unreadable: ["sensor_source"],
+          },
         ]);
       });
     });

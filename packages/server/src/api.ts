@@ -146,7 +146,6 @@ const SCHEMAS = {
       config: { type: "object" },
       yaml: { type: "string" },
       expectedRevision: { type: "integer", minimum: 0 },
-      acceptUnknownOriginals: { type: "array", items: { type: "string" } },
       overwriteUnreadable: { type: "boolean" },
     },
   },
@@ -237,7 +236,6 @@ function configOf(body: ApplyRequest): ParsedConfig {
 function optionsOf(body: ApplyRequest): ApplyOptions {
   return {
     expectedRevision: body.expectedRevision,
-    acceptUnknownOriginals: body.acceptUnknownOriginals ?? [],
     overwriteUnreadable: body.overwriteUnreadable ?? false,
   };
 }

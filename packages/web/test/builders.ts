@@ -65,8 +65,7 @@ export function planView(over: Partial<PlanView> = {}): PlanView {
     revision: 4,
     held: false,
     joining: [],
-    rejoining: [],
-    leaving: [],
+    pending: [],
     writes: [],
     ...over,
   };

@@ -154,22 +154,23 @@ describe("join", () => {
       });
     });
 
+    // The valve that is not observable comes first in id order, so it must not stop the loop.
     describe("With two joining valves, one not observable", () => {
       const world = liveWorld([room(BUILDER_ROOM, [V1, V2])], {
-        [V1]: observed(),
-        [V2]: silent(),
+        [V1]: silent(),
+        [V2]: observed(),
       });
       it("the observable one joins", () => {
         const result = reconcile(world);
-        expect(result.joined.map((c) => c.valveId)).toEqual([V1]);
-        expect(result.ledger?.records.has(V1)).toBe(true);
+        expect(result.joined.map((c) => c.valveId)).toEqual([V2]);
+        expect(result.ledger?.records.has(V2)).toBe(true);
       });
       it("the other is pending with valve_not_observed", () => {
         const result = reconcile(world);
         expect(result.pending).toEqual([
-          { valveId: V2, roomId: BUILDER_ROOM, reason: "valve_not_observed", unreadable: [] },
+          { valveId: V1, roomId: BUILDER_ROOM, reason: "valve_not_observed", unreadable: [] },
         ]);
-        expect(result.ledger?.records.has(V2)).toBe(false);
+        expect(result.ledger?.records.has(V1)).toBe(false);
       });
     });
 

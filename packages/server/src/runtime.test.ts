@@ -725,7 +725,6 @@ const DAY = [
 
 const APPLY: ApplyOptions = {
   expectedRevision: undefined,
-  acceptUnknownOriginals: [],
   overwriteUnreadable: false,
 };
 
@@ -1435,21 +1434,30 @@ describe("runtime", () => {
         expect(problemKinds(snapshot)).toContain("ledger_unreadable");
       });
 
-      it("apply of a config naming that valve rejects with ChangeRefused ledger_unreadable", async () => {
+      it("apply of a config whose room holds that valve lists it pending with ledger_unreadable, and no record is made", async () => {
         const rig = await boot({ seed });
         rig.say(A, "a1");
-        const error = await rejectionOf(rig.rt.apply(raw(), APPLY));
-        expect(error).toBeInstanceOf(ChangeRefused);
-        expect(codeOf(error)).toBe("ledger_unreadable");
+        const plan = await rig.rt.apply(raw(), APPLY);
+        expect(plan.joining).toEqual([]);
+        expect(plan.pending).toEqual([
+          { valveId: A, roomId: "living", reason: "ledger_unreadable", unreadable: [] },
+        ]);
+        expect(rig.stores.calls).not.toContain("ledger.save");
       });
 
-      it("after importOriginals(false) and the same apply, the valve is rejoining and its record is the copy's", async () => {
+      it("after importOriginals(false) and the same apply, nothing joins and the valve is managed on the copy's record", async () => {
         const rig = await boot({ seed });
         rig.say(A, "a1");
         await rig.rt.importOriginals(false);
         const plan = await rig.rt.apply(raw(), APPLY);
-        expect(plan.rejoining).toEqual([A]);
-        expect(plan.ledger?.records.get(A)).toEqual(record(A, "external"));
+        expect(plan.joining).toEqual([]);
+        expect(plan.pending).toEqual([]);
+        expect(rig.rt.snapshot().memberships[A]).toBe("managed");
+        const ledger = readJson(path.join(rig.dataDir, "ledger.json"));
+        expect((ledger.data as { records: Record<string, unknown> }).records[A]).toEqual(
+          (ledgerToRaw(ledgerOf([record(A, "external")])) as { records: Record<string, unknown> })
+            .records[A],
+        );
       });
     });
 
@@ -2454,13 +2462,13 @@ describe("runtime", () => {
         return Object.assign(rig, { plan });
       }
 
-      it("the ledger file holds the valve's record before the config file is written", async () => {
+      it("the config file is written, then the tick after it saves the valve's record and its copy", async () => {
         const rig = await applied();
-        // The tick after the apply then saves the membership Home Assistant reports.
+        // That tick then saves the membership Home Assistant reports.
         expect(rig.stores.calls).toEqual([
+          "config.save",
           "ledger.save",
           "copy.write",
-          "config.save",
           "config.save",
         ]);
         const ledger = readJson(path.join(rig.dataDir, "ledger.json"));
@@ -2543,33 +2551,43 @@ describe("runtime", () => {
       });
     });
 
+    // A preview asks as an apply does; it is used here because the tick after an apply asks a
+    // pending valve too.
     describe("With a new valve that has sent no message", () => {
-      it("rejects with ChangeRefused valve_not_observed", async () => {
+      it("returns a plan that lists it pending with valve_not_observed", async () => {
         const rig = await boot();
-        const error = await rejectionOf(rig.rt.apply(raw(), APPLY));
-        expect(error).toBeInstanceOf(ChangeRefused);
-        expect(codeOf(error)).toBe("valve_not_observed");
+        const plan = await rig.rt.preview(raw(), APPLY);
+        expect(plan.joining).toEqual([]);
+        expect(plan.pending).toEqual([
+          { valveId: A, roomId: "living", reason: "valve_not_observed", unreadable: [] },
+        ]);
       });
 
       it("the transport received one read for that valve, holding binding.encodeRefresh()", async () => {
         const rig = await boot();
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         expect(rig.z2m.sent()).toEqual([
           { kind: "read", deviceId: A, payload: TRVZB_BINDING.encodeRefresh() },
         ]);
       });
 
-      it("nothing was saved", async () => {
+      it("an apply sends that read before the config is saved", async () => {
         const rig = await boot();
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
-        expect(rig.stores.calls).toEqual([]);
+        await rig.rt.apply(raw(), APPLY);
+        expect(rig.stores.calls[0]).toBe("config.save");
+        expect(rig.stores.sendsAtCall[0]).toBe(1);
+        expect(rig.z2m.attempts()[0]).toEqual({
+          kind: "read",
+          deviceId: A,
+          payload: TRVZB_BINDING.encodeRefresh(),
+        });
       });
     });
 
     describe("With two new valves that have sent no message", () => {
       it("the transport received one read for each", async () => {
         const rig = await boot({ devices: [trvzb(A), trvzb(B)], house: { living: [A, B] } });
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         expect(rig.z2m.sent().map((s) => [s.kind, s.deviceId])).toEqual([
           ["read", A],
           ["read", B],
@@ -2580,12 +2598,12 @@ describe("runtime", () => {
     const readsOf = (rig: Rig): number => sends(rig, A).filter((s) => s.kind === "read").length;
 
     describe("With the same call repeated 30 s later", () => {
-      it("no second read is sent, and the caller still gets ChangeRefused valve_not_observed", async () => {
+      it("no second read is sent, and the plan still lists the valve pending", async () => {
         const rig = await boot();
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         await rig.advance(30 * 1000);
-        const error = await rejectionOf(rig.rt.apply(raw(), APPLY));
-        expect(codeOf(error)).toBe("valve_not_observed");
+        const plan = await rig.rt.preview(raw(), APPLY);
+        expect(plan.pending.map((p) => p.reason)).toEqual(["valve_not_observed"]);
         expect(readsOf(rig)).toBe(1);
       });
     });
@@ -2593,9 +2611,9 @@ describe("runtime", () => {
     describe("With the same call repeated 61 s after the first", () => {
       it("a second read is sent", async () => {
         const rig = await boot();
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         await rig.advance(61 * 1000);
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         expect(readsOf(rig)).toBe(2);
       });
     });
@@ -2605,7 +2623,7 @@ describe("runtime", () => {
         const rig = await boot();
         for (let i = 0; i < 7; i += 1) {
           if (i > 0) await rig.advance(61 * 1000);
-          await rejectionOf(rig.rt.apply(raw(), APPLY));
+          await rig.rt.preview(raw(), APPLY);
         }
         expect(readsOf(rig)).toBe(6);
       });
@@ -2614,15 +2632,15 @@ describe("runtime", () => {
         const rig = await boot();
         for (let i = 0; i < 7; i += 1) {
           if (i > 0) await rig.advance(61 * 1000);
-          await rejectionOf(rig.rt.apply(raw(), APPLY));
+          await rig.rt.preview(raw(), APPLY);
         }
         await rig.advance(61 * MINUTE - 6 * 61 * 1000);
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         expect(readsOf(rig)).toBe(7);
       });
     });
 
-    describe("With a change that adds no valve, or only a rejoining one", () => {
+    describe("With a change whose valves all have a record", () => {
       it("no direct ask is sent", async () => {
         const rig = await boot({
           devices: [trvzb(A), trvzb(B)],
@@ -2633,7 +2651,8 @@ describe("runtime", () => {
         rig.say(B, "b-1");
         const before = rig.z2m.attempts().length;
         const plan = await rig.rt.apply(raw(), APPLY);
-        expect(plan.rejoining).toEqual([A, B]);
+        expect(plan.joining).toEqual([]);
+        expect(plan.pending).toEqual([]);
         expect(rig.stores.sendsAtCall.at(-1)).toBe(before);
         const again = rig.z2m.attempts().length;
         await rig.rt.apply(raw({ temperature: 21 }), APPLY);
@@ -2642,21 +2661,22 @@ describe("runtime", () => {
     });
 
     describe("With the valve having answered and the call repeated", () => {
-      it("returns a plan", async () => {
+      it("the plan lists it joining", async () => {
         const rig = await boot();
-        await rejectionOf(rig.rt.apply(raw(), APPLY));
+        await rig.rt.preview(raw(), APPLY);
         rig.say(A, "a-1");
-        const plan = await rig.rt.apply(raw(), APPLY);
+        const plan = await rig.rt.preview(raw(), APPLY);
         expect(plan.joining.map((c) => c.valveId)).toEqual([A]);
+        expect(plan.pending).toEqual([]);
       });
     });
 
     describe("With a transport read that rejects during that ask", () => {
-      it("the caller still gets ChangeRefused valve_not_observed", async () => {
+      it("the caller still gets the plan", async () => {
         const rig = await boot();
         rig.z2m.failNext(1);
-        const error = await rejectionOf(rig.rt.apply(raw(), APPLY));
-        expect(codeOf(error)).toBe("valve_not_observed");
+        const plan = await rig.rt.preview(raw(), APPLY);
+        expect(plan.pending.map((p) => p.valveId)).toEqual([A]);
         expect(rig.z2m.attempts()).toHaveLength(1);
       });
     });
@@ -2766,7 +2786,7 @@ describe("runtime", () => {
       it("the rejection reaches the caller", async () => {
         const rig = await boot();
         rig.say(A, "a-1");
-        rig.stores.fail.ledger = 1;
+        rig.stores.fail.config = 1;
         expect(codeOf(await rejectionOf(rig.rt.apply(raw(), APPLY)))).toBe("io_failed");
       });
 
@@ -2774,7 +2794,7 @@ describe("runtime", () => {
         const rig = await boot();
         rig.say(A, "a-1");
         await rig.advance(5000);
-        rig.stores.fail.ledger = 1;
+        rig.stores.fail.config = 1;
         const before = rig.snapshots.length;
         let ticksAtRejection = -1;
         await rig.rt.apply(raw(), APPLY).catch(() => {
@@ -2843,9 +2863,10 @@ describe("runtime", () => {
     });
 
     describe("With a new valve that has sent no message", () => {
-      it("rejects with ChangeRefused valve_not_observed and one read is sent", async () => {
+      it("returns a plan listing it pending with valve_not_observed, and one read is sent", async () => {
         const rig = await boot();
-        expect(codeOf(await rejectionOf(rig.rt.preview(raw(), APPLY)))).toBe("valve_not_observed");
+        const plan = await rig.rt.preview(raw(), APPLY);
+        expect(plan.pending.map((p) => [p.valveId, p.reason])).toEqual([[A, "valve_not_observed"]]);
         expect(rig.z2m.sent().map((s) => [s.kind, s.deviceId])).toEqual([["read", A]]);
       });
     });

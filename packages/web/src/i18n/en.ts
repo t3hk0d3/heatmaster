@@ -135,7 +135,6 @@ export const en = {
   "editor.preview": "Preview",
   "editor.apply": "Apply",
   "editor.reload": "Reload",
-  "editor.accept": "Accept unreadable originals of {name}",
   "editor.overwrite": "Overwrite the unreadable configuration",
   "editor.dirty": "You have changes that are not applied.",
   "editor.server_changed":
@@ -147,8 +146,6 @@ export const en = {
   "plan.joining": "Valves that join a room",
   "plan.original": "{setting}: {value} ({evidence})",
   "plan.unreadable": "{setting}: could not be read",
-  "plan.rejoining": "Valves that rejoin a room",
-  "plan.leaving": "Valves that leave their room",
   "plan.writes": "Writes to valves",
   "plan.nothing": "Nothing will be written.",
   "plan.held": "Writes stay held after this change.",
@@ -249,6 +246,8 @@ export const en = {
   "error.valve_managed": "Valve {valveId} is in a room. Take it out of the configuration first.",
   "error.valve_not_pending":
     "Valve {valveId} is not waiting for its unknown original settings to be accepted.",
+  "error.schedule_in_use":
+    "Room {roomId} uses a schedule. A configuration without any schedule is refused while a room exists.",
   "error.not_ready": "Heatmaster is still starting. Try again in a moment.",
   "error.mqtt_fault": "The MQTT connection has a fault: {reason}.",
   "error.body_invalid": "The request is not valid.",

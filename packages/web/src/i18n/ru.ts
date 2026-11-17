@@ -85,7 +85,6 @@ export const ru: Dictionary = {
   "editor.preview": "Предпросмотр",
   "editor.apply": "Применить",
   "editor.reload": "Загрузить заново",
-  "editor.accept": "Принять нечитаемые исходные настройки клапана {name}",
   "editor.overwrite": "Перезаписать нечитаемую конфигурацию",
   "editor.dirty": "Есть изменения, которые не применены.",
   "editor.server_changed":
@@ -97,8 +96,6 @@ export const ru: Dictionary = {
   "plan.joining": "Клапаны, которые войдут в комнату",
   "plan.original": "{setting}: {value} ({evidence})",
   "plan.unreadable": "{setting}: прочитать не удалось",
-  "plan.rejoining": "Клапаны, которые вернутся в комнату",
-  "plan.leaving": "Клапаны, которые выйдут из комнаты",
   "plan.writes": "Запись в клапаны",
   "plan.nothing": "Ничего записано не будет.",
   "plan.held": "После этого изменения запись остаётся остановленной.",
@@ -200,6 +197,8 @@ export const ru: Dictionary = {
   "error.valve_managed":
     "Клапан {valveId} находится в комнате. Сначала уберите его из конфигурации.",
   "error.valve_not_pending": "Клапан {valveId} не ожидает принятия неизвестных исходных настроек.",
+  "error.schedule_in_use":
+    "Комната {roomId} использует расписание. Конфигурация без расписаний не принимается, пока есть комнаты.",
   "error.not_ready": "Heatmaster ещё запускается. Повторите чуть позже.",
   "error.mqtt_fault": "Проблема с подключением к MQTT: {reason}.",
   "error.body_invalid": "Запрос некорректен.",

@@ -821,10 +821,9 @@ function previewHolds(change: Change): void {
   const base = modelConfig(change.schedules, false);
   const config = { ...base, presets: { ...base.presets, comfort: change.comfort } };
   const before = sim.log().length;
-  // The devices move in Home Assistant and the next tick's reconcile runs at once, so the
-  // change's preview sees the valves it releases (Task 8's planChange reconciles by itself).
+  // The devices move in Home Assistant; the change's preview reconciles over the new house, so
+  // it sees the valves the next tick releases.
   sim.setMembership(modelMembership(change.placement));
-  sim.reconcileNow();
   const result = sim.planChange(configToRaw(config));
   expect(result.ok).toBe(true);
   if (!result.ok) return;

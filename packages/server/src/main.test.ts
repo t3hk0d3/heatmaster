@@ -364,7 +364,6 @@ const DAY_KEYS_Z2M = [
 ];
 const NO_CHANGE = {
   expectedRevision: undefined,
-  acceptUnknownOriginals: [],
   overwriteUnreadable: false,
 };
 

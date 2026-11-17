@@ -2690,6 +2690,29 @@ describe("control", () => {
         expect(tick(next(world, first, MINUTE_MS)).effects).toEqual([]);
       });
     });
+    // With no schedule nothing joins (R7), so a valve without a record waits for nothing.
+    describe("With a config that has no schedule and a room holding a valve without a record", () => {
+      const world = ((): World => {
+        const base = withState(joining(), undefined);
+        const stored = storedOf(base);
+        const config = { ...stored.config, schedules: [], defaultScheduleId: undefined };
+        return { ...base, stored: { ...stored, config } };
+      })();
+      it("it is not pending: no membership, no ask, no valve_pending problem, no pending entry", () => {
+        const kinds = memberships(
+          world.configState,
+          world.stored,
+          world.ledger,
+          roomsOf(world.configState, world.stored, world.house),
+          world.house.kind,
+        );
+        expect(kinds.has(V)).toBe(false);
+        const result = tick(world);
+        expect(result.effects).toEqual([]);
+        expect(problemsOf(result, "valve_pending")).toEqual([]);
+        expect(result.pending).toEqual([]);
+      });
+    });
     describe("With a pending valve and a managed valve in one room", () => {
       it("the managed valve is written as without the pending one", () => {
         const world = withValues(equalWorld(), { day_sat: OTHER_DAY });

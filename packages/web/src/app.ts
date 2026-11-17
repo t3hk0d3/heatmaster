@@ -1,7 +1,6 @@
 import type { ApiError, ConfigView, PlanView, StateView } from "@heatmaster/core";
 import type { ApiClient, Result } from "./api.ts";
 import {
-  acceptToggled,
   applied,
   edited,
   loadFailed,
@@ -294,13 +293,8 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
   function onChange(event: Event): void {
     const target = event.target;
     if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
-    if (target.dataset.action === "accept") {
-      editor = acceptToggled(editor, target.dataset.valveId ?? "", target.checked);
-    } else if (target.dataset.action === "overwrite") {
-      editor = overwriteToggled(editor, target.checked);
-    } else {
-      return;
-    }
+    if (target.dataset.action !== "overwrite") return;
+    editor = overwriteToggled(editor, target.checked);
     render();
   }
 

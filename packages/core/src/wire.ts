@@ -4,6 +4,7 @@
  */
 
 import type { UnplacedReason } from "./house.ts";
+import type { PendingReason } from "./join.ts";
 import type { ConfigState, DroppedRoomReason, HaChangeKind, Membership } from "./ledger.ts";
 import type { Liveness } from "./observation.ts";
 import type { Evidence, SettingKey, ValveMode } from "./settings.ts";
@@ -137,7 +138,14 @@ export type JoiningView = Readonly<{
   unreadable: readonly SettingKey[];
 }>;
 
-export type ValveRefView = Readonly<{ valveId: string; name: string }>;
+/** A valve that waits to join its room; `unreadable` is filled for `originals_unreadable` only. */
+export type PendingView = Readonly<{
+  valveId: string;
+  name: string;
+  roomId: string;
+  reason: PendingReason;
+  unreadable: readonly SettingKey[];
+}>;
 
 /** `from` is left out when the current value is unknown. */
 export type WriteView = Readonly<{
@@ -148,15 +156,15 @@ export type WriteView = Readonly<{
 
 /**
  * `revision` is the revision this change gets (preview) or got (apply); `held` says whether writes
- * are held after this change.
+ * are held after this change. `joining` and `pending` are what the next tick joins and keeps
+ * waiting once the change is saved.
  */
 export type PlanView = Readonly<{
   applied: boolean;
   revision: number;
   held: boolean;
   joining: readonly JoiningView[];
-  rejoining: readonly ValveRefView[];
-  leaving: readonly ValveRefView[];
+  pending: readonly PendingView[];
   writes: readonly WriteView[];
 }>;
 
@@ -172,7 +180,6 @@ export type ApplyRequest = Readonly<{
   config?: Readonly<Record<string, unknown>>;
   yaml?: string;
   expectedRevision?: number;
-  acceptUnknownOriginals?: readonly string[];
   overwriteUnreadable?: boolean;
 }>;
 

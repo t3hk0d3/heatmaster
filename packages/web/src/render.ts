@@ -8,7 +8,7 @@ import type {
   ValveView,
   WriteView,
 } from "@heatmaster/core";
-import { acceptOffers, canApply } from "./editor.ts";
+import { canApply } from "./editor.ts";
 import type { EditorState } from "./editor.ts";
 import type { ConnectionStatus } from "./events.ts";
 import { DICTIONARIES, codeText, isTextKey } from "./i18n.ts";
@@ -321,18 +321,6 @@ export function renderProblems(state: StateView, t: Translate, offerEmpty = fals
   return section;
 }
 
-function renderRefs(
-  title: string,
-  refs: readonly Readonly<{ valveId: string; name: string }>[],
-): HTMLElement | undefined {
-  if (refs.length === 0) return undefined;
-  const block = el("div", {}, textElement("h4", title));
-  const list = el("ul", {});
-  for (const ref of refs) list.append(textElement("li", ref.name));
-  block.append(list);
-  return block;
-}
-
 function renderWrite(write: WriteView, valves: readonly ValveView[], t: Translate): HTMLElement {
   const modelId = valves.find((valve) => valve.valveId === write.valveId)?.modelId;
   const item = el("li", {}, textElement("strong", write.name));
@@ -388,11 +376,6 @@ export function renderPlan(
     }
     section.append(list);
   }
-
-  const rejoining = renderRefs(t("plan.rejoining"), plan.rejoining);
-  if (rejoining !== undefined) section.append(rejoining);
-  const leaving = renderRefs(t("plan.leaving"), plan.leaving);
-  if (leaving !== undefined) section.append(leaving);
 
   section.append(textElement("h4", t("plan.writes")));
   if (plan.writes.length === 0) {
@@ -480,17 +463,6 @@ export function renderEditorControls(
   const reload = button(t("editor.reload"), "reload");
   controls.append(preview, apply, reload);
 
-  const names = new Map((state?.valves ?? []).map((valve) => [valve.valveId, valve.name]));
-  for (const valveId of acceptOffers(editor)) {
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = editor.accept.includes(valveId);
-    box.dataset.action = "accept";
-    box.dataset.valveId = valveId;
-    controls.append(
-      el("label", {}, box, t("editor.accept", { name: names.get(valveId) ?? valveId })),
-    );
-  }
   if (state?.configState === "unreadable") {
     const box = document.createElement("input");
     box.type = "checkbox";

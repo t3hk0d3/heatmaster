@@ -15,7 +15,6 @@ import {
   memberships,
   newState,
   planChange,
-  reconcile,
   resolveWeek,
   restoreValve,
   roomsOf,
@@ -139,11 +138,6 @@ export type SimDriver = Readonly<{
   setMembership: (next: AreaMembership) => void;
   /** Runs `fn` with the world each later tick reads, just before that tick. */
   beforeTick: (fn: (world: World) => void) => void;
-  /**
-   * Runs the next tick's reconcile at once and executes its effects: what `planChange` sees once
-   * it previews over the reconciled world (plan 2, Task 8).
-   */
-  reconcileNow: () => void;
   ledger: () => Ledger | undefined;
   disk: () => Readonly<{ config: ConfigFile; ledger: LedgerFile }>;
   copy: () => Ledger | undefined;
@@ -503,9 +497,6 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     beforeTick(fn) {
       tickHooks.push(fn);
     },
-    reconcileNow() {
-      executeAll(reconcile(buildWorld()).effects);
-    },
     ledger: () => ledger,
     disk: () => ({ config: disk.config, ledger: disk.ledger }),
     copy: () => copy,
@@ -568,24 +559,17 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       const full: ChangeOptions = {
         expectedRevision: undefined,
         dryRun: false,
-        acceptUnknownOriginals: new Set(),
         overwriteUnreadable: false,
         haLinked: true,
         ...options,
       };
       try {
         const plan = planChange(buildWorld(), raw, full, sensorInfo());
+        // The server's direct ask of pending valves is not simulated: the tick asks them.
         executeAll(plan.effects);
         return { ok: true, plan };
       } catch (error) {
         if (!(error instanceof ChangeRefused)) throw error;
-        if (error.code === "valve_not_observed") {
-          // What the server does: ask the valves to report, and leave the retry to the caller.
-          for (const id of (error.data.valveIds ?? "").split(",")) {
-            const payload = bindings.get(id)?.encodeRefresh();
-            if (payload !== undefined) bridge.get(id, payload, nowMs);
-          }
-        }
         return { ok: false, refused: error };
       }
     },

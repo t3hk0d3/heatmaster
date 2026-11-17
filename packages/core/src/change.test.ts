@@ -21,13 +21,14 @@ import {
 import type { ChangeOptions, ChangePlan, ChangeRefusedCode, SensorInfo } from "./change.ts";
 import type { DeviceView, Effect, World } from "./control.ts";
 import { EMPTY_LEDGER, FRESH_STORED, withRecord } from "./ledger.ts";
-import type { Ledger, StoredConfig, ValveRecord } from "./ledger.ts";
+import type { HaChangeItem, Ledger, StoredConfig, ValveRecord } from "./ledger.ts";
 import { ConfigError } from "./model.ts";
 import type { Room, SensorRef } from "./model.ts";
 import type { DeviceState } from "./observation.ts";
 import { DAY_KEYS } from "./settings.ts";
 import type { SettingKey, SettingValues, ValveSpec } from "./settings.ts";
 import type { SensorReading } from "./temperature.ts";
+import { validateConfig } from "./validation.ts";
 import type { RawConfig, RawRoomEntry, RawSensor } from "./validation.ts";
 
 const V1 = "z2m:0x00124b0000000001";
@@ -44,6 +45,13 @@ const BEDROOM_MODEL: SensorRef = { ref: BEDROOM_REF, weight: 1 };
 const HA_SENSOR: RawSensor = { ref: "ha:sensor.living" };
 const HA_SENSOR_ID = "ha:sensor.living";
 const HA_MODEL: SensorRef = { ref: "ha:sensor.living", weight: 1 };
+
+const HA_CHANGE_ITEM: HaChangeItem = {
+  kind: "schedule",
+  areaId: "living",
+  entityId: undefined,
+  scheduleId: BUILDER_SCHEDULE,
+};
 
 type Model = "trvzb" | "trv_zbt";
 
@@ -155,11 +163,19 @@ function doc(
   };
 }
 
+/** The document with no schedule, no default schedule and no entry. */
+function noSchedule(): RawConfig {
+  return {
+    version: 3,
+    settings: { hold_writes: false, timezone: BUILDER_NOW.timeZoneId },
+    schedules: [],
+  };
+}
+
 function options(overrides: Partial<ChangeOptions> = {}): ChangeOptions {
   return {
     expectedRevision: undefined,
     dryRun: false,
-    acceptUnknownOriginals: new Set(),
     overwriteUnreadable: false,
     haLinked: true,
     ...overrides,
@@ -201,10 +217,6 @@ function codeOf(run: () => unknown): ChangeRefusedCode {
 
 function kinds(effects: readonly Effect[]): readonly string[] {
   return effects.map((effect) => effect.kind);
-}
-
-function recordOf(ledger: Ledger | undefined, valveId: string): ValveRecord | undefined {
-  return ledger?.records.get(valveId);
 }
 
 function storedOf(world: World): StoredConfig {
@@ -299,39 +311,172 @@ describe("change", () => {
   });
 
   describe("planChange", () => {
-    describe("With a first config over a live house whose room holds one observable valve", () => {
-      const world = first(devicesOf({ [V1]: observedView() }));
-      const result = plan(world, doc({ living: {} }));
+    describe("With the first document with a schedule, over a live house with two rooms of observable valves", () => {
+      const world = first(devicesOf({ [V1]: observedView(), [V2]: observedView() }), [
+        room("living", [V1]),
+        room("bedroom", [V2]),
+      ]);
+      const result = plan(world, doc());
 
-      it("effects are saveLedger, writeOriginalsCopy, saveConfig, in that order", () => {
-        expect(kinds(result.effects)).toEqual(["saveLedger", "writeOriginalsCopy", "saveConfig"]);
+      it("joining holds both captures", () => {
+        expect(result.joining).toEqual([
+          { valveId: V1, originals: { sensor_source: "internal" }, unreadable: [] },
+          { valveId: V2, originals: { sensor_source: "internal" }, unreadable: [] },
+        ]);
       });
 
-      it("the ledger holds a record with the captured originals", () => {
-        expect(recordOf(result.ledger, V1)).toEqual({
-          valveId: V1,
-          profile: "sonoff_trvzb",
-          adoptedAt: NOW_MS,
-          originals: { sensor_source: "internal" },
-        });
-      });
-
-      it("the stored revision is 1", () => {
+      it("effects hold saveConfig only and the revision is 1", () => {
+        expect(result.effects).toEqual([{ kind: "saveConfig", stored: result.stored }]);
         expect(result.stored.revision).toBe(1);
       });
 
-      it("writes lists what the config leads to", () => {
-        expect(result.writes).toEqual([{ valveId: V1, values: sevenDays(), current: {} }]);
+      it("writes lists both valves' days", () => {
+        expect(result.writes).toEqual([
+          { valveId: V1, values: sevenDays(), current: {} },
+          { valveId: V2, values: sevenDays(), current: {} },
+        ]);
       });
     });
 
     describe("With dryRun true", () => {
-      it("effects is empty and joining and writes are filled", () => {
-        const world = first(devicesOf({ [V1]: observedView() }));
-        const result = plan(world, doc({ living: {} }), { dryRun: true });
+      it("effects is empty and joining, pending and writes are filled", () => {
+        const world = first(
+          devicesOf({ [V1]: observedView(), [V2]: viewWith("trvzb", undefined) }),
+          [room("living", [V1, V2])],
+        );
+        const result = plan(world, doc(), { dryRun: true });
         expect(result.effects).toEqual([]);
         expect(result.joining.map((c) => c.valveId)).toEqual([V1]);
-        expect(result.writes.map((w) => w.valveId)).toContain(V1);
+        expect(result.pending.map((p) => p.valveId)).toEqual([V2]);
+        expect(result.writes.map((w) => w.valveId)).toEqual([V1]);
+      });
+    });
+
+    describe("With a room whose valve has not reported", () => {
+      it("pending lists it with valve_not_observed and a plan is returned", () => {
+        const world = first(devicesOf({ [V1]: viewWith("trvzb", undefined) }));
+        const result = plan(world, doc());
+        expect(result.pending).toEqual([
+          { valveId: V1, roomId: "living", reason: "valve_not_observed", unreadable: [] },
+        ]);
+        expect(result.joining).toEqual([]);
+        expect(result.stored.revision).toBe(1);
+      });
+    });
+
+    describe("With a document with no schedule while the house has a room", () => {
+      it("throws ChangeRefused schedule_in_use with that room's id", () => {
+        const world = current({
+          rooms: [room("office", [V2]), room("bedroom", [V1])],
+          ledger: ledgerOf(record(V1), record(V2)),
+        });
+        const refused = refusal(() => plan(world, noSchedule()));
+        expect(refused.code).toBe("schedule_in_use");
+        expect(refused.data).toEqual({ roomId: "bedroom" });
+      });
+    });
+
+    describe("With a document with no schedule and no room", () => {
+      it("returns a plan", () => {
+        const result = plan(current({ rooms: [] }), noSchedule());
+        expect(result.stored.config.schedules).toEqual([]);
+        expect(result.stored.revision).toBe(2);
+      });
+    });
+
+    describe("With a version 2 document", () => {
+      it("throws ConfigError version_unsupported", () => {
+        let caught: unknown;
+        try {
+          plan(current({ rooms: [] }), { ...doc(), version: 2 });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).issues).toContainEqual(
+          expect.objectContaining({ path: "version", code: "version_unsupported" }),
+        );
+      });
+    });
+
+    describe("With a current stored config holding a membership, HA changes, an upgrade report and a releasing valve", () => {
+      it("stored keeps all four", () => {
+        const base = current({
+          rooms: [room("living", [V1])],
+          ledger: ledgerOf(record(V1), record(V2)),
+          releasing: new Map([[V2, NOW_MS - HOUR_MS]]),
+        });
+        const kept = {
+          membership: storedOf(base).membership,
+          haChanges: [{ revision: 1, at: NOW_MS - HOUR_MS, items: [HA_CHANGE_ITEM] }],
+          upgrade: { fromVersion: 2 as const, droppedRooms: [] },
+          releasing: new Map([[V2, NOW_MS - HOUR_MS]]),
+        };
+        const world: World = { ...base, stored: { ...storedOf(base), ...kept } };
+        const result = plan(world, doc({}, { eco: 16 }));
+        expect(kept.membership?.rooms.has("living")).toBe(true);
+        expect(result.stored).toMatchObject(kept);
+      });
+    });
+
+    describe("With a schedule edit only", () => {
+      const days = { ...sevenDays(), sensor_source: "internal" as const };
+      const world = current({
+        rooms: [room("living", [V1])],
+        ledger: ledgerOf(record(V1)),
+        devices: devicesOf({ [V1]: observedView("trvzb", days) }),
+      });
+      const result = plan(world, doc({}, { eco: 16 }));
+
+      it("joining and pending are empty and writes lists the changed days", () => {
+        expect(result.joining).toEqual([]);
+        expect(result.pending).toEqual([]);
+        expect(result.writes.map((w) => w.valveId)).toEqual([V1]);
+        expect(Object.keys(result.writes[0]?.values ?? {}).sort()).toEqual(
+          [...DAY_KEY_LIST].sort(),
+        );
+        expect(result.writes[0]?.values).not.toEqual(sevenDays());
+      });
+    });
+
+    describe("With a sensor that only an unused entry names, unknown to Home Assistant", () => {
+      it("throws ChangeRefused sensor_unknown", () => {
+        const world = current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) });
+        const refused = refusal(() => plan(world, doc({ attic: { sensors: [BEDROOM_SENSOR] } })));
+        expect(refused.code).toBe("sensor_unknown");
+        expect(refused.data).toEqual({ sensor: BEDROOM_SENSOR_ID });
+      });
+    });
+
+    describe("With config state unreadable and overwriteUnreadable", () => {
+      it("stored is FRESH_STORED with the new config and revision 1", () => {
+        const world = makeWorld({
+          configState: "unreadable",
+          stored: { ...FRESH_STORED, config: makeConfig(), revision: 4 },
+          ledger: ledgerOf(record(V2)),
+          devices: devicesOf({ [V1]: observedView() }),
+          house: liveHouse([room("living", [V1])]),
+        });
+        const raw = doc();
+        const result = plan(world, raw, { overwriteUnreadable: true });
+        expect(result.stored).toEqual({
+          ...FRESH_STORED,
+          config: validateConfig(raw),
+          revision: 1,
+        });
+      });
+    });
+
+    describe("With a document holding hold_writes false", () => {
+      it("stored has writes released", () => {
+        const base = current({ rooms: [] });
+        const stored = storedOf(base);
+        const held = {
+          ...stored.config,
+          settings: { ...stored.config.settings, holdWrites: true },
+        };
+        const world: World = { ...base, stored: { ...stored, config: held } };
+        expect(plan(world, doc()).stored.config.settings.holdWrites).toBe(false);
       });
     });
 
@@ -385,22 +530,6 @@ describe("change", () => {
       });
     });
 
-    describe('With config state "unreadable" and overwriteUnreadable', () => {
-      it("returns a plan; ledger records in no room are untouched and not in releasing", () => {
-        const kept = record(V2);
-        const world = makeWorld({
-          configState: "unreadable",
-          stored: undefined,
-          ledger: ledgerOf(kept),
-          devices: devicesOf({ [V1]: observedView() }),
-          house: liveHouse([room("living", [V1])]),
-        });
-        const result = plan(world, doc({ living: {} }), { overwriteUnreadable: true });
-        expect(recordOf(result.ledger, V2)).toBe(kept);
-        expect(result.stored.releasing.has(V2)).toBe(false);
-      });
-    });
-
     describe('With config state "ok" and no stored config', () => {
       it("throws ChangeRefused config_unreadable", () => {
         const world = makeWorld({
@@ -412,9 +541,13 @@ describe("change", () => {
     });
 
     describe("With the ledger unreadable and a new valve", () => {
-      it("throws ChangeRefused ledger_unreadable", () => {
+      it("pending lists it with ledger_unreadable and a plan is returned", () => {
         const world: World = { ...first(devicesOf({ [V1]: observedView() })), ledger: undefined };
-        expect(codeOf(() => plan(world, doc({ living: {} })))).toBe("ledger_unreadable");
+        const result = plan(world, doc({ living: {} }));
+        expect(result.pending).toEqual([
+          { valveId: V1, roomId: "living", reason: "ledger_unreadable", unreadable: [] },
+        ]);
+        expect(result.joining).toEqual([]);
       });
     });
 
@@ -436,10 +569,10 @@ describe("change", () => {
     });
 
     describe("With a new TRV-ZBT whose active group is 3", () => {
-      it("returns a plan and the record's original active group is 3", () => {
+      it("returns a plan and the captured original active group is 3", () => {
         const view = observedView("trv_zbt", { active_group: 3, sensor_source: "internal" });
         const result = plan(first(devicesOf({ [V1]: view })), doc({ living: {} }));
-        expect(recordOf(result.ledger, V1)?.originals.active_group).toBe(3);
+        expect(result.joining[0]?.originals.active_group).toBe(3);
       });
     });
 

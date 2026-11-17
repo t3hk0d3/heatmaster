@@ -273,7 +273,6 @@ describe("app", () => {
         expect(page.client.preview).toHaveBeenCalledWith({
           yaml: "version: 1\nrooms: []\n",
           expectedRevision: 3,
-          acceptUnknownOriginals: [],
           overwriteUnreadable: false,
         });
         expect(page.text()).toContain(en["plan.title"]);
@@ -288,6 +287,15 @@ describe("app", () => {
         page.button("apply").click();
         await settle();
         expect(page.client.apply).toHaveBeenCalledWith(page.client.preview.mock.calls[0]?.[0]);
+      });
+      it("the request sent has no acceptUnknownOriginals field", async () => {
+        const page = await typed();
+        page.button("preview").click();
+        await settle();
+        page.button("apply").click();
+        await settle();
+        const sent = page.client.apply.mock.calls[0]?.[0] ?? {};
+        expect(Object.keys(sent)).not.toContain("acceptUnknownOriginals");
       });
       it("the page says which revision was applied", async () => {
         const page = await typed();

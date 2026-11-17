@@ -1,23 +1,21 @@
-import { isObservable, preview, transportFaulted, transportOf } from "./control.ts";
-import type { DeviceView, Effect, PlannedWrite, World } from "./control.ts";
+import { preview } from "./control.ts";
+import type { Effect, PlannedWrite, World } from "./control.ts";
 import { roomsOf } from "./house.ts";
-import { FRESH_STORED, memberships, withRecord, withoutRecord } from "./ledger.ts";
+import { reconcile } from "./join.ts";
+import type { Pending } from "./join.ts";
+import { FRESH_STORED, memberships, withoutRecord } from "./ledger.ts";
 import type { Ledger, Membership, StoredConfig } from "./ledger.ts";
 import { sensorId } from "./model.ts";
-import type { Config, Room, SensorRef } from "./model.ts";
+import type { Config, SensorRef } from "./model.ts";
 import type { DeviceState } from "./observation.ts";
 import { members } from "./settings.ts";
 import type { SettingKey, SettingValue, ValveSpec } from "./settings.ts";
 import { validateConfig } from "./validation.ts";
 
-/**
- * - `acceptUnknownOriginals`: valve ids whose unreadable originals the caller accepts as unknown.
- * - `haLinked`: a Home Assistant link is configured and has loaded its data at least once.
- */
+/** `haLinked`: a Home Assistant link is configured and has loaded its data at least once. */
 export type ChangeOptions = Readonly<{
   expectedRevision: number | undefined;
   dryRun: boolean;
-  acceptUnknownOriginals: ReadonlySet<string>;
   overwriteUnreadable: boolean;
   haLinked: boolean;
 }>;
@@ -41,7 +39,8 @@ export type ChangeRefusedCode =
   | "originals_unreadable"
   | "valve_not_orphan"
   | "valve_managed"
-  | "valve_not_pending";
+  | "valve_not_pending"
+  | "schedule_in_use";
 
 /** A config change, restore or forget that cannot be done. */
 export class ChangeRefused extends Error {
@@ -64,16 +63,15 @@ export type Capture = Readonly<{
 }>;
 
 /**
- * `joining`: one Capture per new valve (enters a room, has no ledger record), in valve-id order.
- * `rejoining` and `leaving` are in valve-id order.
+ * `stored` is what the change saves. `joining` and `pending` are what the next tick's `reconcile`
+ * would join and keep waiting over it, in valve-id order; `writes` is the preview over the world
+ * after that reconcile.
  */
 export type ChangePlan = Readonly<{
   stored: StoredConfig;
-  ledger: Ledger | undefined;
   effects: readonly Effect[];
   joining: readonly Capture[];
-  rejoining: readonly string[];
-  leaving: readonly string[];
+  pending: readonly Pending[];
   writes: readonly PlannedWrite[];
 }>;
 
@@ -97,12 +95,6 @@ function readable(world: World): StoredConfig | undefined {
   return world.configState === "ok" ? world.stored : undefined;
 }
 
-/** Valve ids of every room, in room order, without repeats. */
-function roomValves(rooms: readonly Room[] | undefined): readonly string[] {
-  const ids = (rooms ?? []).flatMap((room) => room.valves.map((valve) => valve.valveId));
-  return [...new Set(ids)];
-}
-
 /** Every sensor of every entry, used or not, in the config's order. */
 function entrySensors(config: Config | undefined): readonly SensorRef[] {
   return [...(config?.rooms.values() ?? [])].flatMap((entry) => entry.sensors);
@@ -112,10 +104,6 @@ function entrySensors(config: Config | undefined): readonly SensorRef[] {
 function membershipsIn(world: World, ledger: Ledger | undefined): ReadonlyMap<string, Membership> {
   const rooms = roomsOf(world.configState, world.stored, world.house);
   return memberships(world.configState, world.stored, ledger, rooms, world.house.kind);
-}
-
-function byId(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -144,8 +132,8 @@ function checkSensors(
 
 /**
  * Plans the user's config change; see the task's pseudocode for the order of the refusals. The
- * valves in rooms before and after are those of `roomsOf` over the world's house: the document
- * names no valve, so only a change of what is readable or of having a schedule moves valves.
+ * document names no valve: what joins, waits or leaves is what the next tick's `reconcile` does
+ * over the world with the new stored config, so the plan previews that and saves the config only.
  */
 export function planChange(
   world: World,
@@ -154,19 +142,7 @@ export function planChange(
   sensors: ReadonlyMap<string, SensorInfo>,
 ): ChangePlan {
   const config = validateConfig(raw);
-  const nowMs = world.now.epochMilliseconds;
   const old = readable(world);
-  const before = new Set(roomValves(roomsOf(world.configState, world.stored, world.house)));
-  // The server's own fields (releasing, membership, sensor import, HA changes, report) are kept.
-  const draft: StoredConfig = {
-    ...(old ?? FRESH_STORED),
-    config,
-    revision: (old?.revision ?? 0) + 1,
-  };
-  const afterList = roomValves(roomsOf("ok", draft, world.house));
-  const after = new Set(afterList);
-  const entering = afterList.filter((id) => !before.has(id));
-  const leaving = [...before].filter((id) => !after.has(id)).sort(byId);
 
   // State "ok" without a stored config counts as unreadable, as in `memberships`.
   const unreadable = world.configState === "unreadable" || (world.configState === "ok" && !old);
@@ -185,76 +161,23 @@ export function planChange(
     throw new ChangeRefused("timezone_missing");
   }
   checkSensors(config, old?.config, options.haLinked, sensors);
-  const views = new Map<string, Readonly<{ view: DeviceView; spec: ValveSpec }>>();
-  for (const valveId of entering) {
-    const view = world.devices.get(valveId);
-    if (view === undefined) throw new ChangeRefused("valve_unknown", { valveId });
-    if (view.spec === undefined) throw new ChangeRefused("valve_unsupported", { valveId });
-    views.set(valveId, { view, spec: view.spec });
-  }
-  const known = (valveId: string): Readonly<{ view: DeviceView; spec: ValveSpec }> => {
-    const entry = views.get(valveId);
-    if (entry === undefined) throw new Error(`valve ${valveId} was not checked`);
-    return entry;
-  };
-
-  const ledger = world.ledger;
-  if (ledger === undefined && entering.length > 0) throw new ChangeRefused("ledger_unreadable");
-  const newValves = entering.filter((id) => ledger?.records.has(id) !== true);
-  const rejoining = entering.filter((id) => ledger?.records.has(id) === true).sort(byId);
-  // A link that is down is not a refusal here: the valve is then not observed, or rejoins.
-  for (const valveId of newValves) {
-    if (transportFaulted(world, known(valveId).view, valveId)) {
-      throw new ChangeRefused("transport_unusable", { valveId, transport: transportOf(valveId) });
-    }
-  }
-  const unobserved = newValves.filter((id) => !isObservable(known(id).view)).sort(byId);
-  if (unobserved.length > 0) {
-    throw new ChangeRefused("valve_not_observed", { valveIds: unobserved.join(",") });
-  }
-  const captures = new Map<string, Capture>();
-  for (const valveId of newValves) {
-    const { view, spec } = known(valveId);
-    const taken = capture(valveId, spec, view.state);
-    if (taken.unreadable.length > 0 && !options.acceptUnknownOriginals.has(valveId)) {
-      throw new ChangeRefused("originals_unreadable", {
-        valveId,
-        settings: taken.unreadable.join(","),
-      });
-    }
-    captures.set(valveId, taken);
+  const inUse = roomsOf(world.configState, world.stored, world.house)?.[0];
+  if (config.schedules.length === 0 && inUse !== undefined) {
+    throw new ChangeRefused("schedule_in_use", { roomId: inUse.id });
   }
 
-  const joining = [...captures.values()].sort((a, b) => byId(a.valveId, b.valveId));
-  // `joining` is empty when the ledger is unreadable: entering valves were refused above.
-  const nextLedger =
-    ledger === undefined
-      ? undefined
-      : joining.reduce(
-          (current, taken) =>
-            withRecord(current, {
-              valveId: taken.valveId,
-              profile: known(taken.valveId).spec.profile,
-              adoptedAt: nowMs,
-              originals: taken.originals,
-            }),
-          ledger,
-        );
-  const releasing = new Map(old?.releasing ?? []);
-  for (const valveId of leaving) releasing.set(valveId, nowMs);
-  for (const valveId of after) releasing.delete(valveId);
-  const stored: StoredConfig = { ...draft, revision: revision + 1, releasing };
-  const writes = preview({ ...world, configState: "ok", stored, ledger: nextLedger });
-
-  const effects: Effect[] = [];
-  if (!options.dryRun) {
-    if (nextLedger !== undefined && joining.length > 0) {
-      effects.push({ kind: "saveLedger", ledger: nextLedger });
-      effects.push({ kind: "writeOriginalsCopy", ledger: nextLedger });
-    }
-    effects.push({ kind: "saveConfig", stored });
-  }
-  return { stored, ledger: nextLedger, effects, joining, rejoining, leaving, writes };
+  // The server's own fields (releasing, membership, sensor import, HA changes, report) are kept.
+  const stored: StoredConfig = { ...(old ?? FRESH_STORED), config, revision: revision + 1 };
+  const next = reconcile({ ...world, configState: "ok", stored });
+  const writes = preview({
+    ...world,
+    configState: "ok",
+    stored: next.stored,
+    ledger: next.ledger,
+  });
+  // Joins and releases are made by the next tick's reconcile, after the config is saved.
+  const effects: Effect[] = options.dryRun ? [] : [{ kind: "saveConfig", stored }];
+  return { stored, effects, joining: next.joined, pending: next.pending, writes };
 }
 
 /** For an orphan: release it to its originals. Anything else is refused with `valve_not_orphan`. */
