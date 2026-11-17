@@ -75,9 +75,11 @@ const CONTROL_PATTERN = /\p{Cc}/u;
 
 const MIN_TEMPERATURE = 4;
 const MAX_TEMPERATURE = 35;
-const MAX_ROOMS = 64;
+/** How many room entries a config may hold. */
+export const MAX_ROOMS = 64;
 const MAX_SCHEDULES = 64;
-const MAX_SENSORS = 16;
+/** How many sensors a room entry may list. */
+export const MAX_SENSORS = 16;
 const MAX_NAME_LENGTH = 64;
 const MAX_SENSOR_WEIGHT = 10;
 const MAX_DAY_SET_POINTS = 6;

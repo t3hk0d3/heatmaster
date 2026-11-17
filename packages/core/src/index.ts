@@ -172,6 +172,11 @@ export {
   problemPacingUnreadable,
   problemStoreWriteFailed,
   problemTickFailed,
+  problemHaLabelFailed,
+  problemLabelForeign,
+  problemLegacyLabelPresent,
+  problemSensorLabelUnused,
+  problemSensorUnlabellable,
   problemTransportUnusable,
   problemValveNotAuto,
   problemValveNotInHa,
@@ -215,8 +220,15 @@ export type {
   ResolvedRooms,
   UnplacedReason,
 } from "./house.ts";
-export { applyLabelOps, mirrorLabels } from "./labels.ts";
-export type { LabelOp, LabelPlan } from "./labels.ts";
+export {
+  applyLabelOps,
+  importSensors,
+  labelEdits,
+  labelProblems,
+  mirrorLabels,
+  withHaEdit,
+} from "./labels.ts";
+export type { HaEdit, LabelOp, LabelPlan } from "./labels.ts";
 export { applyEvent } from "./events.ts";
 export type { Event, Inbox } from "./events.ts";
 export {

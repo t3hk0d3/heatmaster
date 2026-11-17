@@ -103,6 +103,7 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
     sensors: [],
     links: { z2m: true },
     transportFaults: {},
+    areaNames: {},
     ...over,
   };
 }
@@ -592,6 +593,42 @@ describe("views", () => {
           devices: [device(A), device(B)],
         });
         expect(JSON.parse(JSON.stringify(view))).toEqual(view);
+      });
+    });
+  });
+
+  describe("problemName", () => {
+    const nameOf = (over: Partial<Snapshot>, subject: Problem["subject"]): string | undefined =>
+      stateView(snapshot({ ...over, problems: [problem("ha_label_failed", subject)] })).problems[0]
+        ?.name;
+
+    describe("With a problem whose subject is an area", () => {
+      it("the area's name", () => {
+        expect(
+          nameOf(
+            {
+              rooms: [room("office", { name: "Office" })],
+              areaNames: { office: "Office in HA" },
+            },
+            { kind: "area", id: "office" },
+          ),
+        ).toBe("Office");
+      });
+    });
+
+    describe("With a problem whose subject is an area that is no room", () => {
+      it("Home Assistant's name of the area, else the area id", () => {
+        const areaNames = { attic: "Attic" };
+        expect(nameOf({ areaNames }, { kind: "area", id: "attic" })).toBe("Attic");
+        expect(nameOf({ areaNames }, { kind: "area", id: "shed" })).toBe("shed");
+      });
+    });
+
+    describe("With a problem whose subject is a label", () => {
+      it("the label id", () => {
+        expect(nameOf({}, { kind: "label", id: "heatmaster_schedule_day_2" })).toBe(
+          "heatmaster_schedule_day_2",
+        );
       });
     });
   });

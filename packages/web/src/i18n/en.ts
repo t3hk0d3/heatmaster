@@ -223,6 +223,15 @@ export const en = {
     "Heatmaster could not save {store}. Check the disk; writes to valves may be stopped until the save works",
   "problem.tick_failed":
     "Heatmaster failed inside while deciding what to send, so valves get no writes and no room temperature. See its log",
+  "problem.sensor_label_unused":
+    "Sensor {name} carries the Heatmaster sensor label but is used by no room: {reason}",
+  "problem.legacy_label_present":
+    "{name} has Heatmaster sensors, but {entities} still carry room_temperature_sensor, so your own automation still feeds the room until you remove that label",
+  "problem.label_foreign":
+    "The Home Assistant label {name} looks like a Heatmaster schedule label but is not one; Heatmaster leaves it alone",
+  "problem.ha_label_failed": "Heatmaster could not write the label change {op} for {name}: {error}",
+  "problem.sensor_unlabellable":
+    "Sensor {name} is configured but Home Assistant has no registry entry for it, so it cannot be labelled",
 
   "error.config_unreadable": "The configuration cannot be read, so it cannot be changed.",
   "error.revision_conflict":

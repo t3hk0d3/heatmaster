@@ -55,6 +55,7 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
     sensors: [],
     links: { z2m: true },
     transportFaults: {},
+    areaNames: {},
     ...over,
   };
 }

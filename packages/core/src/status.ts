@@ -1,5 +1,6 @@
 import { activePoint } from "./schedule.ts";
 import type { Pending } from "./join.ts";
+import type { LabelOp } from "./labels.ts";
 import type { Membership } from "./ledger.ts";
 import type { Room } from "./model.ts";
 import type { Liveness } from "./observation.ts";
@@ -7,7 +8,8 @@ import type { ResolvedWeek } from "./schedule.ts";
 import type { Group, ValveMode } from "./settings.ts";
 import type { Freshness, RoomTemperature } from "./temperature.ts";
 
-export type SubjectKind = "system" | "room" | "valve" | "sensor";
+/** `area` is a Home Assistant area by its id; `label` is a Home Assistant label by its id. */
+export type SubjectKind = "system" | "room" | "valve" | "sensor" | "area" | "label";
 export type Subject = Readonly<{ kind: SubjectKind; id: string }>;
 
 /** `critical` is reserved for a later plan; no plan-1 problem uses it. */
@@ -37,7 +39,12 @@ export type ProblemKind =
   | "feed_lost"
   | "valve_not_auto"
   | "store_write_failed"
-  | "tick_failed";
+  | "tick_failed"
+  | "sensor_label_unused"
+  | "legacy_label_present"
+  | "label_foreign"
+  | "ha_label_failed"
+  | "sensor_unlabellable";
 
 export type Problem = Readonly<{
   kind: ProblemKind;
@@ -151,11 +158,15 @@ export function roomStatus(
   };
 }
 
-/** `<kind>:<subject kind>:<subject id>`, plus the group or the store where one subject has many. */
+/**
+ * `<kind>:<subject kind>:<subject id>`, plus the group, the store or the label op where one subject
+ * has many.
+ */
 export function problemId(problem: Problem): string {
   const base = `${problem.kind}:${problem.subject.kind}:${problem.subject.id}`;
   if (problem.kind === "setting_not_holding") return `${base}:${problem.data.setting ?? ""}`;
   if (problem.kind === "store_write_failed") return `${base}:${problem.data.store ?? ""}`;
+  if (problem.kind === "ha_label_failed") return `${base}:${problem.data.op ?? ""}`;
   return base;
 }
 
@@ -280,4 +291,54 @@ export function problemStoreWriteFailed(store: string): Problem {
 /** Raised by the runtime, never by `tick`: the last tick threw, so nothing is being decided. */
 export function problemTickFailed(): Problem {
   return problem("tick_failed", "system", SYSTEM_ID, "error");
+}
+
+/** The id of a Home Assistant sensor entity as a sensor subject: its ref, `ha:<entity id>`. */
+function sensorSubject(entityId: string): string {
+  return `ha:${entityId}`;
+}
+
+/**
+ * An entity carries `heatmaster_temp_sensor` but no entry lists it, and it cannot be added: `reason`
+ * is `no_area`, `area_not_room`, `sensor_unknown`, `sensor_not_temperature`, `sensor_on_valve` or
+ * `sensor_limit`.
+ */
+export function problemSensorLabelUnused(entityId: string, reason: string): Problem {
+  return problem("sensor_label_unused", "sensor", sensorSubject(entityId), "warning", { reason });
+}
+
+/** A room has sensors while entities in its area still carry `room_temperature_sensor`. */
+export function problemLegacyLabelPresent(roomId: string, entityIds: readonly string[]): Problem {
+  return problem("legacy_label_present", "room", roomId, "warning", {
+    entities: entityIds.join(","),
+  });
+}
+
+/** A numbered schedule label (`heatmaster_schedule_<x>_<digits>`): Heatmaster never touches it. */
+export function problemLabelForeign(labelId: string): Problem {
+  return problem("label_foreign", "label", labelId, "warning");
+}
+
+/**
+ * A label write failed. The subject is the area, the sensor or the label the op names (for
+ * `createLabel`, the name asked for); `op` is the op's kind and `error` Home Assistant's code.
+ */
+export function problemHaLabelFailed(op: LabelOp, error: string): Problem {
+  const data = { op: op.kind, error };
+  switch (op.kind) {
+    case "createLabel":
+      return problem("ha_label_failed", "label", op.name, "warning", data);
+    case "renameLabel":
+    case "deleteLabel":
+      return problem("ha_label_failed", "label", op.labelId, "warning", data);
+    case "labelArea":
+      return problem("ha_label_failed", "area", op.areaId, "warning", data);
+    case "labelEntity":
+      return problem("ha_label_failed", "sensor", sensorSubject(op.entityId), "warning", data);
+  }
+}
+
+/** A configured sensor that Home Assistant has no registry entry for, so it cannot be labelled. */
+export function problemSensorUnlabellable(entityId: string): Problem {
+  return problem("sensor_unlabellable", "sensor", sensorSubject(entityId), "warning");
 }

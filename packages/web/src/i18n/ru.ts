@@ -174,6 +174,15 @@ export const ru: Dictionary = {
     "Heatmaster не смог сохранить {store}. Проверьте диск: запись в клапаны может быть остановлена, пока сохранение не удастся",
   "problem.tick_failed":
     "Внутренний сбой Heatmaster при выборе того, что отправить: клапаны не получают ни записей, ни температуры комнаты. Смотрите его журнал",
+  "problem.sensor_label_unused":
+    "У датчика {name} есть метка датчика Heatmaster, но ни одна комната его не использует: {reason}",
+  "problem.legacy_label_present":
+    "У комнаты «{name}» есть датчики Heatmaster, но у {entities} всё ещё есть метка room_temperature_sensor, поэтому ваша собственная автоматизация продолжает передавать температуру в комнату, пока вы не снимете эту метку",
+  "problem.label_foreign":
+    "Метка Home Assistant {name} похожа на метку расписания Heatmaster, но ею не является; Heatmaster её не трогает",
+  "problem.ha_label_failed": "Heatmaster не смог записать изменение меток {op} для {name}: {error}",
+  "problem.sensor_unlabellable":
+    "Датчик {name} указан в конфигурации, но в реестре Home Assistant его нет, поэтому пометить его нельзя",
 
   "error.config_unreadable": "Конфигурацию не удаётся прочитать, поэтому её нельзя изменить.",
   "error.revision_conflict":

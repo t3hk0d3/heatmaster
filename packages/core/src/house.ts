@@ -73,7 +73,8 @@ export function scheduleLabelName(scheduleName: string): string {
   return `Heatmaster: ${scheduleName}`;
 }
 
-function ascending(values: Iterable<string>): string[] {
+/** The values in ascending code-unit order. */
+export function ascending(values: Iterable<string>): string[] {
   return [...values].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 

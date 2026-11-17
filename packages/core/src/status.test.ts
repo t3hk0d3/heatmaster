@@ -5,8 +5,11 @@ import {
   SYSTEM_ID,
   problemConfigUnreadable,
   problemFeedLost,
+  problemHaLabelFailed,
   problemHaLinkRequired,
   problemId,
+  problemLabelForeign,
+  problemLegacyLabelPresent,
   problemLedgerUnreadable,
   problemPacingUnreadable,
   problemLinkDown,
@@ -16,8 +19,10 @@ import {
   problemRoomNoTemperature,
   problemScheduleClamped,
   problemSensorLivenessUnobservable,
+  problemSensorLabelUnused,
   problemSensorOutOfRange,
   problemSensorStale,
+  problemSensorUnlabellable,
   problemSettingNotHolding,
   problemStoreWriteFailed,
   problemTickFailed,
@@ -288,8 +293,43 @@ describe("status", () => {
           [problemValveNotAuto(V1, "off"), "valve_not_auto", "valve", "warning", ["mode"]],
           [problemStoreWriteFailed("config"), "store_write_failed", "system", "error", ["store"]],
           [problemTickFailed(), "tick_failed", "system", "error", []],
+          [
+            problemSensorLabelUnused("sensor.office_t", "area_not_room"),
+            "sensor_label_unused",
+            "sensor",
+            "warning",
+            ["reason"],
+          ],
+          [
+            problemLegacyLabelPresent("office", ["sensor.a", "sensor.b"]),
+            "legacy_label_present",
+            "room",
+            "warning",
+            ["entities"],
+          ],
+          [
+            problemLabelForeign("heatmaster_schedule_day_2"),
+            "label_foreign",
+            "label",
+            "warning",
+            [],
+          ],
+          [
+            problemHaLabelFailed({ kind: "deleteLabel", labelId: "heatmaster_schedule_old" }, "x"),
+            "ha_label_failed",
+            "label",
+            "warning",
+            ["error", "op"],
+          ],
+          [
+            problemSensorUnlabellable("sensor.office_t"),
+            "sensor_unlabellable",
+            "sensor",
+            "warning",
+            [],
+          ],
         ];
-        expect(new Set(table.map((row) => row[1])).size).toBe(24);
+        expect(new Set(table.map((row) => row[1])).size).toBe(29);
         for (const [problem, kind, subjectKind, severity, dataKeys] of table) {
           expect(problem.kind).toBe(kind);
           expect(problem.subject.kind).toBe(subjectKind);
@@ -414,11 +454,96 @@ describe("status", () => {
         );
       });
     });
+    describe("For a failed createLabel and a failed renameLabel on one label", () => {
+      it("the two problems have different ids", () => {
+        const label = "heatmaster_schedule_day";
+        const create = problemHaLabelFailed({ kind: "createLabel", name: label }, "timeout");
+        const rename = problemHaLabelFailed(
+          { kind: "renameLabel", labelId: label, name: "Heatmaster: Day" },
+          "timeout",
+        );
+        expect(create.subject).toEqual(rename.subject);
+        expect(problemId(create)).not.toBe(problemId(rename));
+      });
+    });
     describe("With the same problem built twice", () => {
       it("returns the same id", () => {
         expect(problemId(problemScheduleClamped(V1, 5, 30))).toBe(
           problemId(problemScheduleClamped(V1, 5, 30)),
         );
+      });
+    });
+  });
+
+  describe("problemSensorUnlabellable", () => {
+    describe("For the entity sensor.office_t", () => {
+      it("the problem is of kind sensor_unlabellable, warning, with subject ha:sensor.office_t", () => {
+        expect(problemSensorUnlabellable("sensor.office_t")).toEqual({
+          kind: "sensor_unlabellable",
+          subject: { kind: "sensor", id: "ha:sensor.office_t" },
+          severity: "warning",
+          data: {},
+        });
+      });
+    });
+  });
+
+  describe("problemHaLabelFailed", () => {
+    describe("For a failed op of each kind", () => {
+      it("the subject is the area, the sensor or the label the op names, and data holds op and error", () => {
+        const failed = [
+          problemHaLabelFailed({ kind: "createLabel", name: "heatmaster_schedule_day" }, "e1"),
+          problemHaLabelFailed(
+            { kind: "renameLabel", labelId: "heatmaster_schedule_day", name: "Heatmaster: Day" },
+            "e2",
+          ),
+          problemHaLabelFailed({ kind: "deleteLabel", labelId: "heatmaster_schedule_old" }, "e3"),
+          problemHaLabelFailed(
+            { kind: "labelArea", areaId: "office", add: ["heatmaster_schedule_day"], remove: [] },
+            "e4",
+          ),
+          problemHaLabelFailed(
+            {
+              kind: "labelEntity",
+              entityId: "sensor.office_t",
+              add: [],
+              remove: ["heatmaster_temp_sensor"],
+            },
+            "e5",
+          ),
+        ];
+        expect(failed.map((p) => [p.subject, p.data])).toEqual([
+          [
+            { kind: "label", id: "heatmaster_schedule_day" },
+            { op: "createLabel", error: "e1" },
+          ],
+          [
+            { kind: "label", id: "heatmaster_schedule_day" },
+            { op: "renameLabel", error: "e2" },
+          ],
+          [
+            { kind: "label", id: "heatmaster_schedule_old" },
+            { op: "deleteLabel", error: "e3" },
+          ],
+          [
+            { kind: "area", id: "office" },
+            { op: "labelArea", error: "e4" },
+          ],
+          [
+            { kind: "sensor", id: "ha:sensor.office_t" },
+            { op: "labelEntity", error: "e5" },
+          ],
+        ]);
+      });
+    });
+  });
+
+  describe("problemLegacyLabelPresent", () => {
+    describe("For room office and two entities", () => {
+      it("data.entities joins them with commas", () => {
+        expect(problemLegacyLabelPresent("office", ["sensor.a", "sensor.b"]).data).toEqual({
+          entities: "sensor.a,sensor.b",
+        });
       });
     });
   });

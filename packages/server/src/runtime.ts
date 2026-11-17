@@ -198,6 +198,8 @@ export type Snapshot = Readonly<{
   sensors: readonly SensorSnapshot[];
   links: Readonly<Record<string, boolean>>;
   transportFaults: Readonly<Record<string, string>>;
+  /** Home Assistant's names of the areas that problems name, by area id; JSON like the rest. */
+  areaNames: Readonly<Record<string, string>>;
 }>;
 
 export type HeatmasterRuntime = Readonly<{
@@ -1370,6 +1372,20 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       };
     });
 
+    const problems: Problem[] = [
+      ...(lastTick?.problems ?? []),
+      ...storeProblems(),
+      ...(pacingUnreadableUntil !== undefined && clock.nowMs() < pacingUnreadableUntil
+        ? [problemPacingUnreadable()]
+        : []),
+      ...(tickError === undefined ? [] : [problemTickFailed()]),
+    ];
+    const areaNames: Record<string, string> = {};
+    for (const { subject } of problems) {
+      const name = subject.kind === "area" ? ha?.areaName(subject.id) : undefined;
+      if (name !== undefined) areaNames[subject.id] = name;
+    }
+
     return {
       revision: readable?.revision ?? 0,
       configState,
@@ -1385,14 +1401,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       unusedEntries: resolved.unused,
       haChanges: readable?.haChanges ?? [],
       upgrade: readable?.upgrade,
-      problems: [
-        ...(lastTick?.problems ?? []),
-        ...storeProblems(),
-        ...(pacingUnreadableUntil !== undefined && clock.nowMs() < pacingUnreadableUntil
-          ? [problemPacingUnreadable()]
-          : []),
-        ...(tickError === undefined ? [] : [problemTickFailed()]),
-      ],
+      problems,
       memberships: membershipRecord,
       devices,
       unassigned,
@@ -1400,6 +1409,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       sensors,
       links: linkStates(),
       transportFaults: faults(),
+      areaNames,
     };
   }
 

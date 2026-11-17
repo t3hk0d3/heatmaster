@@ -75,6 +75,11 @@ function problemName(
       return devices.get(id)?.name ?? id;
     case "sensor":
       return snapshot.sensors.find((sensor) => sensor.sensorId === id)?.name ?? id;
+    case "area":
+      return (
+        snapshot.rooms.find((room) => room.roomId === id)?.name ?? snapshot.areaNames[id] ?? id
+      );
+    case "label":
     case "system":
       return id;
   }
