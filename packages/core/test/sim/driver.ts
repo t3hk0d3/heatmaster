@@ -127,6 +127,12 @@ export type SimDriver = Readonly<{
   log: () => readonly LoggedEffect[];
   /** Every time a valve got a memory it had not had, for the budget property. */
   memoryAppearances: () => readonly Readonly<{ at: number; valveId: string }>[];
+  /** Every device message handed to Heatmaster, with its time and life token, oldest first. */
+  messages: () => readonly Readonly<{
+    at: number;
+    deviceId: string;
+    lifeToken: string | undefined;
+  }>[];
   /** The config, ledger and copy as the runtime holds them in memory. */
   config: () => Readonly<{ configState: ConfigState; stored: StoredConfig | undefined }>;
   /** What Home Assistant says now: the areas and their valves. */
@@ -234,6 +240,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   let lastWorld: World | undefined;
   const log: LoggedEffect[] = [];
   const appearances: { at: number; valveId: string }[] = [];
+  const messages: { at: number; deviceId: string; lifeToken: string | undefined }[] = [];
   const tickHooks: ((world: World) => void)[] = [];
 
   /**
@@ -325,6 +332,9 @@ export function createSimDriver(setup: SimSetup): SimDriver {
 
   const apply = (event: Event): void => {
     const before = inbox.memory;
+    if (event.kind === "device_message") {
+      messages.push({ at: nowMs, deviceId: event.deviceId, lifeToken: event.lifeToken });
+    }
     inbox = applyEvent(inbox, event, specs, nowMs);
     noteAppearances(before, inbox.memory);
   };
@@ -489,6 +499,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     memory: () => inbox.memory,
     log: () => log,
     memoryAppearances: () => appearances,
+    messages: () => messages,
     config: () => ({ configState, stored }),
     membership: () => membership,
     setMembership(next) {

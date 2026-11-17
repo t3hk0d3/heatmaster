@@ -112,6 +112,7 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
   const pushes = new Map<string, { at: number; inc: number }[]>();
   const asks = new Map<string, number[]>();
   const newest = new Map<string, string>();
+  let messagesSeen = 0;
   const incSeen = new Map<string, number>();
   const epochs = new Map<string, { inc: number; key: string | undefined; run: number }>();
   const publishes = new Map<string, number[]>();
@@ -140,15 +141,20 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
         incSeen.set(valveId, inc);
         reset.add(valveId);
       }
-      // Heard means the valve spoke: a message with a last_seen newer than every one before. A
-      // replay or an echo carries an old one. This does not use the core's own idea of heard.
-      const token = world.devices.get(valveId)?.state?.lifeToken;
-      const before = newest.get(valveId);
-      if (token !== undefined && (before === undefined || token > before)) {
-        newest.set(valveId, token);
-        reset.add(valveId);
+    }
+    // Heard means the valve spoke: a message with a last_seen newer than every one before. A
+    // replay or an echo carries an old one. This does not use the core's own idea of heard. Every
+    // message handed over since the last step counts, also one handed over between steps (by a
+    // change) whose token a link coming back made the state forget before this step's tick.
+    const messages = sim.messages();
+    for (const { deviceId, lifeToken } of messages.slice(messagesSeen)) {
+      const before = newest.get(deviceId);
+      if (lifeToken !== undefined && (before === undefined || lifeToken > before)) {
+        newest.set(deviceId, lifeToken);
+        reset.add(deviceId);
       }
     }
+    messagesSeen = messages.length;
     for (const valveId of reset) asks.set(valveId, []);
 
     // A group's epoch is one stretch of one desired value in one incarnation of the memory.
@@ -635,6 +641,41 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         "the release does not finish from stale state, and every property holds",
         () => {
           nothingBroken(execute(plan).report);
+        },
+        PLAN_MS,
+      );
+    });
+
+    describe("With a TRVZB that answers a refresh between two steps, then the link down until quiesce", () => {
+      // Found by seed 1264016427. The answer is handed over by the edit, outside a step, and the
+      // link coming back forgets its token before the next step: only the message shows it.
+      const plan: FaultPlan = {
+        initial: { ...initial, intervalMin: 1 },
+        steps: [
+          { k: "rejoin", valve: 0 },
+          { k: "wait", seconds: 30 },
+          { k: "edit", schedule: "default", variant: 0 },
+          { k: "link", name: "z2m", up: false },
+        ],
+      };
+      it(
+        "it is asked at 390 s and again at 450 s, heard in between, and every property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          nothingBroken(report);
+          const asks = rig.sim.effectsOf(VALVE_IDS[0], "refresh").map((e) => e.at / 1000);
+          expect(asks.filter((t) => t >= 390 && t <= 450)).toEqual([390, 450]);
+          const startMs = rig.sim.now() - rig.sim.elapsed();
+          // Heard: a message whose last_seen is newer than every one before it.
+          let newest = "";
+          const heard = rig.sim.messages().flatMap(({ at, deviceId, lifeToken }) => {
+            if (deviceId !== VALVE_IDS[0] || lifeToken === undefined || lifeToken <= newest) {
+              return [];
+            }
+            newest = lifeToken;
+            return [(at - startMs) / 1000];
+          });
+          expect(heard.filter((t) => t >= 390 && t < 450)).not.toEqual([]);
         },
         PLAN_MS,
       );
