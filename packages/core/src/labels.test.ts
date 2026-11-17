@@ -884,6 +884,18 @@ describe("labels", () => {
       });
     });
 
+    describe("With heatmaster_temp_sensor added to an entity that hall lists, whose own area is office", () => {
+      it("returns undefined", () => {
+        expect(
+          edits(
+            scene({ entities: { [OFFICE_T]: { areaId: "office" } } }),
+            scene({ entities: { [OFFICE_T]: { areaId: "office", labels: [SENSOR_LABEL] } } }),
+            { hall: entry("night", [OFFICE_T]) },
+          ),
+        ).toBeUndefined();
+      });
+    });
+
     describe("With heatmaster_temp_sensor removed from an entity listed by office and hall", () => {
       const edit = (): HaEdit =>
         required(

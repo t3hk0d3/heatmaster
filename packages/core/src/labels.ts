@@ -1,6 +1,7 @@
 import type { SensorInfo } from "./change.ts";
 import {
   LEGACY_SENSOR_LABEL,
+  NO_PRESETS,
   SCHEDULE_LABEL_PREFIX,
   SENSOR_LABEL,
   ascending,
@@ -253,11 +254,7 @@ type UnusedReason =
   | "sensor_on_valve"
   | "sensor_limit";
 
-const EMPTY_ENTRY: RoomEntry = {
-  scheduleId: undefined,
-  sensors: [],
-  presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
-};
+const EMPTY_ENTRY: RoomEntry = { scheduleId: undefined, sensors: [], presets: NO_PRESETS };
 
 /** The schedule id each existing schedule's own label stands for, by label id. */
 function labelSchedules(config: Config): ReadonlyMap<string, string> {
@@ -362,12 +359,15 @@ export function labelEdits(
     if (was.labels.includes(SENSOR_LABEL) === has) continue;
     const ref = SENSOR_PREFIX + entityId;
     if (has) {
+      // The mirror puts this label on every listed sensor, so on one any entry lists it says
+      // nothing new (an own write's echo, or a repair): the sensor stays where it is.
+      if ([...rooms.values()].some((e) => e.sensors.some((sensor) => sensor.ref === ref))) continue;
       const areaId = entity.areaId;
+      // unusedReason checks this first too; repeated here only so areaId is narrowed below.
       if (areaId === undefined) continue;
       // With a reason nothing changes; labelProblems reports it while the label stays.
       if (unusedReason(entityId, entity, rooms, membership, infos) !== undefined) continue;
       const entry = rooms.get(areaId);
-      if (entry?.sensors.some((sensor) => sensor.ref === ref) === true) continue;
       if (!mayHoldEntry(rooms, areaId)) continue;
       const sensors = [...(entry?.sensors ?? []), { ref, weight: 1 }];
       rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), sensors });

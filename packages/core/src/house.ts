@@ -58,7 +58,8 @@ export type HouseInput =
 /** `unused` lists the entry keys, in the config's order, of areas that are no room. */
 export type ResolvedRooms = Readonly<{ rooms: readonly Room[]; unused: readonly string[] }>;
 
-const NO_PRESETS: RoomPresets = {
+/** A room entry that overrides no house preset. */
+export const NO_PRESETS: RoomPresets = {
   comfort: undefined,
   eco: undefined,
   frost: undefined,
