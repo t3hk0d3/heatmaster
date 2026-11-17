@@ -1,6 +1,6 @@
 import { fc, test as fcTest } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
-import { arbConfig, validRaw } from "../test/builders.ts";
+import { arbConfig, makeConfig, validRaw } from "../test/builders.ts";
 import {
   EMPTY_LEDGER,
   LedgerError,
@@ -18,9 +18,8 @@ import {
   type StoredConfig,
   type ValveRecord,
 } from "./ledger.ts";
-import { ConfigError, type Config } from "./model.ts";
+import { ConfigError, type Room } from "./model.ts";
 import { SETTING_KEYS, type SettingKey, type SettingValue } from "./settings.ts";
-import { validateConfig } from "./validation.ts";
 
 const T0 = Temporal.Instant.from("2026-11-14T09:30:00Z").epochMilliseconds;
 const V1 = "z2m:0x00124b0012345678";
@@ -40,17 +39,24 @@ function ledgerOf(...records: ValveRecord[]): Ledger {
   return records.reduce(withRecord, EMPTY_LEDGER);
 }
 
-/** A config with one room holding the given valves. */
-function configWith(valveIds: readonly string[]): Config {
-  const config = validateConfig(validRaw());
-  const room = config.rooms[0];
-  if (room === undefined) throw new Error("builder has no room");
-  return { ...config, rooms: [{ ...room, valves: valveIds.map((valveId) => ({ valveId })) }] };
+/** The resolved rooms: one room holding the given valves (none when there is no valve). */
+function roomsWith(valveIds: readonly string[]): readonly Room[] {
+  if (valveIds.length === 0) return [];
+  return [
+    {
+      id: "living_room",
+      name: "Living room",
+      scheduleId: "default",
+      valves: valveIds.map((valveId) => ({ valveId })),
+      sensors: [],
+      presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
+    },
+  ];
 }
 
-function stored(inRoom: readonly string[], releasing: readonly string[] = []): StoredConfig {
+function stored(releasing: readonly string[] = []): StoredConfig {
   return {
-    config: configWith(inRoom),
+    config: makeConfig(),
     revision: 1,
     releasing: new Map(releasing.map((id) => [id, T0])),
   };
@@ -220,48 +226,97 @@ describe("ledger", () => {
         ConfigState,
         StoredConfig | undefined,
         Ledger | undefined,
+        readonly string[],
         Membership,
       ])[] = [
-        ["ok, in a room, record", "ok", stored([V1]), ledgerOf(record(V1)), "managed"],
-        ["ok, in a room, no record", "ok", stored([V1]), EMPTY_LEDGER, "not_adopted"],
-        ["ok, releasing only, record", "ok", stored([], [V1]), ledgerOf(record(V1)), "releasing"],
-        ["ok, releasing only, no record", "ok", stored([], [V1]), EMPTY_LEDGER, "stray"],
-        ["ok, neither, record", "ok", stored([]), ledgerOf(record(V1)), "orphan"],
-        ["ok, ledger unreadable, in a room", "ok", stored([V1]), undefined, "frozen"],
-        ["ok, ledger unreadable, releasing", "ok", stored([], [V1]), undefined, "frozen"],
-        ["empty, record", "empty", undefined, ledgerOf(record(V1)), "frozen"],
-        ["unreadable, record", "unreadable", undefined, ledgerOf(record(V1)), "frozen"],
+        ["ok, in a room, record", "ok", stored(), ledgerOf(record(V1)), [V1], "managed"],
+        ["ok, in a room, no record", "ok", stored(), EMPTY_LEDGER, [V1], "not_adopted"],
+        ["ok, releasing only, record", "ok", stored([V1]), ledgerOf(record(V1)), [], "releasing"],
+        ["ok, releasing only, no record", "ok", stored([V1]), EMPTY_LEDGER, [], "stray"],
+        ["ok, neither, record", "ok", stored(), ledgerOf(record(V1)), [], "orphan"],
+        ["ok, ledger unreadable, in a room", "ok", stored(), undefined, [V1], "frozen"],
+        ["ok, ledger unreadable, releasing", "ok", stored([V1]), undefined, [], "frozen"],
+        ["empty, record", "empty", undefined, ledgerOf(record(V1)), [], "frozen"],
+        ["unreadable, record", "unreadable", undefined, ledgerOf(record(V1)), [], "frozen"],
       ];
-      it.each(rows)("returns that membership (%s)", (_, state, config, ledger, expected) => {
-        expect(memberships(state, config, ledger)).toEqual(new Map([[V1, expected]]));
-      });
+      it.each(rows)(
+        "returns that membership (%s)",
+        (_, state, config, ledger, inRoom, expected) => {
+          const result = memberships(state, config, ledger, roomsWith(inRoom), "live");
+          expect(result).toEqual(new Map([[V1, expected]]));
+        },
+      );
     });
     describe("With a valve in a room and in releasing", () => {
       it("returns managed", () => {
-        const result = memberships("ok", stored([V1], [V1]), ledgerOf(record(V1)));
+        const result = memberships(
+          "ok",
+          stored([V1]),
+          ledgerOf(record(V1)),
+          roomsWith([V1]),
+          "live",
+        );
         expect(result.get(V1)).toBe("managed");
       });
     });
     describe("With state empty and no records", () => {
       it("returns an empty mapping", () => {
-        expect(memberships("empty", undefined, EMPTY_LEDGER).size).toBe(0);
+        expect(memberships("empty", undefined, EMPTY_LEDGER, [], "live").size).toBe(0);
       });
     });
     describe("With state ok, the ledger unreadable, and a valve in neither a room nor releasing", () => {
       it("the valve is not in the result", () => {
-        const result = memberships("ok", stored([V1]), undefined);
+        const result = memberships("ok", stored(), undefined, roomsWith([V1]), "live");
         expect(result.has(V2)).toBe(false);
         expect(result.size).toBe(1);
       });
     });
     describe("With state unreadable and the ledger unreadable", () => {
       it("returns an empty mapping", () => {
-        expect(memberships("unreadable", undefined, undefined).size).toBe(0);
+        expect(memberships("unreadable", undefined, undefined, [], "live").size).toBe(0);
       });
     });
     describe("With state ok and stored undefined, and a ledger record", () => {
       it("returns frozen for that valve", () => {
-        expect(memberships("ok", undefined, ledgerOf(record(V1))).get(V1)).toBe("frozen");
+        const result = memberships("ok", undefined, ledgerOf(record(V1)), [], "live");
+        expect(result.get(V1)).toBe("frozen");
+      });
+    });
+    describe("With rooms undefined and a ledger with two records", () => {
+      it("both valves are frozen", () => {
+        const ledger = ledgerOf(record(V1), record(V2));
+        expect(memberships("ok", stored(), ledger, undefined, "unlinked")).toEqual(
+          new Map([
+            [V1, "frozen"],
+            [V2, "frozen"],
+          ]),
+        );
+      });
+    });
+    describe("With rooms holding a recorded valve", () => {
+      it("it is managed", () => {
+        const result = memberships("ok", stored(), ledgerOf(record(V1)), roomsWith([V1]), "live");
+        expect(result.get(V1)).toBe("managed");
+      });
+    });
+    describe("With rooms holding a valve without a record", () => {
+      it("it is not_adopted", () => {
+        const result = memberships("ok", stored(), EMPTY_LEDGER, roomsWith([V1]), "live");
+        expect(result.get(V1)).toBe("not_adopted");
+      });
+    });
+    describe("With house frozen and a recorded valve that is in no room", () => {
+      it("it is frozen and not orphan", () => {
+        const ledger = ledgerOf(record(V1), record(V2));
+        const result = memberships("ok", stored(), ledger, roomsWith([V2]), "frozen");
+        expect(result.get(V1)).toBe("frozen");
+        expect(result.get(V2)).toBe("managed");
+      });
+    });
+    describe("With house frozen and a valve in releasing", () => {
+      it("it is frozen", () => {
+        const result = memberships("ok", stored([V1]), ledgerOf(record(V1)), [], "frozen");
+        expect(result.get(V1)).toBe("frozen");
       });
     });
   });

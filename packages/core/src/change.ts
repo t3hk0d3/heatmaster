@@ -1,9 +1,10 @@
 import { isObservable, preview, transportFaulted, transportOf } from "./control.ts";
 import type { DeviceView, Effect, PlannedWrite, World } from "./control.ts";
+import { roomsOf } from "./house.ts";
 import { memberships, withRecord, withoutRecord } from "./ledger.ts";
-import type { Ledger, StoredConfig } from "./ledger.ts";
+import type { Ledger, Membership, StoredConfig } from "./ledger.ts";
 import { sensorId } from "./model.ts";
-import type { Config, SensorRef } from "./model.ts";
+import type { Config, Room, SensorRef } from "./model.ts";
 import type { DeviceState } from "./observation.ts";
 import { members } from "./settings.ts";
 import type { SettingKey, SettingValue, ValveSpec } from "./settings.ts";
@@ -95,29 +96,39 @@ function readable(world: World): StoredConfig | undefined {
   return world.configState === "ok" ? world.stored : undefined;
 }
 
-/** Valve ids of every room, in document order, without repeats. */
-function roomValves(config: Config | undefined): readonly string[] {
-  const ids = (config?.rooms ?? []).flatMap((room) => room.valves.map((valve) => valve.valveId));
+/** Valve ids of every room, in room order, without repeats. */
+function roomValves(rooms: readonly Room[] | undefined): readonly string[] {
+  const ids = (rooms ?? []).flatMap((room) => room.valves.map((valve) => valve.valveId));
   return [...new Set(ids)];
+}
+
+/** Every sensor of every entry, used or not, in the config's order. */
+function entrySensors(config: Config | undefined): readonly SensorRef[] {
+  return [...(config?.rooms.values() ?? [])].flatMap((entry) => entry.sensors);
+}
+
+/** Each valve's membership over the rooms of the world's house. */
+function membershipsIn(world: World, ledger: Ledger | undefined): ReadonlyMap<string, Membership> {
+  const rooms = roomsOf(world.configState, world.stored, world.house);
+  return memberships(world.configState, world.stored, ledger, rooms, world.house.kind);
 }
 
 function byId(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Refuses on the first new sensor, in document order, that fails a check. */
+/**
+ * Refuses on the first new sensor, in document order, that fails a check. A sensor is new when no
+ * entry of the current config lists it.
+ */
 function checkSensors(
   config: Config,
   before: Config | undefined,
   haLinked: boolean,
   sensors: ReadonlyMap<string, SensorInfo>,
 ): void {
-  const known = new Set(
-    (before?.rooms ?? []).flatMap((room) => room.sensors.map((sensor) => sensorId(sensor))),
-  );
-  const fresh: SensorRef[] = config.rooms
-    .flatMap((room) => room.sensors)
-    .filter((sensor) => !known.has(sensorId(sensor)));
+  const known = new Set(entrySensors(before).map((sensor) => sensorId(sensor)));
+  const fresh = entrySensors(config).filter((sensor) => !known.has(sensorId(sensor)));
   for (const sensor of fresh) {
     const id = sensorId(sensor);
     if (!haLinked) {
@@ -130,7 +141,11 @@ function checkSensors(
   }
 }
 
-/** Plans the user's config change; see the task's pseudocode for the order of the refusals. */
+/**
+ * Plans the user's config change; see the task's pseudocode for the order of the refusals. The
+ * valves in rooms before and after are those of `roomsOf` over the world's house: the document
+ * names no valve, so only a change of what is readable or of having a schedule moves valves.
+ */
 export function planChange(
   world: World,
   raw: unknown,
@@ -140,8 +155,13 @@ export function planChange(
   const config = validateConfig(raw);
   const nowMs = world.now.epochMilliseconds;
   const old = readable(world);
-  const before = new Set(roomValves(old?.config));
-  const afterList = roomValves(config);
+  const before = new Set(roomValves(roomsOf(world.configState, world.stored, world.house)));
+  const draft: StoredConfig = {
+    config,
+    revision: (old?.revision ?? 0) + 1,
+    releasing: old?.releasing ?? new Map(),
+  };
+  const afterList = roomValves(roomsOf("ok", draft, world.house));
   const after = new Set(afterList);
   const entering = afterList.filter((id) => !before.has(id));
   const leaving = [...before].filter((id) => !after.has(id)).sort(byId);
@@ -221,7 +241,7 @@ export function planChange(
   const releasing = new Map(old?.releasing ?? []);
   for (const valveId of leaving) releasing.set(valveId, nowMs);
   for (const valveId of after) releasing.delete(valveId);
-  const stored: StoredConfig = { config, revision: revision + 1, releasing };
+  const stored: StoredConfig = { ...draft, revision: revision + 1, releasing };
   const writes = preview({ ...world, configState: "ok", stored, ledger: nextLedger });
 
   const effects: Effect[] = [];
@@ -237,7 +257,7 @@ export function planChange(
 
 /** For an orphan: release it to its originals. Anything else is refused with `valve_not_orphan`. */
 export function restoreValve(world: World, valveId: string): readonly Effect[] {
-  const kind = memberships(world.configState, world.stored, world.ledger).get(valveId);
+  const kind = membershipsIn(world, world.ledger).get(valveId);
   const stored = readable(world);
   if (kind !== "orphan" || stored === undefined) {
     throw new ChangeRefused("valve_not_orphan", { valveId });
@@ -259,9 +279,10 @@ export function forgetValve(world: World, valveId: string): readonly Effect[] {
     });
   }
   if (!ledger.records.has(valveId)) throw new ChangeRefused("valve_unknown", { valveId });
-  const kind = memberships(world.configState, world.stored, ledger).get(valveId);
+  const kind = membershipsIn(world, ledger).get(valveId);
   if (kind === "managed") throw new ChangeRefused("valve_managed", { valveId });
-  // The rest is frozen: the config is unreadable, or missing while the ledger has records.
+  // The rest is frozen: the config is unreadable or missing while the ledger has records, or the
+  // house is not live (no Home Assistant link, or rooms frozen).
   if (stored === undefined || (kind !== "orphan" && kind !== "releasing")) {
     throw new ChangeRefused("config_unreadable", { valveId });
   }

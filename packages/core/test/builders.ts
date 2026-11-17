@@ -6,6 +6,7 @@ import {
   EMPTY_READINGS,
   applyEvent,
   memberships,
+  roomsOf,
   tick,
   withRecord,
 } from "../src/index.ts";
@@ -18,12 +19,14 @@ import type {
   Group,
   GroupSpec,
   HaSnapshot,
+  HouseInput,
   Inbox,
   PresetName,
   RawConfig,
   Readings,
   ResolvedDay,
   Room,
+  RoomEntry,
   Schedule,
   SensorRef,
   SetPoint,
@@ -34,10 +37,13 @@ import type {
   World,
 } from "../src/index.ts";
 
-/** A complete valid document: one schedule, one room with a valve and two ha sensors. */
+/**
+ * A complete valid document: two schedules (`default`, the default schedule, and `night`), and two
+ * entries with sensors: `living_room` on the default with a comfort preset, `office` on `night`.
+ */
 export function validRaw(): RawConfig {
   return {
-    version: 2,
+    version: 3,
     settings: {
       external_write_interval_min: 10,
       sensor_stale_min: 30,
@@ -58,29 +64,31 @@ export function validRaw(): RawConfig {
           { days: "weekend", temperature: { "00:00": "eco" } },
         ],
       },
-    ],
-    rooms: [
       {
-        id: "living",
-        name: "Living room",
-        area_id: "living_room",
-        schedule_id: "default",
-        valves: [{ id: "z2m:0x00124b0012345678" }],
+        id: "night",
+        name: "Night",
+        week: [{ days: "all", temperature: { "00:00": "eco", "19:00": "comfort" } }],
+      },
+    ],
+    default_schedule: "default",
+    rooms: {
+      living_room: {
         sensors: [
           { ref: "ha:sensor.bedroom_temperature" },
           { ref: "ha:sensor.living_temperature", weight: 2 },
         ],
         presets: { comfort: 22 },
       },
-    ],
+      office: { schedule: "night", sensors: [{ ref: "ha:sensor.office_temperature" }] },
+    },
   };
 }
 
 const slug = fc.stringMatching(/^[a-z0-9]{1,8}$/);
+const areaKey = fc.stringMatching(/^[a-z][a-z0-9_]{0,11}$/);
 const halfDegree = fc.integer({ min: 8, max: 70 }).map((n) => n / 2);
 const preset = fc.constantFrom<PresetName>("comfort", "eco", "frost", "boost");
 const name = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9 ]{0,30}$/);
-const address = (n: number): string => `0x${n.toString(16).padStart(16, "0")}`;
 
 const setPoint: fc.Arbitrary<(time: Temporal.PlainTime) => SetPoint> = fc.oneof(
   preset.map((p) => (time: Temporal.PlainTime): SetPoint => ({
@@ -127,13 +135,16 @@ const roomPresets = fc.record({
   boost: fc.option(halfDegree, { nil: undefined }),
 });
 
-/** Any valid Config: unique ids, rooms that name existing schedules, no valve twice. */
+/**
+ * Any valid Config: unique schedule ids and names (ignoring case), a default schedule exactly when
+ * there is a schedule, and entries keyed by area id that name existing schedules.
+ */
 export const arbConfig: fc.Arbitrary<Config> = fc
   .tuple(
-    fc.uniqueArray(slug, { minLength: 1, maxLength: 3 }),
-    fc.uniqueArray(slug, { minLength: 0, maxLength: 4 }),
+    fc.uniqueArray(slug, { minLength: 0, maxLength: 3 }),
+    fc.uniqueArray(areaKey, { minLength: 0, maxLength: 4 }),
   )
-  .chain(([scheduleIds, roomIds]) =>
+  .chain(([scheduleIds, areaIds]) =>
     fc.record({
       settings: fc.record({
         externalWriteIntervalMs: fc.integer({ min: 1, max: 60 }).map((n) => n * 60_000),
@@ -150,46 +161,43 @@ export const arbConfig: fc.Arbitrary<Config> = fc
         frost: halfDegree,
         boost: halfDegree,
       }),
-      schedules: fc.tuple(...scheduleIds.map(() => fc.tuple(name, week))).map((items) =>
-        items.map(([scheduleName, defaultWeek], i): Schedule => ({
-          id: scheduleIds[i] ?? "x",
-          name: scheduleName,
-          defaultWeek,
-        })),
-      ),
+      schedules: fc
+        .tuple(
+          fc.uniqueArray(name, {
+            minLength: scheduleIds.length,
+            maxLength: scheduleIds.length,
+            selector: (n) => n.toLowerCase(),
+          }),
+          fc.array(week, { minLength: scheduleIds.length, maxLength: scheduleIds.length }),
+        )
+        .map(([names, weeks]) =>
+          scheduleIds.map((id, i): Schedule => ({
+            id,
+            name: names[i] ?? "x",
+            defaultWeek: weeks[i] ?? weekOf([]),
+          })),
+        ),
+      defaultScheduleId:
+        scheduleIds.length === 0
+          ? fc.constant(undefined)
+          : fc.constantFrom<string | undefined>(...scheduleIds),
       rooms: fc
         .tuple(
-          ...roomIds.map(() =>
+          ...areaIds.map(() =>
             fc.record({
-              name,
-              areaId: fc.option(slug, { nil: undefined }),
-              schedule: fc.nat(scheduleIds.length - 1),
-              valveCount: fc.integer({ min: 1, max: 3 }),
-              sensors: fc.uniqueArray(sensor, {
-                maxLength: 4,
-                selector: (s) => s.ref,
-              }),
+              scheduleId:
+                scheduleIds.length === 0
+                  ? fc.constant(undefined)
+                  : fc.option(fc.constantFrom(...scheduleIds), { nil: undefined }),
+              sensors: fc.uniqueArray(sensor, { maxLength: 4, selector: (s) => s.ref }),
               presets: roomPresets,
             }),
           ),
         )
-        .map((items) => {
-          let nextValve = 1;
-          return items.map((item, i): Room => {
-            const valves = Array.from({ length: item.valveCount }, () => ({
-              valveId: `z2m:${address(nextValve++)}`,
-            }));
-            return {
-              id: roomIds[i] ?? "x",
-              name: item.name,
-              areaId: item.areaId,
-              scheduleId: scheduleIds[item.schedule] ?? "x",
-              valves,
-              sensors: item.sensors,
-              presets: item.presets,
-            };
-          });
-        }),
+        .map(
+          (entries) =>
+            new Map(entries.map((entry, i): [string, RoomEntry] => [areaIds[i] ?? "x", entry])),
+        ),
     }),
   );
 
@@ -311,10 +319,44 @@ export function weekOf(day: readonly SetPoint[]): Week {
   return { mon: day, tue: day, wed: day, thu: day, fri: day, sat: day, sun: day };
 }
 
-/** One schedule, `BUILDER_SCHEDULE`, whose every day is `BUILDER_DAY`; no rooms; writes not held. */
+/** One entry per room, keyed by its id: the room's schedule, sensors and presets. */
+export function entriesOf(rooms: readonly Room[]): ReadonlyMap<string, RoomEntry> {
+  return new Map(
+    rooms.map((room): [string, RoomEntry] => [
+      room.id,
+      { scheduleId: room.scheduleId, sensors: room.sensors, presets: room.presets },
+    ]),
+  );
+}
+
+/** The membership in which each room is an area holding the room's valves, under its name. */
+export function membershipOf(rooms: readonly Room[]): AreaMembership {
+  return {
+    rooms: new Map(
+      rooms.map((room) => [
+        room.id,
+        { name: room.name, valveIds: room.valves.map((v) => v.valveId) },
+      ]),
+    ),
+    ignored: [],
+  };
+}
+
+/** A live house whose membership holds the rooms' valves (`membershipOf`), nothing not in HA. */
+export function liveHouse(rooms: readonly Room[] = []): HouseInput {
+  return { kind: "live", membership: membershipOf(rooms), notInHa: [] };
+}
+
+/**
+ * One schedule, `BUILDER_SCHEDULE`, whose every day is `BUILDER_DAY`, unless `schedules` is
+ * given; the first schedule is the default; one entry per given room; writes not held.
+ */
 export function makeConfig(
   options: { rooms?: readonly Room[]; schedules?: readonly Schedule[]; holdWrites?: boolean } = {},
 ): Config {
+  const schedules = options.schedules ?? [
+    { id: BUILDER_SCHEDULE, name: "Default", defaultWeek: weekOf(BUILDER_WEEK_DAY) },
+  ];
   return {
     ...EMPTY_CONFIG,
     settings: {
@@ -322,19 +364,29 @@ export function makeConfig(
       holdWrites: options.holdWrites ?? false,
       timezone: BUILDER_NOW.timeZoneId,
     },
-    schedules: options.schedules ?? [
-      { id: BUILDER_SCHEDULE, name: "Default", defaultWeek: weekOf(BUILDER_WEEK_DAY) },
-    ],
-    rooms: options.rooms ?? [],
+    schedules,
+    defaultScheduleId: schedules[0]?.id,
+    rooms: entriesOf(options.rooms ?? []),
   };
 }
 
-/** Config state `ok` (revision 1, nothing releasing), an empty ledger, `z2m` up, no faults. */
-export function makeWorld(options: Partial<World> & { config?: Config } = {}): World {
-  const { config, ...rest } = options;
+/**
+ * Config state `ok` (revision 1, nothing releasing), an empty ledger, `z2m` up, no faults, and a
+ * live house with no room. With `rooms`, the config's entries and the live house come from them.
+ */
+export function makeWorld(
+  options: Partial<World> & { config?: Config; rooms?: readonly Room[] } = {},
+): World {
+  const { config, rooms, ...rest } = options;
+  const base = config ?? makeConfig();
   return {
     configState: "ok",
-    stored: { config: config ?? makeConfig(), revision: 1, releasing: new Map() },
+    stored: {
+      config: rooms === undefined ? base : { ...base, rooms: entriesOf(rooms) },
+      revision: 1,
+      releasing: new Map(),
+    },
+    house: liveHouse(rooms ?? []),
     ledger: EMPTY_LEDGER,
     devices: new Map(),
     links: { z2m: true },
@@ -374,14 +426,12 @@ export function makeManaged(
   const room: Room = {
     id: BUILDER_ROOM,
     name: "Living room",
-    areaId: undefined,
     scheduleId: BUILDER_SCHEDULE,
     valves: [{ valveId }],
     sensors: options.sensors ?? [],
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
   };
   const config = makeConfig({
-    rooms: [room],
     ...(options.holdWrites === undefined ? {} : { holdWrites: options.holdWrites }),
   });
   const ledger = withRecord(EMPTY_LEDGER, {
@@ -396,7 +446,7 @@ export function makeManaged(
     usable: true,
     state: options.state ?? makeState(),
   };
-  return makeWorld({ config, ledger, devices: new Map([[valveId, view]]) });
+  return makeWorld({ config, rooms: [room], ledger, devices: new Map([[valveId, view]]) });
 }
 
 function atMs(world: World, nowMs: number): Temporal.ZonedDateTime {
@@ -442,7 +492,13 @@ export function settled(world: World): World {
       [...current.devices].map(([id, view]) => [id, { ...view, state: inbox.states.get(id) }]),
     );
     current = { ...current, devices, memory: inbox.memory, now: atMs(current, nowMs) };
-    const kinds = memberships(current.configState, current.stored, current.ledger);
+    const kinds = memberships(
+      current.configState,
+      current.stored,
+      current.ledger,
+      roomsOf(current.configState, current.stored, current.house),
+      current.house.kind,
+    );
     const pending = [...kinds].some(([id, kind]) => {
       if (kind !== "managed" || !specs.has(id)) return false;
       const vm = inbox.memory.valves.get(id);

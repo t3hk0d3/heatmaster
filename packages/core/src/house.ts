@@ -1,3 +1,6 @@
+import type { ConfigState, StoredConfig } from "./ledger.ts";
+import type { Config, Room, RoomPresets } from "./model.ts";
+
 export const IGNORE_LABEL = "heatmaster_ignore";
 export const SENSOR_LABEL = "heatmaster_temp_sensor";
 export const LEGACY_SENSOR_LABEL = "room_temperature_sensor";
@@ -35,6 +38,32 @@ export type MembershipView = Readonly<{
   unplaced: ReadonlyMap<string, UnplacedReason>;
   notInHa: readonly string[];
 }>;
+
+/**
+ * What the house says about rooms. `live`: Home Assistant's registries are loaded and the link is
+ * up; `notInHa` lists the valves kept in a previous room because Home Assistant has no device for
+ * them. `frozen`: rooms are frozen on the saved membership (nothing joins or releases), until the
+ * registries are loaded or while the link is down. `unlinked`: there is no Home Assistant link, so
+ * no room is managed.
+ */
+export type HouseInput =
+  | Readonly<{ kind: "live"; membership: AreaMembership; notInHa: readonly string[] }>
+  | Readonly<{
+      kind: "frozen";
+      membership: AreaMembership | undefined;
+      reason: "not_loaded" | "link_down";
+    }>
+  | Readonly<{ kind: "unlinked" }>;
+
+/** `unused` lists the entry keys, in the config's order, of areas that are no room. */
+export type ResolvedRooms = Readonly<{ rooms: readonly Room[]; unused: readonly string[] }>;
+
+const NO_PRESETS: RoomPresets = {
+  comfort: undefined,
+  eco: undefined,
+  frost: undefined,
+  boost: undefined,
+};
 
 export function scheduleLabelId(scheduleId: string): string {
   return SCHEDULE_LABEL_PREFIX + scheduleId.replaceAll("-", "_");
@@ -124,4 +153,50 @@ export function sameMembership(
     }
   }
   return true;
+}
+
+/**
+ * One Room per room of the membership, in area-id order: its schedule is the entry's, else the
+ * default; its sensors and presets are the entry's, none without one. No room when the config has
+ * no schedule. `unused` lists the entries that are no room (all of them without a membership).
+ */
+export function resolveRooms(
+  config: Config,
+  membership: AreaMembership | undefined,
+): ResolvedRooms {
+  const unused = [...config.rooms.keys()].filter(
+    (areaId) => membership?.rooms.has(areaId) !== true,
+  );
+  if (membership === undefined || config.schedules.length === 0) return { rooms: [], unused };
+  const rooms: Room[] = [];
+  for (const areaId of ascending(membership.rooms.keys())) {
+    const area = membership.rooms.get(areaId);
+    const entry = config.rooms.get(areaId);
+    const scheduleId = entry?.scheduleId ?? config.defaultScheduleId;
+    // Validation requires a default schedule whenever there is a schedule.
+    if (area === undefined || scheduleId === undefined) continue;
+    rooms.push({
+      id: areaId,
+      name: area.name,
+      scheduleId,
+      valves: area.valveIds.map((valveId) => ({ valveId })),
+      sensors: entry?.sensors ?? [],
+      presets: entry?.presets ?? NO_PRESETS,
+    });
+  }
+  return { rooms, unused };
+}
+
+/**
+ * The rooms control acts on. Undefined when the house is unlinked: no room is managed. Empty
+ * unless the config is readable. Otherwise the rooms of the live or the frozen membership.
+ */
+export function roomsOf(
+  state: ConfigState,
+  stored: StoredConfig | undefined,
+  house: HouseInput,
+): readonly Room[] | undefined {
+  if (house.kind === "unlinked") return undefined;
+  if (state !== "ok" || stored === undefined) return [];
+  return resolveRooms(stored.config, house.membership).rooms;
 }

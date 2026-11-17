@@ -7,7 +7,10 @@ import {
   BUILDER_SCHEDULE,
   BUILDER_VALVE,
   arbConfig,
+  entriesOf,
+  liveHouse,
   makeManaged,
+  makeMembership,
   makeSpec,
   makeState,
   makeWorld,
@@ -28,12 +31,14 @@ import type { DeviceView, Effect, TickResult, World } from "./control.ts";
 import type { Desired } from "./desired.ts";
 import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
+import { roomsOf } from "./house.ts";
+import type { HouseInput } from "./house.ts";
 import { EMPTY_LEDGER, memberships, withRecord } from "./ledger.ts";
-import type { ConfigState, Ledger, ValveRecord } from "./ledger.ts";
+import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
 import { START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
-import type { Room, SensorRef, SetPoint } from "./model.ts";
+import type { Config, Room, SensorRef, SetPoint } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
 import { BUCKET, REFILL_MS, charge, chargeAsk, noteDesired } from "./pacing.ts";
@@ -157,12 +162,21 @@ function held(world: World): World {
   return { ...world, stored: { ...stored, config: { ...stored.config, settings } } };
 }
 
+/** The world's resolved rooms, changed by `update`: entries and a live house that hold them. */
 function withRooms(world: World, update: (rooms: readonly Room[]) => readonly Room[]): World {
   const stored = storedOf(world);
+  const rooms = update(roomsOf(world.configState, stored, world.house) ?? []);
   return {
     ...world,
-    stored: { ...stored, config: { ...stored.config, rooms: update(stored.config.rooms) } },
+    stored: { ...stored, config: { ...stored.config, rooms: entriesOf(rooms) } },
+    house: liveHouse(rooms),
   };
+}
+
+/** Each valve's membership in the world, over the rooms of its house. */
+function kindsIn(world: World): ReadonlyMap<string, Membership> {
+  const rooms = roomsOf(world.configState, world.stored, world.house);
+  return memberships(world.configState, world.stored, world.ledger, rooms, world.house.kind);
 }
 
 /** The valve leaves its room and is put in `releasing`, ordered at `orderedAt`. */
@@ -477,102 +491,141 @@ const arbReading = (id: string): fc.Arbitrary<SensorReading> =>
 
 type Run = Readonly<{ world: World; steps: readonly number[] }>;
 
-const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) => {
-  const roomValves = config.rooms.flatMap((room) => room.valves.map((v) => v.valveId));
-  const ids = [...roomValves, ...EXTRA_IDS];
-  const sensorIds = [...new Set(config.rooms.flatMap((room) => room.sensors.map((s) => s.ref)))];
-  return fc
-    .record({
-      configState: fc.oneof(
-        { arbitrary: fc.constant<ConfigState>("ok"), weight: 8 },
-        fc.constantFrom<ConfigState>("empty", "unreadable"),
-      ),
-      hasStored: fc.oneof({ arbitrary: fc.constant(true), weight: 9 }, fc.constant(false)),
-      ledgerReadable: fc.oneof({ arbitrary: fc.constant(true), weight: 9 }, fc.constant(false)),
-      recorded: fc.subarray(ids),
-      originals: fc.array(arbOriginal, { minLength: ids.length, maxLength: ids.length }),
-      releasing: fc.subarray(ids),
-      releasingAgo: fc.array(fc.integer({ min: 0, max: 10 * HOUR_MS }), {
-        minLength: ids.length,
-        maxLength: ids.length,
-      }),
-      views: fc.array(arbView, { minLength: ids.length, maxLength: ids.length }),
-      z2m: fc.oneof({ arbitrary: fc.constant(true), weight: 9 }, fc.constantFrom(false, undefined)),
-      ha: fc.option(fc.boolean(), { nil: undefined }),
-      fault: fc.oneof(
-        { arbitrary: fc.constant(undefined), weight: 9 },
-        fc.constant("another_instance"),
-      ),
-      readings: fc.tuple(...sensorIds.map((id) => fc.option(arbReading(id), { nil: undefined }))),
-      unobservable: fc.subarray(sensorIds),
-      hold: fc.constantFrom(false, false, true),
-      marks: fc.array(fc.tuple(fc.nat(ids.length), fc.constantFrom<Group>(...GROUP_LIST)), {
-        maxLength: 4,
-      }),
-      steps: fc.array(
-        fc.oneof(
-          fc.integer({ min: 0, max: 5 * MINUTE_MS }),
-          fc.integer({ min: 0, max: 3 * HOUR_MS }),
-        ),
-        { minLength: 1, maxLength: 6 },
-      ),
+/** Each area of the config's entries, plus one without an entry, holding 1 to 3 valves. */
+const arbAreas = (config: Config): fc.Arbitrary<Readonly<Record<string, readonly string[]>>> =>
+  fc
+    .array(fc.integer({ min: 1, max: 3 }), {
+      minLength: config.rooms.size + 1,
+      maxLength: config.rooms.size + 1,
     })
-    .map((r): Run => {
-      const ledgerBase = r.recorded.reduce<Ledger>(
-        (ledger, id) =>
-          withRecord(ledger, {
-            valveId: id,
-            profile: "any",
-            adoptedAt: NOW_MS - HOUR_MS,
-            originals: r.originals[ids.indexOf(id)] ?? {},
-          }),
-        EMPTY_LEDGER,
+    .map((counts) => {
+      let next = 1;
+      const areas = [...config.rooms.keys(), "no_entry"];
+      return Object.fromEntries(
+        areas.map((areaId, i) => [
+          areaId,
+          Array.from(
+            { length: counts[i] ?? 1 },
+            () => `z2m:0x${(next++).toString(16).padStart(16, "0")}`,
+          ),
+        ]),
       );
-      const devices = new Map<string, DeviceView>();
-      ids.forEach((id, i) => {
-        const view = r.views[i];
-        if (view !== undefined) devices.set(id, view);
-      });
-      const links: Record<string, boolean> = {};
-      if (r.z2m !== undefined) links.z2m = r.z2m;
-      if (r.ha !== undefined) links.ha = r.ha;
-      const sensors = new Map<string, SensorReading>();
-      for (const reading of r.readings)
-        if (reading !== undefined) sensors.set(reading.sensorId, reading);
-      let memory = { valves: new Map<string, ValveMemory>(), rooms: new Map() };
-      for (const [index, group] of r.marks) {
-        const id = ids[index];
-        const spec = id === undefined ? undefined : devices.get(id)?.spec;
-        if (id === undefined || spec === undefined) continue;
-        const vm = memory.valves.get(id) ?? newValveMemory(spec, NOW_MS - HOUR_MS);
-        memory.valves.set(id, mark(vm, [group], NOW_MS - 30 * MINUTE_MS));
-      }
-      memory = { ...memory };
-      const settings = { ...config.settings, holdWrites: r.hold };
-      const world: World = {
-        configState: r.configState,
-        stored: r.hasStored
-          ? {
-              config: { ...config, settings },
-              revision: 3,
-              releasing: new Map(
-                r.releasing.map((id) => [id, NOW_MS - (r.releasingAgo[ids.indexOf(id)] ?? 0)]),
-              ),
-            }
-          : undefined,
-        ledger: r.ledgerReadable ? ledgerBase : undefined,
-        devices,
-        links,
-        transportFaults: r.fault === undefined ? {} : { z2m: r.fault },
-        sensors,
-        unobservableSensors: new Set(r.unobservable),
-        memory,
-        buckets: undefined,
-        now: BUILDER_NOW,
-      };
-      return { world, steps: r.steps };
     });
-});
+
+const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) =>
+  arbAreas(config).chain((areas) => {
+    const roomValves = Object.values(areas).flat();
+    const ids = [...roomValves, ...EXTRA_IDS];
+    const sensorIds = [
+      ...new Set([...config.rooms.values()].flatMap((entry) => entry.sensors.map((s) => s.ref))),
+    ];
+    const membership = makeMembership(areas);
+    const arbHouse: fc.Arbitrary<HouseInput> = fc.oneof(
+      { arbitrary: fc.constant<HouseInput>({ kind: "live", membership, notInHa: [] }), weight: 6 },
+      fc.constantFrom<HouseInput>(
+        { kind: "frozen", membership, reason: "link_down" },
+        { kind: "frozen", membership: undefined, reason: "not_loaded" },
+        { kind: "unlinked" },
+      ),
+    );
+    return fc
+      .record({
+        house: arbHouse,
+        configState: fc.oneof(
+          { arbitrary: fc.constant<ConfigState>("ok"), weight: 8 },
+          fc.constantFrom<ConfigState>("empty", "unreadable"),
+        ),
+        hasStored: fc.oneof({ arbitrary: fc.constant(true), weight: 9 }, fc.constant(false)),
+        ledgerReadable: fc.oneof({ arbitrary: fc.constant(true), weight: 9 }, fc.constant(false)),
+        recorded: fc.subarray(ids),
+        originals: fc.array(arbOriginal, { minLength: ids.length, maxLength: ids.length }),
+        releasing: fc.subarray(ids),
+        releasingAgo: fc.array(fc.integer({ min: 0, max: 10 * HOUR_MS }), {
+          minLength: ids.length,
+          maxLength: ids.length,
+        }),
+        views: fc.array(arbView, { minLength: ids.length, maxLength: ids.length }),
+        z2m: fc.oneof(
+          { arbitrary: fc.constant(true), weight: 9 },
+          fc.constantFrom(false, undefined),
+        ),
+        ha: fc.option(fc.boolean(), { nil: undefined }),
+        fault: fc.oneof(
+          { arbitrary: fc.constant(undefined), weight: 9 },
+          fc.constant("another_instance"),
+        ),
+        readings: fc.tuple(...sensorIds.map((id) => fc.option(arbReading(id), { nil: undefined }))),
+        unobservable: fc.subarray(sensorIds),
+        hold: fc.constantFrom(false, false, true),
+        marks: fc.array(fc.tuple(fc.nat(ids.length), fc.constantFrom<Group>(...GROUP_LIST)), {
+          maxLength: 4,
+        }),
+        steps: fc.array(
+          fc.oneof(
+            fc.integer({ min: 0, max: 5 * MINUTE_MS }),
+            fc.integer({ min: 0, max: 3 * HOUR_MS }),
+          ),
+          { minLength: 1, maxLength: 6 },
+        ),
+      })
+      .map((r): Run => {
+        const ledgerBase = r.recorded.reduce<Ledger>(
+          (ledger, id) =>
+            withRecord(ledger, {
+              valveId: id,
+              profile: "any",
+              adoptedAt: NOW_MS - HOUR_MS,
+              originals: r.originals[ids.indexOf(id)] ?? {},
+            }),
+          EMPTY_LEDGER,
+        );
+        const devices = new Map<string, DeviceView>();
+        ids.forEach((id, i) => {
+          const view = r.views[i];
+          if (view !== undefined) devices.set(id, view);
+        });
+        const links: Record<string, boolean> = {};
+        if (r.z2m !== undefined) links.z2m = r.z2m;
+        if (r.ha !== undefined) links.ha = r.ha;
+        const sensors = new Map<string, SensorReading>();
+        for (const reading of r.readings)
+          if (reading !== undefined) sensors.set(reading.sensorId, reading);
+        let memory = { valves: new Map<string, ValveMemory>(), rooms: new Map() };
+        for (const [index, group] of r.marks) {
+          const id = ids[index];
+          const spec = id === undefined ? undefined : devices.get(id)?.spec;
+          if (id === undefined || spec === undefined) continue;
+          const vm = memory.valves.get(id) ?? newValveMemory(spec, NOW_MS - HOUR_MS);
+          memory.valves.set(id, mark(vm, [group], NOW_MS - 30 * MINUTE_MS));
+        }
+        memory = { ...memory };
+        const settings = { ...config.settings, holdWrites: r.hold };
+        const world: World = {
+          configState: r.configState,
+          stored: r.hasStored
+            ? {
+                config: { ...config, settings },
+                revision: 3,
+                releasing: new Map(
+                  r.releasing.map((id) => [id, NOW_MS - (r.releasingAgo[ids.indexOf(id)] ?? 0)]),
+                ),
+              }
+            : undefined,
+          house: r.house,
+          ledger: r.ledgerReadable ? ledgerBase : undefined,
+          devices,
+          links,
+          transportFaults: r.fault === undefined ? {} : { z2m: r.fault },
+          sensors,
+          unobservableSensors: new Set(r.unobservable),
+          memory,
+          buckets: undefined,
+          now: BUILDER_NOW,
+        };
+        return { world, steps: r.steps };
+      });
+  }),
+);
 
 /**
  * Ticks once per step, carrying the memory, `step` ms apart, and answers each refresh and publish
@@ -2272,6 +2325,57 @@ describe("control", () => {
     });
   });
 
+  describe("tick — rooms from the house", () => {
+    /** A settled managed TRV-ZBT, so a changed week is published at the next tick. */
+    function zbtWorld(): World {
+      return settled(makeManaged({ model: "trv_zbt", state: makeState({ values: EQUAL_ZBT }) }));
+    }
+
+    function liveHouseOf(world: World): HouseInput & { kind: "live" } {
+      if (world.house.kind !== "live") throw new Error("the builder house is live");
+      return world.house;
+    }
+
+    describe("With house frozen on a saved membership that holds a managed valve", () => {
+      it("the valve gets its schedule as with a live house", () => {
+        const live = withWeekDay(zbtWorld(), OTHER_DAY);
+        const frozen: World = {
+          ...live,
+          house: { kind: "frozen", membership: liveHouseOf(live).membership, reason: "link_down" },
+        };
+        expect(publishes(valveEffects(tick(live)))).toEqual([sevenDays(OTHER_DAY)]);
+        expect(tick(frozen).effects).toEqual(tick(live).effects);
+      });
+    });
+
+    describe("With house unlinked and a managed valve", () => {
+      it("no effect names the valve", () => {
+        const live = withWeekDay(zbtWorld(), OTHER_DAY);
+        expect(valveEffects(tick({ ...live, house: { kind: "unlinked" } }))).toEqual([]);
+      });
+    });
+
+    describe("With a room that has no entry", () => {
+      it("its valve gets the default schedule", () => {
+        const base = zbtWorld();
+        const stored = storedOf(base);
+        const other = {
+          id: "other",
+          name: "Other",
+          defaultWeek: weekOf(OTHER_DAY.map((p) => ({ ...p, preset: undefined }))),
+        };
+        const config = {
+          ...stored.config,
+          schedules: [...stored.config.schedules, other],
+          defaultScheduleId: "other",
+          rooms: new Map(),
+        };
+        const world: World = { ...base, stored: { ...stored, config } };
+        expect(publishes(valveEffects(tick(world)))).toEqual([sevenDays(OTHER_DAY)]);
+      });
+    });
+  });
+
   describe("tick — robustness", () => {
     describe("With any World built from arbitrary values (fast-check)", () => {
       fcTest.prop([arbRun])("never throws", ({ world, steps }) => {
@@ -2281,7 +2385,7 @@ describe("control", () => {
         "never returns a publish, publishSetpoint, pushTemperature or refresh for a valve that is not managed or releasing",
         ({ world, steps }) => {
           for (const [w, result] of runAll(world, steps)) {
-            const kinds = memberships(w.configState, w.stored, w.ledger);
+            const kinds = kindsIn(w);
             for (const effect of result.effects) {
               if (!("valveId" in effect)) continue;
               expect(["managed", "releasing"]).toContain(kinds.get(effect.valveId));
@@ -2327,7 +2431,7 @@ describe("control", () => {
         "never returns, for a releasing valve, a publish holding a key of a group whose spec says it is not captured",
         ({ world, steps }) => {
           for (const [w, result] of runAll(world, steps)) {
-            const kinds = memberships(w.configState, w.stored, w.ledger);
+            const kinds = kindsIn(w);
             for (const effect of result.effects) {
               if (effect.kind !== "publish" || kinds.get(effect.valveId) !== "releasing") continue;
               const spec = w.devices.get(effect.valveId)?.spec;

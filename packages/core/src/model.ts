@@ -34,10 +34,23 @@ export type SensorRef = Readonly<{ ref: string; weight: number }>;
 /** A transport-qualified id, `z2m:<IEEE address>`. */
 export type ValveRef = Readonly<{ valveId: string }>;
 
+/**
+ * A config entry for one Home Assistant area (`Config.rooms` is keyed by area id). `scheduleId`
+ * undefined: the room follows the default schedule.
+ */
+export type RoomEntry = Readonly<{
+  scheduleId: string | undefined;
+  sensors: readonly SensorRef[];
+  presets: RoomPresets;
+}>;
+
+/**
+ * A resolved room: a Home Assistant area that holds a supported valve, with what its config entry
+ * (or the default schedule) says. `id` is the area id, `name` the area's name.
+ */
 export type Room = Readonly<{
   id: string;
   name: string;
-  areaId: string | undefined;
   scheduleId: string;
   valves: readonly ValveRef[];
   sensors: readonly SensorRef[];
@@ -57,11 +70,13 @@ export type Settings = Readonly<{
   language: "en" | "ru";
 }>;
 
+/** `rooms` holds the entries, keyed by area id; entries for areas that are no room are kept. */
 export type Config = Readonly<{
   settings: Settings;
   presets: Presets;
   schedules: readonly Schedule[];
-  rooms: readonly Room[];
+  defaultScheduleId: string | undefined;
+  rooms: ReadonlyMap<string, RoomEntry>;
 }>;
 
 export type ConfigIssue = Readonly<{ path: string; code: string; message: string }>;
@@ -89,12 +104,13 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "en",
 };
 
-/** Defaults, no schedules, no rooms. */
+/** Defaults (writes held), no schedule, no default schedule, no entry. */
 export const EMPTY_CONFIG: Config = {
   settings: DEFAULT_SETTINGS,
   presets: DEFAULT_PRESETS,
   schedules: [],
-  rooms: [],
+  defaultScheduleId: undefined,
+  rooms: new Map(),
 };
 
 /** The id that identifies a sensor everywhere: its ref. */

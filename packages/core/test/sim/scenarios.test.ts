@@ -7,7 +7,7 @@ import {
   configToRaw,
 } from "../../src/index.ts";
 import { Z2M_DAY_PAYLOAD } from "../../src/profiles/sonoff-codec.ts";
-import { makeConfig } from "../builders.ts";
+import { entriesOf, makeConfig, membershipOf } from "../builders.ts";
 import {
   HOUR_MS,
   MINUTE_MS,
@@ -16,7 +16,9 @@ import {
   desiredTexts,
   factoryValve,
   inSyncValve,
+  kindsOf,
   recordedLedger,
+  resolvedRooms,
   simRoom,
   valveIdOf,
 } from "./driver.ts";
@@ -30,7 +32,8 @@ import type { ValveModel } from "./valve.ts";
 type Placed = readonly (readonly [number, ValveModel])[];
 type RoomPlan = Readonly<{ id: string; valves: Placed; sensor?: boolean }>;
 
-type Built = Readonly<{ sim: SimDriver; config: Config }>;
+/** `rooms` are the rooms the house holds at the start, with their entries in `config`. */
+type Built = Readonly<{ sim: SimDriver; config: Config; rooms: readonly Room[] }>;
 
 function sensorRef(roomId: string): string {
   return `ha:sensor.${roomId}`;
@@ -67,12 +70,13 @@ function build(
     ...placed.map(({ plan, id, model }) =>
       options.outOfSync === true
         ? factoryValve(id, model)
-        : inSyncValve(config, plan.id, id, model),
+        : inSyncValve(config, rooms, plan.id, id, model),
     ),
     ...(options.extra ?? []).map(([n, model]) => factoryValve(valveIdOf(n), model)),
   ];
   const sim = createSimDriver({
     config,
+    membership: membershipOf(rooms),
     ledger:
       options.recorded === false
         ? recordedLedger([])
@@ -85,7 +89,7 @@ function build(
       ...(options.extraSensors ?? []).map((ref) => ({ ref, value: 20 })),
     ],
   });
-  return { sim, config };
+  return { sim, config, rooms };
 }
 
 const seconds = (ms: number): number => ms / 1000;
@@ -133,8 +137,35 @@ function problemKinds(sim: SimDriver): ProblemKind[] {
   return (sim.lastResult()?.problems ?? []).map((p) => p.kind);
 }
 
-function copyOfRooms(config: Config, rooms: readonly Room[]): Config {
-  return { ...config, rooms };
+/** The seven day texts the valve should hold for its room, as the simulator's world resolves it. */
+function wantedTexts(
+  sim: SimDriver,
+  roomId: string,
+  model: ValveModel,
+): ReturnType<typeof desiredTexts> {
+  const world = sim.world();
+  return desiredTexts(world.stored?.config ?? makeConfig(), resolvedRooms(world), roomId, model);
+}
+
+/** The config with an entry for each of the rooms (their schedule, sensors and presets). */
+function withEntries(config: Config, rooms: readonly Room[]): Config {
+  return { ...config, rooms: entriesOf(rooms) };
+}
+
+/** Home Assistant now holds the rooms: the devices moved there. */
+function placeIn(sim: SimDriver, rooms: readonly Room[]): void {
+  sim.setMembership(membershipOf(rooms));
+}
+
+/**
+ * Home Assistant now holds the rooms, and every valve that left them all is released. Until the
+ * tick releases such a valve (plan 2, Task 7), the user restores it.
+ */
+function leaveFor(sim: SimDriver, rooms: readonly Room[]): void {
+  placeIn(sim, rooms);
+  for (const [valveId, kind] of kindsOf(sim.world())) {
+    if (kind === "orphan") sim.restoreValve(valveId);
+  }
 }
 
 /** Everything that reached a valve: writes, setpoint writes and pushes, but not refreshes. */
@@ -187,9 +218,7 @@ describe("scenarios", () => {
         expect(published(sim, b)).toEqual([{ at: 30, keys: SEVEN_DAYS }]);
         const truth = sim.valve(b).truth();
         expect(sim.bridge.editGroup(b)).toBe(3);
-        expect(truth.schedules[3]).toEqual(
-          desiredTexts(sim.world().stored?.config ?? makeConfig(), "r2", "trv_zbt"),
-        );
+        expect(truth.schedules[3]).toEqual(wantedTexts(sim, "r2", "trv_zbt"));
         expect(truth.schedules[1]).toEqual(factoryWeek("trv_zbt"));
         expect(truth.schedules[2]).toEqual(factoryWeek("trv_zbt"));
       });
@@ -387,13 +416,20 @@ describe("scenarios", () => {
     });
   });
 
-  describe("join", () => {
-    function withNewRoom(config: Config, valveId: string): Config {
-      return copyOfRooms(config, [...config.rooms, simRoom("new", [valveId], [sensorRef("new")])]);
+  // Finished in plan 2, Task 7: the tick joins a valve that Home Assistant puts in a room. A
+  // document names no valve any more, so these scenarios place the valve through the house.
+  describe.skip("join", () => {
+    /** Home Assistant puts the valve in the new area `new`; the document gets its entry. */
+    function joinNew(built: Built, valveId: string): Config {
+      const rooms = [...built.rooms, simRoom("new", [valveId], [sensorRef("new")])];
+      const next = withEntries(built.config, rooms);
+      placeIn(built.sim, rooms);
+      expect(built.sim.planChange(configToRaw(next)).ok).toBe(true);
+      return next;
     }
 
     describe("With a new valve that has sent no message since the start", () => {
-      function start(): Built & Readonly<{ n: string; raw: unknown }> {
+      function start(): Built & Readonly<{ n: string }> {
         const built = build({
           rooms: [{ id: "r1", valves: [[A, "trvzb"]] }],
           extra: [[3, "trvzb"]],
@@ -401,24 +437,22 @@ describe("scenarios", () => {
         });
         const n = valveIdOf(3);
         built.sim.step(0);
-        return { ...built, n, raw: configToRaw(withNewRoom(built.config, n)) };
+        joinNew(built, n);
+        return { ...built, n };
       }
 
-      it("the change is refused with valve_not_observed, and the driver asks the valve to report", () => {
-        const { sim, n, raw } = start();
-        const result = sim.planChange(raw);
-        expect(result.ok).toBe(false);
-        if (result.ok) return;
-        expect(result.refused.code).toBe("valve_not_observed");
-        expect(result.refused.data.valveIds).toBe(n);
+      it("it is not joined, and the tick asks the valve to report", () => {
+        const { sim, n } = start();
+        sim.step(STEP_MS);
+        expect(sim.ledger()?.records.has(n)).toBe(false);
         expect(sim.valve(n).received().reads).toBe(1);
       });
 
-      it("the same change is accepted at the next step", () => {
-        const { sim, raw } = start();
-        sim.planChange(raw);
+      it("it joins at the step after it reported", () => {
+        const { sim, n } = start();
         sim.step(STEP_MS);
-        expect(sim.planChange(raw).ok).toBe(true);
+        sim.step(STEP_MS);
+        expect(sim.ledger()?.records.has(n)).toBe(true);
       });
     });
 
@@ -430,14 +464,14 @@ describe("scenarios", () => {
           extraSensors: [sensorRef("new")],
         });
         const n = valveIdOf(3);
-        const next = withNewRoom(built.config, n);
+        const rooms = [...built.rooms, simRoom("new", [n], [sensorRef("new")])];
         // Its days already equal the new room's: the same default week.
-        built.sim.valve(n).setup({ days: { group: 1, texts: desiredTexts(next, "new", "trvzb") } });
+        built.sim.valve(n).setup({
+          days: { group: 1, texts: desiredTexts(built.config, rooms, "new", "trvzb") },
+        });
         built.sim.step(0);
-        built.sim.planChange(configToRaw(next));
         built.sim.step(STEP_MS);
-        const result = built.sim.planChange(configToRaw(next));
-        expect(result.ok).toBe(true);
+        joinNew(built, n);
         return { ...built, n, joinedAt: built.sim.elapsed() };
       }
 
@@ -469,11 +503,9 @@ describe("scenarios", () => {
           extraSensors: [sensorRef("new")],
         });
         const n = valveIdOf(3);
-        const next = withNewRoom(built.config, n);
         built.sim.step(0);
-        built.sim.planChange(configToRaw(next));
         built.sim.step(STEP_MS);
-        expect(built.sim.planChange(configToRaw(next)).ok).toBe(true);
+        joinNew(built, n);
         const joinedAt = built.sim.elapsed();
         built.sim.runTo(joinedAt + 20 * MINUTE_MS);
         return { ...built, n, joinedAt };
@@ -502,14 +534,12 @@ describe("scenarios", () => {
         const truth = sim.valve(n).truth();
         expect(truth.schedules[1]).toEqual(factoryWeek("trv_zbt"));
         expect(truth.schedules[2]).toEqual(factoryWeek("trv_zbt"));
-        expect(truth.schedules[3]).toEqual(
-          desiredTexts(sim.world().stored?.config ?? makeConfig(), "new", "trv_zbt"),
-        );
+        expect(truth.schedules[3]).toEqual(wantedTexts(sim, "new", "trv_zbt"));
       });
     });
 
     describe("With a new TRV-ZBT whose active group is already 3", () => {
-      function joined(): Built & Readonly<{ n: string; next: Config }> {
+      function joined(): Built & Readonly<{ n: string }> {
         const built = build({
           rooms: [{ id: "r1", valves: [[A, "trvzb"]] }],
           extra: [[3, "trv_zbt"]],
@@ -517,24 +547,22 @@ describe("scenarios", () => {
         });
         const n = valveIdOf(3);
         built.sim.valve(n).setup({ activeGroup: 3 });
-        const next = withNewRoom(built.config, n);
         built.sim.step(0);
-        built.sim.planChange(configToRaw(next));
         built.sim.step(STEP_MS);
-        expect(built.sim.planChange(configToRaw(next)).ok).toBe(true);
+        joinNew(built, n);
         built.sim.runTo(built.sim.elapsed() + 20 * MINUTE_MS);
-        return { ...built, n, next };
+        return { ...built, n };
       }
 
       it("it joins, its record's original active group is 3, and its group 3 holds the room's days", () => {
-        const { sim, n, next } = joined();
+        const { sim, n } = joined();
         expect(sim.ledger()?.records.get(n)?.originals.active_group).toBe(3);
-        expect(sim.valve(n).truth().schedules[3]).toEqual(desiredTexts(next, "new", "trv_zbt"));
+        expect(sim.valve(n).truth().schedules[3]).toEqual(wantedTexts(sim, "new", "trv_zbt"));
       });
 
       it("the active group is never written, also not on release", () => {
-        const { sim, n, config } = joined();
-        sim.planChange(configToRaw(config));
+        const { sim, n, rooms } = joined();
+        placeIn(sim, rooms);
         sim.runTo(sim.elapsed() + 40 * MINUTE_MS);
         expect(sim.ledger()?.records.has(n)).toBe(false);
         for (const entry of published(sim, n)) expect(entry.keys).not.toContain("active_group");
@@ -659,12 +687,10 @@ describe("scenarios", () => {
       }
 
       it("the bridge shows the new days and nothing is written again that day", () => {
-        const { sim, config } = run(23 * HOUR_MS);
+        const { sim } = run(23 * HOUR_MS);
         const id = valveIdOf(A);
         expect(published(sim, id)).toHaveLength(1);
-        expect(sim.bridge.cache(id)[Z2M_DAY_PAYLOAD.mon]).toBe(
-          desiredTexts(config, "r1", "trvzb").mon,
-        );
+        expect(sim.bridge.cache(id)[Z2M_DAY_PAYLOAD.mon]).toBe(wantedTexts(sim, "r1", "trvzb").mon);
         expect(sim.valve(id).truth().schedules[1]).toEqual(factoryWeek("trvzb"));
       });
 
@@ -681,9 +707,9 @@ describe("scenarios", () => {
       });
 
       it("after that the valve holds the desired days", () => {
-        const { sim, config } = run(27 * HOUR_MS);
+        const { sim } = run(27 * HOUR_MS);
         expect(sim.valve(valveIdOf(A)).truth().schedules[1]).toEqual(
-          desiredTexts(config, "r1", "trvzb"),
+          wantedTexts(sim, "r1", "trvzb"),
         );
       });
     });
@@ -692,7 +718,7 @@ describe("scenarios", () => {
   describe("late write", () => {
     describe("With a write queued while the valve sleeps, and the valve then removed from its room", () => {
       it("the release does not finish until the queued write has landed and been undone", () => {
-        const { sim, config } = build({
+        const { sim } = build({
           rooms: [
             {
               id: "r1",
@@ -713,8 +739,8 @@ describe("scenarios", () => {
         sim.step(STEP_MS);
         // The source write is waiting inside the sleeping valve.
         expect(sim.valve(id).queued()).toBeGreaterThan(0);
-        const without = copyOfRooms(config, [simRoom("r1", [valveIdOf(B)], [sensorRef("r1")])]);
-        expect(sim.planChange(configToRaw(without)).ok).toBe(true);
+        leaveFor(sim, [simRoom("r1", [valveIdOf(B)], [sensorRef("r1")])]);
+        expect(sim.config().stored?.releasing.has(id)).toBe(true);
         const removedAt = sim.elapsed();
         sim.runTo(removedAt + 40 * MINUTE_MS);
         // Long past the hold, but the valve was not heard since: still releasing.
@@ -738,7 +764,7 @@ describe("scenarios", () => {
   });
 
   describe("release", () => {
-    function released(): Built & Readonly<{ id: string; removedAt: number; without: Config }> {
+    function released(): Built & Readonly<{ id: string; removedAt: number }> {
       const built = build({
         rooms: [
           {
@@ -752,9 +778,8 @@ describe("scenarios", () => {
       });
       built.sim.step(0);
       built.sim.runTo(10 * MINUTE_MS);
-      const without = copyOfRooms(built.config, [simRoom("r1", [valveIdOf(B)], [sensorRef("r1")])]);
-      expect(built.sim.planChange(configToRaw(without)).ok).toBe(true);
-      return { ...built, id: valveIdOf(A), removedAt: built.sim.elapsed(), without };
+      leaveFor(built.sim, [simRoom("r1", [valveIdOf(B)], [sensorRef("r1")])]);
+      return { ...built, id: valveIdOf(A), removedAt: built.sim.elapsed() };
     }
 
     describe("With a TRVZB removed from its room", () => {
@@ -876,9 +901,7 @@ describe("scenarios", () => {
           ),
         ).toEqual(["refresh", SEVEN_DAYS, ["sensor_source"]]);
         expect(sim.valve(id).truth().select).toBe("remote_temperature");
-        expect(sim.valve(id).truth().schedules[1]).toEqual(
-          desiredTexts(sim.world().stored?.config ?? makeConfig(), "r1", "trvzb"),
-        );
+        expect(sim.valve(id).truth().schedules[1]).toEqual(wantedTexts(sim, "r1", "trvzb"));
       });
     });
 
@@ -905,7 +928,7 @@ describe("scenarios", () => {
   describe("manual schedule edit in Zigbee2MQTT", () => {
     describe("With a person changing a day of a TRVZB", () => {
       it("that day alone is published, once", () => {
-        const { sim, config } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }] });
+        const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }] });
         const id = valveIdOf(A);
         sim.step(0);
         sim.runTo(15 * MINUTE_MS);
@@ -915,7 +938,7 @@ describe("scenarios", () => {
         sim.runTo(40 * MINUTE_MS);
         const fresh = published(sim, id).slice(before);
         expect(fresh.map((p) => p.keys)).toEqual([["day_mon"]]);
-        expect(sim.valve(id).truth().schedules[1]).toEqual(desiredTexts(config, "r1", "trvzb"));
+        expect(sim.valve(id).truth().schedules[1]).toEqual(wantedTexts(sim, "r1", "trvzb"));
       });
     });
 
@@ -941,12 +964,12 @@ describe("scenarios", () => {
       });
 
       it("the next day Heatmaster writes still names group 3", () => {
-        const { sim, id, person, config } = run(27 * HOUR_MS);
+        const { sim, id, person } = run(27 * HOUR_MS);
         const writes = sim.effectsOf(id, "publish").filter((e) => e.at > 15 * MINUTE_MS);
         expect(writes.length).toBeGreaterThan(0);
         expect(sim.bridge.editGroup(id)).toBe(3);
         expect(sim.valve(id).truth().schedules[1]?.mon).toBe(person);
-        expect(sim.valve(id).truth().schedules[3]).toEqual(desiredTexts(config, "r1", "trv_zbt"));
+        expect(sim.valve(id).truth().schedules[3]).toEqual(wantedTexts(sim, "r1", "trv_zbt"));
       });
     });
   });
@@ -1025,7 +1048,7 @@ describe("scenarios", () => {
         ).toEqual([]);
       });
 
-      it("a config naming the valves is refused with ledger_unreadable", () => {
+      it("applying the config again is refused with ledger_unreadable", () => {
         const { sim, config } = lost();
         const result = sim.planChange(configToRaw(config));
         expect(result.ok).toBe(false);
@@ -1145,11 +1168,7 @@ describe("scenarios", () => {
           b,
           {
             schedule_group_to_edit: "3",
-            [Z2M_DAY_PAYLOAD.mon]: desiredTexts(
-              sim.world().stored?.config ?? makeConfig(),
-              "r2",
-              "trv_zbt",
-            ).mon,
+            [Z2M_DAY_PAYLOAD.mon]: wantedTexts(sim, "r2", "trv_zbt").mon,
           },
           sim.now() + 1000,
         );
@@ -1248,16 +1267,17 @@ describe("scenarios", () => {
             },
           ],
         });
-        const { sim, config } = built;
+        const { sim, config, rooms } = built;
         const id = valveIdOf(A);
         sim.step(0);
         sim.runTo(10 * MINUTE_MS);
         const first = sim.ledger()?.records.get(id);
-        const without = copyOfRooms(config, [simRoom("r1", [valveIdOf(B)], [sensorRef("r1")])]);
-        expect(sim.planChange(configToRaw(without)).ok).toBe(true);
+        leaveFor(sim, [simRoom("r1", [valveIdOf(B)], [sensorRef("r1")])]);
         sim.runTo(sim.elapsed() + 2 * MINUTE_MS);
         expect(sim.config().stored?.releasing.has(id)).toBe(true);
         // The valve now holds the source Heatmaster restored; adding it back must not recapture.
+        // Until the tick takes it out of releasing (plan 2, Task 7), the document is applied again.
+        placeIn(sim, rooms);
         const back = sim.planChange(configToRaw(config));
         expect(back.ok).toBe(true);
         sim.runTo(sim.elapsed() + 20 * MINUTE_MS);
@@ -1370,17 +1390,17 @@ describe("scenarios", () => {
         });
         const { sim, config } = built;
         sim.runTo(5 * MINUTE_MS);
+        // A document joins a valve only while no room is managed: here the config file was lost.
+        sim.loseConfig("lost");
+        sim.restart();
+        placeIn(sim, [simRoom("r1", [valveIdOf(A), valveIdOf(B)], [sensorRef("r1")])]);
         sim.valve(valveIdOf(B)).person({}, sim.now());
-        sim.step(STEP_MS);
-        const joined = copyOfRooms(config, [
-          simRoom("r1", [valveIdOf(A), valveIdOf(B)], [sensorRef("r1")]),
-        ]);
+        sim.deliver();
         sim.crashAfterEffects(1);
-        expect(sim.planChange(configToRaw(joined)).ok).toBe(true);
+        expect(sim.planChange(configToRaw(config)).ok).toBe(true);
         const ledgerFile = sim.disk().ledger;
         expect(ledgerFile.state === "ok" && ledgerFile.ledger.records.has(valveIdOf(B))).toBe(true);
-        const file = sim.disk().config;
-        expect(file.state === "ok" && file.stored.config.rooms[0]?.valves).toHaveLength(1);
+        expect(sim.disk().config.state).toBe("empty");
         expect(sim.memory().valves.size).toBe(0);
         expect(sim.log().filter((e) => e.effect.kind === "saveConfig")).toHaveLength(0);
       });

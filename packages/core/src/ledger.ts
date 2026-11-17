@@ -1,7 +1,8 @@
+import type { HouseInput } from "./house.ts";
 import { ConfigError } from "./model.ts";
 import { SETTING_KEYS, groupOf } from "./settings.ts";
 import { configToRaw, validateConfig } from "./validation.ts";
-import type { Config, ConfigIssue } from "./model.ts";
+import type { Config, ConfigIssue, Room } from "./model.ts";
 import type { ResolvedDay, ResolvedPoint } from "./schedule.ts";
 import type { SettingKey, SettingValue } from "./settings.ts";
 
@@ -80,26 +81,44 @@ export function withoutRecord(
 }
 
 /**
- * Each valve's membership (architecture §8). `ledger` `undefined` means the ledger could not be
- * read; state `ok` without `stored` counts as `unreadable`. A valve that matches no row is left out.
+ * Each valve's membership (architecture §8, with "in a room" read from `rooms`, the resolved rooms
+ * of `roomsOf`). `ledger` `undefined` means the ledger could not be read; state `ok` without
+ * `stored` counts as `unreadable`. `rooms` undefined (no Home Assistant link): every recorded and
+ * every releasing valve is frozen. A house that is not live joins and releases nothing: a valve in
+ * a room is read as the table says, and every other recorded or releasing valve is frozen, never
+ * an orphan (an orphan offers Restore). A valve that matches no row is left out.
  */
 export function memberships(
   state: ConfigState,
   stored: StoredConfig | undefined,
   ledger: Ledger | undefined,
+  rooms: readonly Room[] | undefined,
+  houseKind: HouseInput["kind"],
 ): ReadonlyMap<string, Membership> {
   const result = new Map<string, Membership>();
   if (state !== "ok" || stored === undefined) {
     for (const valveId of ledger?.records.keys() ?? []) result.set(valveId, "frozen");
     return result;
   }
-  const inRoom = new Set(stored.config.rooms.flatMap((room) => room.valves.map((v) => v.valveId)));
+  if (rooms === undefined) {
+    for (const valveId of [...(ledger?.records.keys() ?? []), ...stored.releasing.keys()]) {
+      result.set(valveId, "frozen");
+    }
+    return result;
+  }
+  const inRoom = new Set(rooms.flatMap((room) => room.valves.map((v) => v.valveId)));
   if (ledger === undefined) {
     for (const valveId of [...inRoom, ...stored.releasing.keys()]) result.set(valveId, "frozen");
     return result;
   }
   for (const valveId of inRoom) {
     result.set(valveId, ledger.records.has(valveId) ? "managed" : "not_adopted");
+  }
+  if (houseKind !== "live") {
+    for (const valveId of [...stored.releasing.keys(), ...ledger.records.keys()]) {
+      if (!result.has(valveId)) result.set(valveId, "frozen");
+    }
+    return result;
   }
   for (const valveId of stored.releasing.keys()) {
     if (!inRoom.has(valveId)) {

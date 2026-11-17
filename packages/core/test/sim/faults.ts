@@ -1,11 +1,20 @@
 import fc from "fast-check";
-import { configToRaw, findProfile } from "../../src/index.ts";
+import { ChangeRefused, configToRaw, findProfile } from "../../src/index.ts";
 import { Z2M_DAY_PAYLOAD, Z2M_KEYS } from "../../src/profiles/sonoff-codec.ts";
-import { makeConfig, weekOf } from "../builders.ts";
-import { HOUR_MS, MINUTE_MS, STEP_MS, createSimDriver, simRoom, valveIdOf } from "./driver.ts";
+import { makeConfig, membershipOf, weekOf } from "../builders.ts";
+import {
+  HOUR_MS,
+  MINUTE_MS,
+  STEP_MS,
+  createSimDriver,
+  kindsOf,
+  simRoom,
+  valveIdOf,
+} from "./driver.ts";
 import { reported } from "./valve.ts";
 import type { SimDriver, SimSetup, LoggedEffect } from "./driver.ts";
 import type {
+  AreaMembership,
   Config,
   Ledger,
   PresetName,
@@ -330,30 +339,36 @@ function factorySetup(plan: Initial): SimSetup["valves"] {
   ];
 }
 
-export function modelConfig(
-  placement: Placement,
-  schedules: Readonly<Record<ScheduleName, Variant>>,
-  hold: boolean,
-  intervalMs?: number,
-): Config {
-  // A room with no valve does not exist.
-  const rooms: Room[] = ROOM_NAMES.map((name) =>
+/** The rooms `a`, `b` and `c` with the valves the placement puts in them (rooms of no valve too). */
+function modelRooms(placement: Placement): readonly Room[] {
+  return ROOM_NAMES.map((name) =>
     simRoom(
       name,
       VALVE_IDS.filter((_, i) => placement[i] === name),
       name === "c" ? [] : [sensorOf(name)],
     ),
-  )
-    .filter((r) => r.valves.length > 0)
-    .map((r) => ({ ...r, scheduleId: r.id === "b" ? "alt" : "default" }));
+  ).map((r) => ({ ...r, scheduleId: r.id === "b" ? "alt" : "default" }));
+}
+
+/** The document the user asks for: an entry for each of `a`, `b` and `c`, `b` on `alt`. */
+export function modelConfig(
+  schedules: Readonly<Record<ScheduleName, Variant>>,
+  hold: boolean,
+  intervalMs?: number,
+): Config {
   const config = makeConfig({
-    rooms,
+    rooms: modelRooms([null, null]),
     holdWrites: hold,
     schedules: [scheduleOf("default", schedules.default), scheduleOf("alt", schedules.alt)],
   });
   return intervalMs === undefined
     ? config
     : { ...config, settings: { ...config.settings, externalWriteIntervalMs: intervalMs } };
+}
+
+/** What Home Assistant says for a placement: an area with no valve is no room. */
+export function modelMembership(placement: Placement): AreaMembership {
+  return membershipOf(modelRooms(placement).filter((r) => r.valves.length > 0));
 }
 
 /** The values a binding reads from a payload: the cache's, or what the valve would report. */
@@ -377,16 +392,21 @@ function bindingDecode(
   return found.binding.decode(payload).values;
 }
 
-/** The rig for a plan's initial state: both valves in the factory state, Heatmaster just started. */
+/**
+ * The rig for a plan's initial state: both valves in the factory state, Heatmaster just started.
+ * Home Assistant has the TRVZB in `a` and the TRV-ZBT in `b`; the config has no schedule yet, so
+ * no room is managed until the first document with schedules joins both valves.
+ */
 export function createRig(start: Initial): Rig {
-  let placement: [RoomName | null, RoomName | null] = [null, null];
+  let placement: [RoomName | null, RoomName | null] = ["a", "b"];
   let schedules: Record<ScheduleName, Variant> = { default: 0, alt: 1 };
   let hold = false;
   const levels: Record<string, number> = { a: 20, b: 20 };
   const intervalMs = start.intervalMin * MINUTE_MS;
-  const config = modelConfig(placement, schedules, hold, intervalMs);
+  const config = modelConfig(schedules, hold, intervalMs);
   const sim = createSimDriver({
-    config,
+    config: { ...config, schedules: [], defaultScheduleId: undefined, rooms: new Map() },
+    membership: modelMembership(placement),
     ledger: { records: new Map(), released: [] },
     valves: factorySetup(start),
     sensors: ROOM_NAMES.filter((n) => n !== "c").map((n) => ({ ref: sensorOf(n), value: 20 })),
@@ -424,7 +444,7 @@ export function createRig(start: Initial): Rig {
     sim.deliver();
     const cache = SLOTS.map((s) => decoded(sim, s, "cache"));
     const truth = SLOTS.map((s) => decoded(sim, s, "truth"));
-    const asked = modelConfig(placement, schedules, hold, intervalMs);
+    const asked = modelConfig(schedules, hold, intervalMs);
     const result = sim.planChange(configToRaw(asked));
     if (!result.ok) return false;
     // A crash that cut the change leaves the saved revision behind the planned one.
@@ -443,11 +463,42 @@ export function createRig(start: Initial): Rig {
   };
 
   /** The change the user asks for, kept only when Heatmaster accepts it. */
-  const change = (edit: () => void, undo: () => void): void => {
+  const change = (edit: () => void, undo: () => void): boolean => {
     edit();
     sim.deliver();
     // A refusal is undone; a change that a crash cut stays asked, and is asked again.
-    if (!submit()) undo();
+    if (submit()) return true;
+    undo();
+    return false;
+  };
+
+  const place = (next: Placement): void => {
+    placement = [next[0], next[1]];
+    sim.setMembership(modelMembership(next));
+  };
+
+  /**
+   * Until the tick joins valves (plan 2, Task 7), a valve with no record joins only through a
+   * document while no room is managed: the config is not readable or has no schedule.
+   */
+  const mayEnter = (s: Slot): boolean => {
+    const world = sim.world();
+    if (placement[s] !== null || world.ledger?.records.has(VALVE_IDS[s]) === true) return true;
+    return (
+      world.configState !== "ok" ||
+      world.stored === undefined ||
+      world.stored.config.schedules.length === 0
+    );
+  };
+
+  /** Until the tick releases valves (plan 2, Task 7), a valve that left every room is restored. */
+  const release = (s: Slot): void => {
+    if (kindsOf(sim.world()).get(VALVE_IDS[s]) !== "orphan") return;
+    try {
+      sim.restoreValve(VALVE_IDS[s]);
+    } catch (error) {
+      if (!(error instanceof ChangeRefused)) throw error;
+    }
   };
 
   const competitorWrite = (s: Slot, what: "select" | "group" | "days"): void => {
@@ -607,14 +658,18 @@ export function createRig(start: Initial): Rig {
         return;
       case "place": {
         const old = placement;
-        change(
+        const next: Placement = fault.valve === 0 ? [fault.room, old[1]] : [old[0], fault.room];
+        if (fault.room !== null && !mayEnter(fault.valve)) return;
+        // The device moves in Home Assistant, and the user applies the document again.
+        const kept = change(
           () => {
-            placement = fault.valve === 0 ? [fault.room, old[1]] : [old[0], fault.room];
+            place(next);
           },
           () => {
-            placement = old;
+            place(old);
           },
         );
+        if (kept && fault.room === null) release(fault.valve);
         return;
       }
       case "edit": {
@@ -659,20 +714,20 @@ export function createRig(start: Initial): Rig {
   };
 
   const run = (plan: FaultPlan): void => {
-    // Heatmaster hears from both valves, then both are placed; a refused first try is repeated.
+    // Heatmaster hears from both valves, then the first document with schedules joins both; a
+    // refused first try is repeated.
+    const asIs = (): void => undefined;
     advance(60 * 1000);
-    apply({ k: "place", valve: 0, room: "a" });
-    apply({ k: "place", valve: 1, room: "b" });
+    change(asIs, asIs);
     advance(3 * MINUTE_MS);
-    apply({ k: "place", valve: 0, room: "a" });
-    apply({ k: "place", valve: 1, room: "b" });
+    change(asIs, asIs);
     advance(2 * MINUTE_MS);
     for (const fault of plan.steps) apply(fault);
   };
 
   return {
     sim,
-    model: () => modelConfig(placement, schedules, hold, intervalMs),
+    model: () => modelConfig(schedules, hold, intervalMs),
     joins,
     onStep: (fn) => {
       observers.push(fn);

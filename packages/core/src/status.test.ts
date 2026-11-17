@@ -46,7 +46,6 @@ const NOW = Temporal.PlainDateTime.from("2026-11-16T08:00").toZonedDateTime(AMS)
 const ROOM: Room = {
   id: "living",
   name: "Living room",
-  areaId: undefined,
   scheduleId: "default",
   valves: [{ valveId: V1 }],
   sensors: [],

@@ -1,22 +1,25 @@
+import { scheduleLabelId } from "./house.ts";
 import { ConfigError, DEFAULT_PRESETS, DEFAULT_SETTINGS, PRESET_NAMES, WEEKDAYS } from "./model.ts";
 import type {
   Config,
   ConfigIssue,
   PresetName,
   Presets,
-  Room,
+  RoomEntry,
   RoomPresets,
   Schedule,
   SensorRef,
   Settings,
   SetPoint,
-  ValveRef,
   Week,
   Weekday,
 } from "./model.ts";
 import { sensorId } from "./model.ts";
 
-export const CONFIG_VERSION = 2;
+export const CONFIG_VERSION = 3;
+
+/** A `rooms` key: a Home Assistant area id (a slug; old ones are 32 hex digits). */
+export const AREA_ID_PATTERN = /^[a-z0-9_]{1,64}$/;
 
 export type RawPresets = Readonly<{
   comfort?: number;
@@ -46,26 +49,24 @@ export type RawSchedule = Readonly<{ id: string; name: string; week: readonly Ra
 
 export type RawSensor = Readonly<{ ref: string; weight?: number }>;
 
-export type RawRoom = Readonly<{
-  id: string;
-  name: string;
-  area_id?: string;
-  schedule_id: string;
-  valves: readonly Readonly<{ id: string }>[];
+/** A room entry; `schedule` absent: the room follows `default_schedule`. */
+export type RawRoomEntry = Readonly<{
+  schedule?: string;
   sensors?: readonly RawSensor[];
   presets?: RawPresets;
 }>;
 
+/** `rooms` is keyed by Home Assistant area id. */
 export type RawConfig = Readonly<{
-  version: 2;
+  version: 3;
   settings?: RawSettings;
   presets?: RawPresets;
   schedules?: readonly RawSchedule[];
-  rooms?: readonly RawRoom[];
+  default_schedule?: string;
+  rooms?: Readonly<Record<string, RawRoomEntry>>;
 }>;
 
 const ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
-const VALVE_ID_PATTERN = /^[a-z][a-z0-9]*:[0-9a-z_.:-]{1,64}$/;
 const HA_ENTITY_PATTERN = /^sensor\.[a-z0-9_]+$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const CONTROL_PATTERN = /\p{Cc}/u;
@@ -74,7 +75,6 @@ const MIN_TEMPERATURE = 4;
 const MAX_TEMPERATURE = 35;
 const MAX_ROOMS = 64;
 const MAX_SCHEDULES = 64;
-const MAX_VALVES = 8;
 const MAX_SENSORS = 16;
 const MAX_NAME_LENGTH = 64;
 const MAX_SENSOR_WEIGHT = 10;
@@ -91,9 +91,9 @@ const MIDNIGHT = Temporal.PlainTime.from("00:00");
 type Report = (path: string, code: string, message: string) => void;
 
 /**
- * Brings an older document up to CONFIG_VERSION. Version 2 is the current one, so it returns the
- * document unchanged; a version 1 document is refused by `validateConfig`, and only the stored
- * file is upgraded (`upgradeRawV1`).
+ * Brings an older document up to CONFIG_VERSION. Version 3 is the current one, so it returns the
+ * document unchanged; older documents are refused by `validateConfig`, and only the stored file
+ * is upgraded.
  */
 export function migrateRaw(raw: Readonly<Record<string, unknown>>): Record<string, unknown> {
   return { ...raw };
@@ -567,6 +567,8 @@ function parseSchedules(
 ): Readonly<{ schedules: readonly Schedule[]; ids: ReadonlySet<string>; complete: boolean }> {
   const list = parseList(report, path, value, MAX_SCHEDULES);
   const ids = new Set<string>();
+  const labelIds = new Set<string>();
+  const names = new Set<string>();
   let complete = isList(value) || value === undefined;
   const schedules = list.map((item, index): Schedule => {
     const itemPath = atIndex(path, index);
@@ -576,12 +578,27 @@ function parseSchedules(
     if (typeof rawId !== "string") complete = false;
     else if (ids.has(id))
       report(at(itemPath, "id"), "id_duplicate", `duplicate schedule id "${id}"`);
-    else ids.add(id);
-    const name = parseName(
-      report,
-      at(itemPath, "name"),
-      requiredKey(report, itemPath, obj, "name"),
-    );
+    else {
+      ids.add(id);
+      // Home Assistant slugs a label's name into its id, so "-" and "_" give one label.
+      const labelId = scheduleLabelId(id);
+      if (labelIds.has(labelId)) {
+        report(
+          at(itemPath, "id"),
+          "label_id_duplicate",
+          `another schedule id gives the label id "${labelId}"`,
+        );
+      } else labelIds.add(labelId);
+    }
+    const rawName = requiredKey(report, itemPath, obj, "name");
+    const name = parseName(report, at(itemPath, "name"), rawName);
+    if (typeof rawName === "string") {
+      // Home Assistant label names are unique ignoring case.
+      const folded = rawName.toLowerCase();
+      if (names.has(folded)) {
+        report(at(itemPath, "name"), "name_duplicate", `another schedule is named "${rawName}"`);
+      } else names.add(folded);
+    }
     const defaultWeek = parseWeek(
       report,
       at(itemPath, "week"),
@@ -590,33 +607,6 @@ function parseSchedules(
     return { id, name, defaultWeek };
   });
   return { schedules, ids, complete };
-}
-
-function parseValves(
-  report: Report,
-  path: string,
-  value: unknown,
-  seen: Set<string>,
-): readonly ValveRef[] {
-  if (value === undefined) return [];
-  const list = parseList(report, path, value, MAX_VALVES);
-  if (isList(value) && value.length === 0) report(path, "valves_empty", "a room needs a valve");
-  return list.map((item, index): ValveRef => {
-    const itemPath = atIndex(path, index);
-    const obj = asObject(report, itemPath, item, ["id"]);
-    const raw = requiredKey(report, itemPath, obj, "id");
-    const idPath = at(itemPath, "id");
-    if (typeof raw !== "string") {
-      if (raw !== undefined) typeInvalid(report, idPath, "a text");
-      return { valveId: "" };
-    }
-    if (!VALVE_ID_PATTERN.test(raw)) {
-      report(idPath, "valve_id_invalid", "a valve id is <transport>:<address>");
-    } else if (seen.has(raw)) {
-      report(idPath, "valve_duplicate", `valve "${raw}" is already in use`);
-    } else seen.add(raw);
-    return { valveId: raw };
-  });
 }
 
 function parseSensor(report: Report, path: string, value: unknown): SensorRef {
@@ -666,67 +656,102 @@ function parseSensors(report: Report, path: string, value: unknown): readonly Se
   });
 }
 
+function parseDefaultSchedule(
+  report: Report,
+  path: string,
+  value: unknown,
+  schedules: readonly Schedule[],
+  scheduleIds: ReadonlySet<string>,
+  schedulesComplete: boolean,
+): string | undefined {
+  if (value === undefined) {
+    if (schedules.length > 0) {
+      report(path, "key_missing", `missing required key "${path}"`);
+    }
+    return undefined;
+  }
+  const id = parseText(report, path, value);
+  if (typeof value === "string" && schedulesComplete && !scheduleIds.has(id)) {
+    report(path, "schedule_unknown", `no schedule "${id}"`);
+  }
+  return typeof value === "string" ? id : undefined;
+}
+
+function parseEntry(
+  report: Report,
+  path: string,
+  value: unknown,
+  scheduleIds: ReadonlySet<string>,
+  schedulesComplete: boolean,
+): RoomEntry {
+  const obj = asObject(report, path, value, ["schedule", "sensors", "presets"]);
+  const rawSchedule = read(obj, "schedule");
+  let scheduleId: string | undefined;
+  if (rawSchedule !== undefined) {
+    const schedulePath = at(path, "schedule");
+    const id = parseText(report, schedulePath, rawSchedule);
+    if (typeof rawSchedule === "string") {
+      scheduleId = id;
+      if (schedulesComplete && !scheduleIds.has(id)) {
+        report(schedulePath, "schedule_unknown", `no schedule "${id}"`);
+      }
+    }
+  }
+  const sensors = parseSensors(report, at(path, "sensors"), read(obj, "sensors"));
+  const rawPresets = read(obj, "presets");
+  const partial = parsePresetValues(
+    report,
+    at(path, "presets"),
+    rawPresets === undefined ? {} : rawPresets,
+  );
+  const presets: RoomPresets = {
+    comfort: partial.comfort,
+    eco: partial.eco,
+    frost: partial.frost,
+    boost: partial.boost,
+  };
+  return { scheduleId, sensors, presets };
+}
+
+/** The entries, keyed by area id, in the document's order. */
 function parseRooms(
   report: Report,
   path: string,
   value: unknown,
   scheduleIds: ReadonlySet<string>,
   schedulesComplete: boolean,
-): readonly Room[] {
-  const list = parseList(report, path, value, MAX_ROOMS);
-  const ids = new Set<string>();
-  const valveIds = new Set<string>();
-  return list.map((item, index): Room => {
-    const itemPath = atIndex(path, index);
-    const obj = asObject(report, itemPath, item, [
-      "id",
-      "name",
-      "area_id",
-      "schedule_id",
-      "valves",
-      "sensors",
-      "presets",
-    ]);
-    const rawId = requiredKey(report, itemPath, obj, "id");
-    const id = parseId(report, at(itemPath, "id"), rawId);
-    if (typeof rawId === "string") {
-      if (ids.has(id)) report(at(itemPath, "id"), "id_duplicate", `duplicate room id "${id}"`);
-      else ids.add(id);
+): ReadonlyMap<string, RoomEntry> {
+  const rooms = new Map<string, RoomEntry>();
+  if (value === undefined) return rooms;
+  if (!isRecord(value)) {
+    typeInvalid(report, path, "an object of area ids");
+    return rooms;
+  }
+  const keys = Object.keys(value);
+  if (keys.length > MAX_ROOMS) report(path, "too_many", `at most ${String(MAX_ROOMS)} entries`);
+  for (const key of keys) {
+    const entryPath = at(path, key);
+    if (!AREA_ID_PATTERN.test(key)) {
+      report(
+        entryPath,
+        "area_id_invalid",
+        "a rooms key is a Home Assistant area id: 1 to 64 of a-z, 0-9 and _",
+      );
     }
-    const name = parseName(
-      report,
-      at(itemPath, "name"),
-      requiredKey(report, itemPath, obj, "name"),
-    );
-    const rawArea = read(obj, "area_id");
-    const areaId =
-      rawArea === undefined ? undefined : parseText(report, at(itemPath, "area_id"), rawArea);
-    const scheduleId = parseText(
-      report,
-      at(itemPath, "schedule_id"),
-      requiredKey(report, itemPath, obj, "schedule_id"),
-    );
-    if (scheduleId !== "" && schedulesComplete && !scheduleIds.has(scheduleId)) {
-      report(at(itemPath, "schedule_id"), "schedule_unknown", `no schedule "${scheduleId}"`);
-    }
-    const valvesPath = at(itemPath, "valves");
-    const rawValves = requiredKey(report, itemPath, obj, "valves");
-    const valves = parseValves(report, valvesPath, rawValves, valveIds);
-    const sensors = parseSensors(report, at(itemPath, "sensors"), read(obj, "sensors"));
-    const rawRoomPresets = read(obj, "presets");
-    const partial = parsePresetValues(
-      report,
-      at(itemPath, "presets"),
-      rawRoomPresets === undefined ? {} : rawRoomPresets,
-    );
-    const presets: RoomPresets = {
-      comfort: partial.comfort,
-      eco: partial.eco,
-      frost: partial.frost,
-      boost: partial.boost,
-    };
-    return { id, name, areaId, scheduleId, valves, sensors, presets };
-  });
+    rooms.set(key, parseEntry(report, entryPath, value[key], scheduleIds, schedulesComplete));
+  }
+  return rooms;
+}
+
+function versionMessage(version: unknown): string {
+  const wanted = `the document version must be ${String(CONFIG_VERSION)}`;
+  if (version === 1) {
+    return `${wanted}: the week format changed (write each schedule's week as blocks of days), and rooms now come from Home Assistant areas`;
+  }
+  if (version === 2) {
+    return `${wanted}: rooms now come from Home Assistant areas; list an entry per area id under rooms, with no valves`;
+  }
+  return wanted;
 }
 
 /** Turns a raw document into a Config; throws ConfigError listing every issue. */
@@ -739,14 +764,7 @@ export function validateConfig(raw: unknown): Config {
   const doc = migrateRaw(raw);
   if (doc.version !== CONFIG_VERSION) {
     throw new ConfigError([
-      {
-        path: "version",
-        code: "version_unsupported",
-        message:
-          doc.version === 1
-            ? "the document version must be 2: the week format changed, write each schedule's week as blocks of days"
-            : `the document version must be ${String(CONFIG_VERSION)}`,
-      },
+      { path: "version", code: "version_unsupported", message: versionMessage(doc.version) },
     ]);
   }
 
@@ -754,7 +772,14 @@ export function validateConfig(raw: unknown): Config {
   const report: Report = (path, code, message) => {
     issues.push({ path, code, message });
   };
-  asObject(report, "", doc, ["version", "settings", "presets", "schedules", "rooms"]);
+  asObject(report, "", doc, [
+    "version",
+    "settings",
+    "presets",
+    "schedules",
+    "default_schedule",
+    "rooms",
+  ]);
 
   const settings = parseSettings(report, "settings", read(doc, "settings"));
   const rawPresets = read(doc, "presets");
@@ -765,10 +790,18 @@ export function validateConfig(raw: unknown): Config {
   );
   const presets: Presets = { ...DEFAULT_PRESETS, ...presetValues };
   const { schedules, ids, complete } = parseSchedules(report, "schedules", read(doc, "schedules"));
+  const defaultScheduleId = parseDefaultSchedule(
+    report,
+    "default_schedule",
+    read(doc, "default_schedule"),
+    schedules,
+    ids,
+    complete,
+  );
   const rooms = parseRooms(report, "rooms", read(doc, "rooms"), ids, complete);
 
   if (issues.length > 0) throw new ConfigError(issues);
-  return { settings, presets, schedules, rooms };
+  return { settings, presets, schedules, defaultScheduleId, rooms };
 }
 
 function setPointValue(point: SetPoint): number | PresetName {
@@ -810,15 +843,12 @@ function sensorToRaw(sensor: SensorRef): RawSensor {
   return { ref: sensor.ref, weight: sensor.weight };
 }
 
-function roomToRaw(room: Room): RawRoom {
-  const presets = presetsToRaw(room.presets);
+/** Leaves out a missing schedule, empty sensors and empty presets: an entry with none is `{}`. */
+function entryToRaw(entry: RoomEntry): RawRoomEntry {
+  const presets = presetsToRaw(entry.presets);
   return {
-    id: room.id,
-    name: room.name,
-    ...(room.areaId === undefined ? {} : { area_id: room.areaId }),
-    schedule_id: room.scheduleId,
-    valves: room.valves.map((valve) => ({ id: valve.valveId })),
-    sensors: room.sensors.map(sensorToRaw),
+    ...(entry.scheduleId === undefined ? {} : { schedule: entry.scheduleId }),
+    ...(entry.sensors.length === 0 ? {} : { sensors: entry.sensors.map(sensorToRaw) }),
     ...(Object.keys(presets).length === 0 ? {} : { presets }),
   };
 }
@@ -841,6 +871,11 @@ export function configToRaw(config: Config): RawConfig {
       name: schedule.name,
       week: weekToRaw(schedule.defaultWeek),
     })),
-    rooms: config.rooms.map(roomToRaw),
+    ...(config.defaultScheduleId === undefined
+      ? {}
+      : { default_schedule: config.defaultScheduleId }),
+    rooms: Object.fromEntries(
+      [...config.rooms].map(([areaId, entry]) => [areaId, entryToRaw(entry)]),
+    ),
   };
 }

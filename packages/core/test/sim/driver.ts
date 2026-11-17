@@ -11,10 +11,12 @@ import {
   findProfile,
   fitted,
   forgetValve,
+  memberships,
   newState,
   planChange,
   resolveWeek,
   restoreValve,
+  roomsOf,
   tick,
   withRecord,
 } from "../../src/index.ts";
@@ -23,6 +25,7 @@ import { createSimBridge } from "./bridge.ts";
 import type { BridgeItem, SimBridge } from "./bridge.ts";
 import type { DayTexts, PersonChange, SimValve, SimValveOptions, ValveModel } from "./valve.ts";
 import type {
+  AreaMembership,
   Binding,
   ChangeOptions,
   ChangePlan,
@@ -34,6 +37,7 @@ import type {
   Event,
   Inbox,
   Ledger,
+  Membership,
   Memory,
   Room,
   SensorInfo,
@@ -61,8 +65,13 @@ export type SimValveSetup = Readonly<
 
 export type SimSensorSetup = Readonly<{ ref: string; value: number; alive?: boolean }>;
 
+/**
+ * `membership` is what Home Assistant says (areas and their valves); the house is live on it. No
+ * membership: no area holds a valve.
+ */
 export type SimSetup = Readonly<{
   config: Config;
+  membership?: AreaMembership;
   ledger: Ledger | undefined;
   releasing?: ReadonlyMap<string, number>;
   revision?: number;
@@ -118,6 +127,10 @@ export type SimDriver = Readonly<{
   memoryAppearances: () => readonly Readonly<{ at: number; valveId: string }>[];
   /** The config, ledger and copy as the runtime holds them in memory. */
   config: () => Readonly<{ configState: ConfigState; stored: StoredConfig | undefined }>;
+  /** What Home Assistant says now: the areas and their valves. */
+  membership: () => AreaMembership;
+  /** A device moves in Home Assistant: the house is live on `next` from the next tick on. */
+  setMembership: (next: AreaMembership) => void;
   ledger: () => Ledger | undefined;
   disk: () => Readonly<{ config: ConfigFile; ledger: LedgerFile }>;
   copy: () => Ledger | undefined;
@@ -185,6 +198,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   }
 
   let nowMs = startMs;
+  let membership: AreaMembership = setup.membership ?? { rooms: new Map(), ignored: [] };
   const disk: { config: ConfigFile; ledger: LedgerFile } = {
     config: {
       state: "ok",
@@ -212,7 +226,12 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   const log: LoggedEffect[] = [];
   const appearances: { at: number; valveId: string }[] = [];
 
-  /** The runtime's rule for a ledger file that did not load (Task 17's load rule). */
+  /**
+   * The runtime's rule for a ledger file that did not load (plan 1's load rule, with the version 3
+   * "expected" rule: the config is unreadable, the saved membership holds a valve, or a valve is
+   * releasing). Until the stored config carries the saved membership, Home Assistant's current
+   * membership stands in for it.
+   */
   const loadLedger = (): Ledger | undefined => {
     if (disk.ledger.state === "ok") return disk.ledger.ledger;
     // An unreadable file always locks the store; only a missing one may become empty.
@@ -220,8 +239,8 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     const configFile = disk.config;
     if (configFile.state === "unreadable") return undefined;
     if (configFile.state === "ok") {
-      const inRoom = configFile.stored.config.rooms.some((room) => room.valves.length > 0);
-      if (inRoom || configFile.stored.releasing.size > 0) return undefined;
+      const holdsValve = [...membership.rooms.values()].some((room) => room.valveIds.length > 0);
+      if (holdsValve || configFile.stored.releasing.size > 0) return undefined;
     }
     if (copyUnreadable || (copy?.records.size ?? 0) > 0) return undefined;
     return EMPTY_LEDGER;
@@ -268,6 +287,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     return {
       configState,
       stored,
+      house: { kind: "live", membership, notInHa: [] },
       ledger,
       devices,
       links: { ...links, ...linkOverride },
@@ -453,6 +473,10 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     log: () => log,
     memoryAppearances: () => appearances,
     config: () => ({ configState, stored }),
+    membership: () => membership,
+    setMembership(next) {
+      membership = next;
+    },
     ledger: () => ledger,
     disk: () => ({ config: disk.config, ledger: disk.ledger }),
     copy: () => copy,
@@ -574,7 +598,6 @@ export function simRoom(
   return {
     id,
     name: id,
-    areaId: undefined,
     scheduleId: "default",
     valves: valveIds.map((valveId) => ({ valveId })),
     sensors: sensorRefs.map((ref) => ({ ref, weight: 1 })),
@@ -582,9 +605,25 @@ export function simRoom(
   };
 }
 
-/** The seven day texts a valve of the model should hold for the room's schedule. */
-export function desiredTexts(config: Config, roomId: string, model: ValveModel): DayTexts {
-  const room = config.rooms.find((r) => r.id === roomId);
+/** The resolved rooms of a world (none when its house is unlinked). */
+export function resolvedRooms(world: World): readonly Room[] {
+  return roomsOf(world.configState, world.stored, world.house) ?? [];
+}
+
+/** Each valve's membership in a world, over the rooms of its house. */
+export function kindsOf(world: World): ReadonlyMap<string, Membership> {
+  const rooms = roomsOf(world.configState, world.stored, world.house);
+  return memberships(world.configState, world.stored, world.ledger, rooms, world.house.kind);
+}
+
+/** The seven day texts a valve of the model should hold for the resolved room's schedule. */
+export function desiredTexts(
+  config: Config,
+  rooms: readonly Room[],
+  roomId: string,
+  model: ValveModel,
+): DayTexts {
+  const room = rooms.find((r) => r.id === roomId);
   if (room === undefined) throw new Error(`no room ${roomId}`);
   const schedule = config.schedules.find((s) => s.id === room.scheduleId);
   if (schedule === undefined) throw new Error(`no schedule ${room.scheduleId}`);
@@ -602,12 +641,13 @@ export function desiredTexts(config: Config, roomId: string, model: ValveModel):
  */
 export function inSyncValve(
   config: Config,
+  rooms: readonly Room[],
   roomId: string,
   valveId: string,
   model: ValveModel,
 ): SimValveSetup {
-  const room = config.rooms.find((r) => r.id === roomId);
-  const texts = desiredTexts(config, roomId, model);
+  const room = rooms.find((r) => r.id === roomId);
+  const texts = desiredTexts(config, rooms, roomId, model);
   const select = (room?.sensors.length ?? 0) > 0 ? "remote_temperature" : "local_temperature";
   return {
     valveId,

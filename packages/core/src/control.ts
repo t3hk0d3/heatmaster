@@ -1,6 +1,8 @@
 import { differing, fitted, managedDesired, releaseDesired } from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { FEED_LOST_AFTER_MS, pushDue, pushed, stopped, trackRoom, wantedSource } from "./feed.ts";
+import { roomsOf } from "./house.ts";
+import type { HouseInput } from "./house.ts";
 import { memberships, withoutRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, Membership, StoredConfig } from "./ledger.ts";
 import { markByAge, markedReady, needsAsk, newValveMemory } from "./memory.ts";
@@ -88,7 +90,8 @@ export type DeviceView = Readonly<{
 export type BucketStart = Readonly<{ stamps: ReadonlyMap<string, number>; fallback: number }>;
 
 /**
- * Everything one tick reads. `ledger` undefined: the ledger could not be read. `links` holds one
+ * Everything one tick reads. `house` says where the rooms come from (`roomsOf`). `ledger`
+ * undefined: the ledger could not be read. `links` holds one
  * entry per transport (and `ha` when configured); a transport with no entry counts as down.
  * `transportFaults` maps a transport key to why it is unusable. `sensors` and
  * `unobservableSensors` are keyed by sensor id. `now` is in the house's time zone.
@@ -96,6 +99,7 @@ export type BucketStart = Readonly<{ stamps: ReadonlyMap<string, number>; fallba
 export type World = Readonly<{
   configState: ConfigState;
   stored: StoredConfig | undefined;
+  house: HouseInput;
   ledger: Ledger | undefined;
   devices: ReadonlyMap<string, DeviceView>;
   links: Readonly<Record<string, boolean>>;
@@ -251,9 +255,14 @@ type RoomPlan = Readonly<{
 }>;
 
 /** Each room whose schedule exists and has no empty day; others are left out. */
-function planRooms(config: Config, world: World, nowMs: number): ReadonlyMap<string, RoomPlan> {
+function planRooms(
+  config: Config,
+  rooms: readonly Room[],
+  world: World,
+  nowMs: number,
+): ReadonlyMap<string, RoomPlan> {
   const plans = new Map<string, RoomPlan>();
-  for (const room of config.rooms) {
+  for (const room of rooms) {
     const schedule = config.schedules.find((s) => s.id === room.scheduleId);
     if (schedule === undefined) continue;
     if (WEEKDAYS.some((day) => schedule.defaultWeek[day].length === 0)) continue;
@@ -606,7 +615,23 @@ function clampReleases(stored: StoredConfig | undefined, nowMs: number): StoredC
   for (const [valveId, orderedAt] of stored.releasing) {
     releasing.set(valveId, Math.min(orderedAt, nowMs));
   }
-  return { config: stored.config, revision: stored.revision, releasing };
+  return { ...stored, releasing };
+}
+
+/** The resolved rooms (none when unlinked) and each valve's membership over them. */
+function membershipsOf(
+  world: World,
+): Readonly<{ rooms: readonly Room[]; kinds: ReadonlyMap<string, Membership> }> {
+  const rooms = roomsOf(world.configState, world.stored, world.house);
+  const kinds = memberships(world.configState, world.stored, world.ledger, rooms, world.house.kind);
+  return { rooms: rooms ?? [], kinds };
+}
+
+/** The room id of each valve in a room. */
+function roomIdsOf(rooms: readonly Room[]): ReadonlyMap<string, string> {
+  const roomOf = new Map<string, string>();
+  for (const room of rooms) for (const ref of room.valves) roomOf.set(ref.valveId, room.id);
+  return roomOf;
 }
 
 /** One control step: what to save and write, the new memory, the rooms and the problems. */
@@ -614,16 +639,13 @@ export function tick(given: World): TickResult {
   const nowMs = given.now.epochMilliseconds;
   const clamp = clampReleases(given.stored, nowMs);
   const world: World = clamp === undefined ? given : { ...given, stored: clamp };
-  const kinds = memberships(world.configState, world.stored, world.ledger);
+  const { rooms: resolved, kinds } = membershipsOf(world);
   const stored = world.stored;
   const held = stored?.config.settings.holdWrites === true;
   const config = world.configState === "ok" ? stored?.config : undefined;
   const plans =
-    config === undefined ? new Map<string, RoomPlan>() : planRooms(config, world, nowMs);
-  const roomOf = new Map<string, string>();
-  for (const room of config?.rooms ?? []) {
-    for (const ref of room.valves) roomOf.set(ref.valveId, room.id);
-  }
+    config === undefined ? new Map<string, RoomPlan>() : planRooms(config, resolved, world, nowMs);
+  const roomOf = roomIdsOf(resolved);
   const ctx: Context = { world, nowMs, held, config };
 
   const valves = new Map<string, ValveMemory>();
@@ -713,10 +735,7 @@ export function tick(given: World): TickResult {
   if (stored !== undefined && (dropped.length > 0 || clamp !== undefined)) {
     const releasing = new Map(stored.releasing);
     for (const valveId of dropped) releasing.delete(valveId);
-    saves.push({
-      kind: "saveConfig",
-      stored: { config: stored.config, revision: stored.revision, releasing },
-    });
+    saves.push({ kind: "saveConfig", stored: { ...stored, releasing } });
   }
 
   const rooms = new Map<string, RoomStatus>();
@@ -766,14 +785,11 @@ function currentOf(state: DeviceState, values: SettingValues): SettingValues {
  */
 export function preview(world: World): readonly PlannedWrite[] {
   const nowMs = world.now.epochMilliseconds;
-  const kinds = memberships(world.configState, world.stored, world.ledger);
+  const { rooms: resolved, kinds } = membershipsOf(world);
   const config = world.configState === "ok" ? world.stored?.config : undefined;
   const plans =
-    config === undefined ? new Map<string, RoomPlan>() : planRooms(config, world, nowMs);
-  const roomOf = new Map<string, string>();
-  for (const room of config?.rooms ?? []) {
-    for (const ref of room.valves) roomOf.set(ref.valveId, room.id);
-  }
+    config === undefined ? new Map<string, RoomPlan>() : planRooms(config, resolved, world, nowMs);
+  const roomOf = roomIdsOf(resolved);
   const writes: PlannedWrite[] = [];
   for (const valveId of [...kinds.keys()].sort()) {
     const kind = kinds.get(valveId);

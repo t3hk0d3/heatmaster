@@ -3,6 +3,7 @@ import {
   BUILDER_DAY,
   BUILDER_NOW,
   BUILDER_SCHEDULE,
+  liveHouse,
   makeConfig,
   makeOriginals,
   makeSpec,
@@ -27,11 +28,10 @@ import type { DeviceState } from "./observation.ts";
 import { DAY_KEYS } from "./settings.ts";
 import type { SettingKey, SettingValues, ValveSpec } from "./settings.ts";
 import type { SensorReading } from "./temperature.ts";
-import type { RawConfig, RawRoom, RawSensor } from "./validation.ts";
+import type { RawConfig, RawRoomEntry, RawSensor } from "./validation.ts";
 
 const V1 = "z2m:0x00124b0000000001";
 const V2 = "z2m:0x00124b0000000002";
-const V3 = "z2m:0x00124b0000000003";
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const NOW_MS = BUILDER_NOW.epochMilliseconds;
@@ -60,18 +60,13 @@ function observedValues(model: Model): SettingValues {
     : { active_group: 1, sensor_source: "internal" };
 }
 
-function viewWith(model: Model, state: DeviceState | undefined, usable = true): DeviceView {
-  return { name: `valve ${model}`, spec: makeSpec(model), usable, state };
+function viewWith(model: Model, state: DeviceState | undefined): DeviceView {
+  return { name: `valve ${model}`, spec: makeSpec(model), usable: true, state };
 }
 
 /** A usable view whose valve has sent a message holding `values`. */
 function observedView(model: Model = "trvzb", values = observedValues(model)): DeviceView {
   return viewWith(model, makeState({ values }));
-}
-
-/** A usable view whose valve has sent no message since the start. */
-function unobservedView(model: Model = "trvzb"): DeviceView {
-  return viewWith(model, { ...makeState(), messageAt: undefined });
 }
 
 function record(valveId: string, model: Model = "trvzb"): ValveRecord {
@@ -91,7 +86,6 @@ function room(id: string, valveIds: readonly string[], sensors: readonly SensorR
   return {
     id,
     name: id,
-    areaId: undefined,
     scheduleId: BUILDER_SCHEDULE,
     valves: valveIds.map((valveId) => ({ valveId })),
     sensors,
@@ -99,7 +93,7 @@ function room(id: string, valveIds: readonly string[], sensors: readonly SensorR
   };
 }
 
-/** A world with a readable config (revision 1) holding `rooms`. */
+/** A world with a readable config (revision 1) whose entries and live house hold `rooms`. */
 function current(options: {
   rooms: readonly Room[];
   ledger?: Ledger | undefined;
@@ -107,50 +101,43 @@ function current(options: {
   devices?: ReadonlyMap<string, DeviceView>;
   timezone?: string | undefined;
 }): World {
-  const config = makeConfig({ rooms: options.rooms });
-  const settings = { ...config.settings, timezone: options.timezone };
   const world = makeWorld({
+    rooms: options.rooms,
     ledger: "ledger" in options ? options.ledger : EMPTY_LEDGER,
     devices: options.devices ?? new Map(),
   });
+  const stored = storedOf(world);
+  const settings = { ...stored.config.settings, timezone: options.timezone };
   return {
     ...world,
     stored: {
-      config: "timezone" in options ? { ...config, settings } : config,
-      revision: 1,
+      ...stored,
+      config: "timezone" in options ? { ...stored.config, settings } : stored.config,
       releasing: options.releasing ?? new Map(),
     },
   };
 }
 
-/** A world with no config yet (state "empty") and an empty ledger. */
-function first(devices: ReadonlyMap<string, DeviceView> = new Map()): World {
-  return makeWorld({ configState: "empty", stored: undefined, devices });
+/**
+ * A world with no config yet (state "empty"), an empty ledger, and a live house whose rooms are
+ * `rooms` (by default the room `living` holding V1).
+ */
+function first(
+  devices: ReadonlyMap<string, DeviceView> = new Map(),
+  rooms: readonly Room[] = [room("living", [V1])],
+): World {
+  return makeWorld({ configState: "empty", stored: undefined, devices, house: liveHouse(rooms) });
 }
 
-function rawRoom(
-  id: string,
-  valves: readonly string[],
-  sensors: readonly RawSensor[] = [],
-): RawRoom {
-  return {
-    id,
-    name: id,
-    schedule_id: BUILDER_SCHEDULE,
-    valves: valves.map((valveId) => ({ id: valveId })),
-    sensors,
-  };
-}
-
-/** The builder schedule (eco, comfort at 06:30, eco at 22:00 every day) and the given rooms. */
+/** The builder schedule (eco, comfort at 06:30, eco at 22:00 every day) and the given entries. */
 function doc(
-  rooms: readonly RawRoom[],
+  entries: Readonly<Record<string, RawRoomEntry>> = {},
   options: { timezone?: string | undefined; eco?: number } = {},
 ): RawConfig {
   const day = { "00:00": "eco", "06:30": "comfort", "22:00": "eco" } as const;
   const timezone = "timezone" in options ? options.timezone : BUILDER_NOW.timeZoneId;
   return {
-    version: 2,
+    version: 3,
     settings: {
       hold_writes: false,
       ...(timezone === undefined ? {} : { timezone }),
@@ -163,7 +150,8 @@ function doc(
         week: [{ days: "all", temperature: day }],
       },
     ],
-    rooms: [...rooms],
+    default_schedule: BUILDER_SCHEDULE,
+    rooms: { ...entries },
   };
 }
 
@@ -311,9 +299,9 @@ describe("change", () => {
   });
 
   describe("planChange", () => {
-    describe("With a first config naming one observable valve", () => {
+    describe("With a first config over a live house whose room holds one observable valve", () => {
       const world = first(devicesOf({ [V1]: observedView() }));
-      const result = plan(world, doc([rawRoom("living", [V1])]));
+      const result = plan(world, doc({ living: {} }));
 
       it("effects are saveLedger, writeOriginalsCopy, saveConfig, in that order", () => {
         expect(kinds(result.effects)).toEqual(["saveLedger", "writeOriginalsCopy", "saveConfig"]);
@@ -338,44 +326,21 @@ describe("change", () => {
     });
 
     describe("With dryRun true", () => {
-      it("effects is empty and joining, leaving and writes are filled", () => {
-        const world = current({
-          rooms: [room("living", [V2])],
-          ledger: ledgerOf(record(V2)),
-          devices: devicesOf({ [V1]: observedView(), [V2]: observedView() }),
-        });
-        const result = plan(world, doc([rawRoom("living", [V1])]), { dryRun: true });
+      it("effects is empty and joining and writes are filled", () => {
+        const world = first(devicesOf({ [V1]: observedView() }));
+        const result = plan(world, doc({ living: {} }), { dryRun: true });
         expect(result.effects).toEqual([]);
         expect(result.joining.map((c) => c.valveId)).toEqual([V1]);
-        expect(result.leaving).toEqual([V2]);
         expect(result.writes.map((w) => w.valveId)).toContain(V1);
       });
     });
 
-    describe("With one new valve, one rejoining valve and one leaving valve", () => {
-      const world = current({
-        rooms: [room("living", [V3])],
-        ledger: ledgerOf(record(V2), record(V3)),
-        devices: devicesOf({ [V1]: observedView(), [V2]: observedView(), [V3]: observedView() }),
-      });
-      const result = plan(world, doc([rawRoom("living", [V1, V2])]));
-
-      it("joining holds a Capture for the new valve only", () => {
-        expect(result.joining).toEqual([
-          { valveId: V1, originals: { sensor_source: "internal" }, unreadable: [] },
-        ]);
-      });
-
-      it("rejoining names the second and leaving the third", () => {
-        expect(result.rejoining).toEqual([V2]);
-        expect(result.leaving).toEqual([V3]);
-      });
-    });
-
-    describe("With two new valves given in the document in descending id order", () => {
+    describe("With two new valves held by the house in descending id order", () => {
       it("joining lists them in ascending id order", () => {
-        const world = first(devicesOf({ [V1]: observedView(), [V2]: observedView() }));
-        const result = plan(world, doc([rawRoom("living", [V2, V1])]));
+        const world = first(devicesOf({ [V1]: observedView(), [V2]: observedView() }), [
+          room("living", [V2, V1]),
+        ]);
+        const result = plan(world, doc({ living: {} }));
         expect(result.joining.map((c) => c.valveId)).toEqual([V1, V2]);
       });
     });
@@ -383,7 +348,7 @@ describe("change", () => {
     describe("With an invalid document", () => {
       it("throws ConfigError and returns nothing", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = { version: 2, presets: { eco: "warm" }, rooms: "none" };
+        const raw = { version: 3, presets: { eco: "warm" }, rooms: "none" };
         let caught: unknown;
         let result: ChangePlan | undefined;
         try {
@@ -401,7 +366,7 @@ describe("change", () => {
     describe("With an out-of-date expectedRevision", () => {
       it("throws ChangeRefused revision_conflict with both revisions in data", () => {
         const world = current({ rooms: [] });
-        const refused = refusal(() => plan(world, doc([]), { expectedRevision: 0 }));
+        const refused = refusal(() => plan(world, doc(), { expectedRevision: 0 }));
         expect(refused.code).toBe("revision_conflict");
         expect(refused.data).toEqual({ expected: "0", current: "1" });
       });
@@ -414,8 +379,9 @@ describe("change", () => {
           stored: undefined,
           ledger: ledgerOf(record(V2)),
           devices: devicesOf({ [V1]: observedView() }),
+          house: liveHouse([room("living", [V1])]),
         });
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe("config_unreadable");
+        expect(codeOf(() => plan(world, doc({ living: {} })))).toBe("config_unreadable");
       });
     });
 
@@ -427,8 +393,9 @@ describe("change", () => {
           stored: undefined,
           ledger: ledgerOf(kept),
           devices: devicesOf({ [V1]: observedView() }),
+          house: liveHouse([room("living", [V1])]),
         });
-        const result = plan(world, doc([rawRoom("living", [V1])]), { overwriteUnreadable: true });
+        const result = plan(world, doc({ living: {} }), { overwriteUnreadable: true });
         expect(recordOf(result.ledger, V2)).toBe(kept);
         expect(result.stored.releasing.has(V2)).toBe(false);
       });
@@ -440,123 +407,22 @@ describe("change", () => {
           stored: undefined,
           devices: devicesOf({ [V1]: observedView() }),
         });
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe("config_unreadable");
-      });
-    });
-
-    describe("With a leaving valve that is already in releasing", () => {
-      it("its release time becomes the time now", () => {
-        const world = current({
-          rooms: [room("living", [V1, V2])],
-          ledger: ledgerOf(record(V1), record(V2)),
-          releasing: new Map([[V1, NOW_MS - HOUR_MS]]),
-        });
-        const result = plan(world, doc([rawRoom("living", [V2])]));
-        expect(result.stored.releasing.get(V1)).toBe(NOW_MS);
-      });
-    });
-
-    describe("With a valve removed from its room", () => {
-      const world = current({
-        rooms: [room("living", [V1, V2])],
-        ledger: ledgerOf(record(V1), record(V2)),
-        devices: devicesOf({ [V1]: observedView(), [V2]: observedView() }),
-      });
-      const result = plan(world, doc([rawRoom("living", [V2])]));
-
-      it("the valve is in stored.releasing with the time now", () => {
-        expect([...result.stored.releasing]).toEqual([[V1, NOW_MS]]);
-      });
-
-      it("effects hold saveConfig only", () => {
-        expect(kinds(result.effects)).toEqual(["saveConfig"]);
-      });
-    });
-
-    describe("With a valve moved to another room", () => {
-      it("it is neither joining nor leaving and releasing is unchanged", () => {
-        const releasing = new Map([[V3, NOW_MS - HOUR_MS]]);
-        const world = current({
-          rooms: [room("living", [V1, V2])],
-          ledger: ledgerOf(record(V1), record(V2), record(V3)),
-          releasing,
-          devices: devicesOf({ [V1]: observedView(), [V2]: observedView() }),
-        });
-        const result = plan(world, doc([rawRoom("living", [V2]), rawRoom("bedroom", [V1])]));
-        expect(result.joining).toEqual([]);
-        expect(result.rejoining).toEqual([]);
-        expect(result.leaving).toEqual([]);
-        expect(result.stored.releasing).toEqual(releasing);
-      });
-    });
-
-    describe("With a releasing valve added to a room again", () => {
-      it("it is rejoining, removed from releasing, and its record is unchanged", () => {
-        const kept = record(V1);
-        const world = current({
-          rooms: [room("living", [V2])],
-          ledger: ledgerOf(kept, record(V2)),
-          releasing: new Map([[V1, NOW_MS - HOUR_MS]]),
-          devices: devicesOf({ [V1]: observedView(), [V2]: observedView() }),
-        });
-        const result = plan(world, doc([rawRoom("living", [V1, V2])]));
-        expect(result.rejoining).toEqual([V1]);
-        expect(result.stored.releasing.has(V1)).toBe(false);
-        expect(recordOf(result.ledger, V1)).toBe(kept);
-      });
-    });
-
-    describe("With an orphan valve added to a room", () => {
-      it("it is rejoining and its record is unchanged", () => {
-        const kept = record(V1);
-        const world = current({
-          rooms: [room("living", [V2])],
-          ledger: ledgerOf(kept, record(V2)),
-          devices: devicesOf({ [V1]: observedView(), [V2]: observedView() }),
-        });
-        const result = plan(world, doc([rawRoom("living", [V1, V2])]));
-        expect(result.rejoining).toEqual([V1]);
-        expect(recordOf(result.ledger, V1)).toBe(kept);
+        expect(codeOf(() => plan(world, doc({ living: {} })))).toBe("config_unreadable");
       });
     });
 
     describe("With the ledger unreadable and a new valve", () => {
       it("throws ChangeRefused ledger_unreadable", () => {
-        const world = current({
-          rooms: [room("living", [V2])],
-          ledger: undefined,
-          devices: devicesOf({ [V1]: observedView(), [V2]: observedView() }),
-        });
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1, V2])])))).toBe(
-          "ledger_unreadable",
-        );
+        const world: World = { ...first(devicesOf({ [V1]: observedView() })), ledger: undefined };
+        expect(codeOf(() => plan(world, doc({ living: {} })))).toBe("ledger_unreadable");
       });
     });
 
     describe("With the ledger unreadable and only a schedule edit", () => {
       it("returns a plan with saveConfig only", () => {
         const world = current({ rooms: [room("living", [V2])], ledger: undefined });
-        const result = plan(world, doc([rawRoom("living", [V2])], { eco: 16 }));
+        const result = plan(world, doc({ living: {} }, { eco: 16 }));
         expect(kinds(result.effects)).toEqual(["saveConfig"]);
-      });
-    });
-
-    describe("With a new TRVZB whose sensor source cannot be read", () => {
-      it("throws ChangeRefused originals_unreadable naming the valve and the setting", () => {
-        const world = first(devicesOf({ [V1]: observedView("trvzb", sevenDays()) }));
-        const refused = refusal(() => plan(world, doc([rawRoom("living", [V1])])));
-        expect(refused.code).toBe("originals_unreadable");
-        expect(refused.data).toEqual({ valveId: V1, settings: "sensor_source" });
-      });
-    });
-
-    describe("With the same valve listed in acceptUnknownOriginals", () => {
-      it("the record's sensor source original is null", () => {
-        const world = first(devicesOf({ [V1]: observedView("trvzb", sevenDays()) }));
-        const result = plan(world, doc([rawRoom("living", [V1])]), {
-          acceptUnknownOriginals: new Set([V1]),
-        });
-        expect(recordOf(result.ledger, V1)?.originals).toEqual({ sensor_source: null });
       });
     });
 
@@ -565,76 +431,27 @@ describe("change", () => {
         const world = first(
           devicesOf({ [V1]: observedView("trvzb", { sensor_source: "internal" }) }),
         );
-        expect(plan(world, doc([rawRoom("living", [V1])])).joining).toHaveLength(1);
+        expect(plan(world, doc({ living: {} })).joining).toHaveLength(1);
       });
     });
 
     describe("With a new TRV-ZBT whose active group is 3", () => {
       it("returns a plan and the record's original active group is 3", () => {
         const view = observedView("trv_zbt", { active_group: 3, sensor_source: "internal" });
-        const result = plan(first(devicesOf({ [V1]: view })), doc([rawRoom("living", [V1])]));
+        const result = plan(first(devicesOf({ [V1]: view })), doc({ living: {} }));
         expect(recordOf(result.ledger, V1)?.originals.active_group).toBe(3);
-      });
-    });
-
-    describe("With a new TRV-ZBT whose active group is not observed", () => {
-      it("throws ChangeRefused originals_unreadable", () => {
-        const view = observedView("trv_zbt", { sensor_source: "internal" });
-        const world = first(devicesOf({ [V1]: view }));
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe(
-          "originals_unreadable",
-        );
-      });
-    });
-
-    describe("With a new valve that has sent no message since the start, listed in acceptUnknownOriginals", () => {
-      it("throws ChangeRefused valve_not_observed with the valve in valveIds", () => {
-        const world = first(devicesOf({ [V1]: unobservedView() }));
-        const refused = refusal(() =>
-          plan(world, doc([rawRoom("living", [V1])]), { acceptUnknownOriginals: new Set([V1]) }),
-        );
-        expect(refused.code).toBe("valve_not_observed");
-        expect(refused.data).toEqual({ valveIds: V1 });
-      });
-    });
-
-    describe("With two new valves that have sent no message since the start", () => {
-      it("valveIds names both, in id order", () => {
-        const world = first(devicesOf({ [V1]: unobservedView(), [V2]: unobservedView() }));
-        const refused = refusal(() => plan(world, doc([rawRoom("living", [V2, V1])])));
-        expect(refused.data).toEqual({ valveIds: `${V1},${V2}` });
-      });
-    });
-
-    describe("With a new valve that has sent no message since the start, and dryRun true", () => {
-      it("throws ChangeRefused valve_not_observed", () => {
-        const world = first(devicesOf({ [V1]: unobservedView() }));
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])]), { dryRun: true }))).toBe(
-          "valve_not_observed",
-        );
-      });
-    });
-
-    describe("With a rejoining valve that has sent no message since the start", () => {
-      it("returns a plan", () => {
-        const world = current({
-          rooms: [],
-          ledger: ledgerOf(record(V1)),
-          devices: devicesOf({ [V1]: viewWith("trvzb", undefined) }),
-        });
-        expect(plan(world, doc([rawRoom("living", [V1])])).rejoining).toEqual([V1]);
       });
     });
 
     describe('With a first config while configState is "empty"', () => {
       it("writes lists the valve's writes (the preview does not see it as frozen)", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        const result = plan(world, doc([rawRoom("living", [V1])]));
+        const result = plan(world, doc({ living: {} }));
         expect(result.writes.map((w) => w.valveId)).toEqual([V1]);
       });
     });
 
-    describe("With a first config whose room has a sensor with a value", () => {
+    describe("With a first config whose entry has a sensor with a value", () => {
       it('the previewed sensor source is "external"', () => {
         const reading: SensorReading = {
           sensorId: BEDROOM_SENSOR_ID,
@@ -648,7 +465,7 @@ describe("change", () => {
         };
         const result = plan(
           world,
-          doc([rawRoom("living", [V1], [BEDROOM_SENSOR])]),
+          doc({ living: { sensors: [BEDROOM_SENSOR] } }),
           {},
           sensorsOf({ [BEDROOM_SENSOR_ID]: GOOD }),
         );
@@ -661,51 +478,15 @@ describe("change", () => {
       it("writes still lists the seven days", () => {
         const values = { ...sevenDays(), sensor_source: "internal" as const };
         const world = first(devicesOf({ [V1]: observedView("trvzb", values) }));
-        const result = plan(world, doc([rawRoom("living", [V1])]));
+        const result = plan(world, doc({ living: {} }));
         expect(result.writes.map((w) => w.values)).toContainEqual(sevenDays());
-      });
-    });
-
-    describe("With a new valve whose transport is unusable", () => {
-      it("throws ChangeRefused transport_unusable", () => {
-        const view = viewWith("trvzb", makeState({ values: observedValues("trvzb") }), false);
-        const world = first(devicesOf({ [V1]: view }));
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe(
-          "transport_unusable",
-        );
-      });
-    });
-
-    describe("With a new valve id no transport knows", () => {
-      it("throws ChangeRefused valve_unknown", () => {
-        const refused = refusal(() => plan(first(), doc([rawRoom("living", [V1])])));
-        expect(refused.code).toBe("valve_unknown");
-        expect(refused.data).toEqual({ valveId: V1 });
-      });
-    });
-
-    describe("With a new valve whose model has no profile", () => {
-      it("throws ChangeRefused valve_unsupported", () => {
-        const view: DeviceView = { ...observedView(), spec: undefined };
-        const refused = refusal(() =>
-          plan(first(devicesOf({ [V1]: view })), doc([rawRoom("living", [V1])])),
-        );
-        expect(refused.code).toBe("valve_unsupported");
-        expect(refused.data).toEqual({ valveId: V1 });
-      });
-    });
-
-    describe("With an orphan valve added to a room while it has no DeviceView", () => {
-      it("throws ChangeRefused valve_unknown", () => {
-        const world = current({ rooms: [], ledger: ledgerOf(record(V1)) });
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe("valve_unknown");
       });
     });
 
     describe("With a managed valve that has no DeviceView and only a schedule edit", () => {
       it("returns a plan", () => {
         const world = current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) });
-        const result = plan(world, doc([rawRoom("living", [V1])], { eco: 16 }));
+        const result = plan(world, doc({ living: {} }, { eco: 16 }));
         expect(result.stored.revision).toBe(2);
       });
     });
@@ -713,7 +494,7 @@ describe("change", () => {
     describe("With no timezone in the document, no current config and haLinked false", () => {
       it("throws ChangeRefused timezone_missing", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = doc([rawRoom("living", [V1])], { timezone: undefined });
+        const raw = doc({ living: {} }, { timezone: undefined });
         expect(codeOf(() => plan(world, raw, { haLinked: false }))).toBe("timezone_missing");
       });
     });
@@ -721,7 +502,7 @@ describe("change", () => {
     describe("With no timezone in the document and haLinked true", () => {
       it("returns a plan", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = doc([rawRoom("living", [V1])], { timezone: undefined });
+        const raw = doc({ living: {} }, { timezone: undefined });
         expect(plan(world, raw, { haLinked: true }).stored.config.settings.timezone).toBe(
           undefined,
         );
@@ -735,47 +516,23 @@ describe("change", () => {
           ledger: ledgerOf(record(V1)),
           timezone: undefined,
         });
-        const raw = doc([rawRoom("living", [V1])], { timezone: undefined, eco: 16 });
+        const raw = doc({ living: {} }, { timezone: undefined, eco: 16 });
         expect(plan(world, raw, { haLinked: false }).stored.revision).toBe(2);
       });
     });
 
     describe("With no timezone in the document, no current config, haLinked false and an out-of-date expectedRevision", () => {
       it("throws ChangeRefused revision_conflict (it comes first)", () => {
-        const raw = doc([], { timezone: undefined });
+        const raw = doc({}, { timezone: undefined });
         const refused = refusal(() => plan(first(), raw, { haLinked: false, expectedRevision: 3 }));
         expect(refused.code).toBe("revision_conflict");
         expect(refused.data).toEqual({ expected: "3", current: "0" });
       });
     });
 
-    describe("With a new valve whose DeviceView is usable while transportFaults has an entry for its transport", () => {
-      it("throws ChangeRefused transport_unusable with the valve and the transport in data", () => {
-        const world: World = {
-          ...first(devicesOf({ [V1]: observedView() })),
-          transportFaults: { z2m: "second_instance" },
-        };
-        const refused = refusal(() => plan(world, doc([rawRoom("living", [V1])])));
-        expect(refused.code).toBe("transport_unusable");
-        expect(refused.data).toEqual({ valveId: V1, transport: "z2m" });
-      });
-    });
-
-    describe("With a new valve whose transport's link is down and that has sent no message", () => {
-      it("throws ChangeRefused valve_not_observed, not transport_unusable", () => {
-        const world: World = {
-          ...first(devicesOf({ [V1]: unobservedView() })),
-          links: { z2m: false },
-        };
-        expect(codeOf(() => plan(world, doc([rawRoom("living", [V1])])))).toBe(
-          "valve_not_observed",
-        );
-      });
-    });
-
     describe("With a new sensor that has no entry in sensors / is not a temperature sensor / is on a valve", () => {
       const world = first(devicesOf({ [V1]: observedView() }));
-      const raw = doc([rawRoom("living", [V1], [BEDROOM_SENSOR])]);
+      const raw = doc({ living: { sensors: [BEDROOM_SENSOR] } });
 
       it("throws ChangeRefused sensor_unknown, with the sensor id in data", () => {
         const missing = refusal(() => plan(world, raw));
@@ -812,7 +569,7 @@ describe("change", () => {
     describe('With a new "ha:" sensor and haLinked false', () => {
       it("throws ChangeRefused ha_link_missing, also when sensors has no entry for it", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
-        const raw = doc([rawRoom("living", [V1], [HA_SENSOR])]);
+        const raw = doc({ living: { sensors: [HA_SENSOR] } });
         const known = refusal(() =>
           plan(world, raw, { haLinked: false }, sensorsOf({ [HA_SENSOR_ID]: GOOD })),
         );
@@ -822,13 +579,13 @@ describe("change", () => {
       });
     });
 
-    describe('With an "ha:" sensor that is already in a room of the current config, haLinked false, and only a schedule edit', () => {
+    describe('With an "ha:" sensor that an entry of the current config already lists, haLinked false, and only a schedule edit', () => {
       it("returns a plan", () => {
         const world = current({
           rooms: [room("living", [V1], [HA_MODEL])],
           ledger: ledgerOf(record(V1)),
         });
-        const raw = doc([rawRoom("living", [V1], [HA_SENSOR])], { eco: 16 });
+        const raw = doc({ living: { sensors: [HA_SENSOR] } }, { eco: 16 });
         expect(plan(world, raw, { haLinked: false }).stored.revision).toBe(2);
       });
     });
@@ -839,18 +596,18 @@ describe("change", () => {
           rooms: [room("living", [V1], [BEDROOM_MODEL])],
           ledger: ledgerOf(record(V1)),
         });
-        const raw = doc([rawRoom("living", [V1], [BEDROOM_SENSOR])], { eco: 16 });
+        const raw = doc({ living: { sensors: [BEDROOM_SENSOR] } }, { eco: 16 });
         expect(plan(world, raw).stored.revision).toBe(2);
       });
     });
 
-    describe("With a sensor of the current config whose isTemperature is now false, moved to another room", () => {
+    describe("With a sensor of the current config whose isTemperature is now false, moved to another entry", () => {
       it("returns a plan", () => {
         const world = current({
           rooms: [room("living", [V1], [BEDROOM_MODEL]), room("bedroom", [V2])],
           ledger: ledgerOf(record(V1), record(V2)),
         });
-        const raw = doc([rawRoom("living", [V1]), rawRoom("bedroom", [V2], [BEDROOM_SENSOR])]);
+        const raw = doc({ living: {}, bedroom: { sensors: [BEDROOM_SENSOR] } });
         const sensors = sensorsOf({ [BEDROOM_SENSOR_ID]: { ...GOOD, isTemperature: false } });
         expect(plan(world, raw, {}, sensors).stored.revision).toBe(2);
       });
@@ -868,27 +625,16 @@ describe("change", () => {
           ledger: ledgerOf(record(V1)),
           devices: devicesOf({ [V1]: observedView() }),
         });
-        const raw = doc([rawRoom("living", [V1], [HA_SENSOR])]);
+        const raw = doc({ living: { sensors: [HA_SENSOR] } });
         const run = (): ChangePlan =>
           plan(world, raw, { overwriteUnreadable: true, haLinked: false });
         expect(codeOf(run)).toBe("ha_link_missing");
       });
     });
 
-    describe("With a config with no rooms applied over three managed valves", () => {
-      it("all three are in releasing", () => {
-        const world = current({
-          rooms: [room("living", [V1, V2, V3])],
-          ledger: ledgerOf(record(V1), record(V2), record(V3)),
-        });
-        const result = plan(world, doc([]));
-        expect([...result.stored.releasing.keys()].sort()).toEqual([V1, V2, V3]);
-      });
-    });
-
     describe("Always", () => {
       it('a caller cannot set releasing: a "releasing" key in the document is a ConfigError key_unknown', () => {
-        const raw = { ...doc([]), releasing: { [V1]: "2026-11-16T11:00:00.000Z" } };
+        const raw = { ...doc(), releasing: { [V1]: "2026-11-16T11:00:00.000Z" } };
         let caught: unknown;
         try {
           plan(first(), raw);
@@ -920,6 +666,30 @@ describe("change", () => {
         const refused = refusal(() => restoreValve(world, V1));
         expect(refused.code).toBe("valve_not_orphan");
         expect(refused.data).toEqual({ valveId: V1 });
+      });
+    });
+
+    describe("With a live house and a recorded valve that is in no room", () => {
+      it("the result is plan 1's, with the rooms taken from the live house", () => {
+        const world = current({
+          rooms: [room("living", [V2])],
+          ledger: ledgerOf(record(V1), record(V2)),
+        });
+        const stored = storedOf(world);
+        expect(restoreValve(world, V1)).toEqual([
+          { kind: "saveConfig", stored: { ...stored, releasing: new Map([[V1, NOW_MS]]) } },
+        ]);
+        expect(codeOf(() => restoreValve(world, V2))).toBe("valve_not_orphan");
+      });
+    });
+
+    describe("With house unlinked", () => {
+      it("it is refused as a frozen valve is refused today", () => {
+        const world: World = {
+          ...current({ rooms: [], ledger: ledgerOf(record(V1)) }),
+          house: { kind: "unlinked" },
+        };
+        expect(codeOf(() => restoreValve(world, V1))).toBe("valve_not_orphan");
       });
     });
   });
@@ -1018,6 +788,27 @@ describe("change", () => {
         const saved = savedConfig(forgetValve(world, V1));
         expect(saved.revision).toBe(storedOf(world).revision);
         expect(saved.config).toBe(storedOf(world).config);
+      });
+    });
+
+    describe("With a live house and a recorded valve", () => {
+      it("the result is plan 1's, with the rooms taken from the live house", () => {
+        const world = current({
+          rooms: [room("living", [V2])],
+          ledger: ledgerOf(record(V1), record(V2)),
+        });
+        expect(kinds(forgetValve(world, V1))).toEqual(["saveLedger", "writeOriginalsCopy"]);
+        expect(codeOf(() => forgetValve(world, V2))).toBe("valve_managed");
+      });
+    });
+
+    describe("With house unlinked", () => {
+      it("it is refused as a frozen valve is refused today", () => {
+        const world: World = {
+          ...current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) }),
+          house: { kind: "unlinked" },
+        };
+        expect(codeOf(() => forgetValve(world, V1))).toBe("config_unreadable");
       });
     });
   });

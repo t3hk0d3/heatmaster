@@ -5,6 +5,7 @@ export type {
   PresetName,
   Presets,
   Room,
+  RoomEntry,
   RoomPresets,
   Schedule,
   SensorRef,
@@ -15,6 +16,7 @@ export type {
   Weekday,
 } from "./model.ts";
 export {
+  AREA_ID_PATTERN,
   CONFIG_VERSION,
   configToRaw,
   migrateRaw,
@@ -26,7 +28,7 @@ export type {
   RawDayPlan,
   RawDays,
   RawPresets,
-  RawRoom,
+  RawRoomEntry,
   RawSchedule,
   RawSensor,
   RawSettings,
@@ -181,6 +183,8 @@ export {
   SCHEDULE_LABEL_PREFIX,
   SENSOR_LABEL,
   membershipFrom,
+  resolveRooms,
+  roomsOf,
   sameMembership,
   scheduleLabelId,
   scheduleLabelName,
@@ -191,7 +195,9 @@ export type {
   HaArea,
   HaEntity,
   HaSnapshot,
+  HouseInput,
   MembershipView,
+  ResolvedRooms,
   UnplacedReason,
 } from "./house.ts";
 export { applyEvent } from "./events.ts";

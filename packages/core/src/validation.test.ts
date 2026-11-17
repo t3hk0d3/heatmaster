@@ -13,7 +13,7 @@ import {
   validateConfig,
 } from "./index.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
-import type { Config, ConfigIssue, Room, SensorRef } from "./index.ts";
+import type { Config, ConfigIssue, RawConfig, Room, SensorRef } from "./index.ts";
 
 type Path = readonly (string | number)[];
 
@@ -64,7 +64,7 @@ function expectIssue(raw: unknown, code: string, path?: string): void {
   );
 }
 
-const ROOM = ["rooms", 0] as const;
+const ROOM = ["rooms", "living_room"] as const;
 const SENSORS = [...ROOM, "sensors"] as const;
 const WEEK = ["schedules", 0, "week"] as const;
 const BLOCK = [...WEEK, 0] as const;
@@ -72,8 +72,18 @@ const PLAN = [...BLOCK, "temperature"] as const;
 const DAYS = [...BLOCK, "days"] as const;
 
 function onlyRoom(edit: Record<string, unknown>): Record<string, unknown> {
-  return patched([...ROOM], { ...(validRaw().rooms?.[0] as object), ...edit });
+  return patched([...ROOM], { ...(validRaw().rooms?.living_room as object), ...edit });
 }
+
+/** The valid document with `rooms` replaced. */
+function withRooms(rooms: unknown): Record<string, unknown> {
+  return { ...validRaw(), rooms };
+}
+
+/** A week whose every day is eco all day. */
+const ECO_WEEK = [{ days: "all", temperature: { "00:00": "eco" } }];
+
+const NO_PRESETS = { comfort: undefined, eco: undefined, frost: undefined, boost: undefined };
 
 /** The valid document with the weekday block's day plan replaced. */
 function withPlan(plan: unknown): Record<string, unknown> {
@@ -100,9 +110,9 @@ function allPaths(value: unknown, prefix: Path = []): readonly Path[] {
 
 describe("validation", () => {
   describe("validateConfig", () => {
-    describe("On {version: 2} alone", () => {
+    describe("On {version: 3} alone", () => {
       it("returns a Config equal to EMPTY_CONFIG", () => {
-        expect(validateConfig({ version: 2 })).toEqual(EMPTY_CONFIG);
+        expect(validateConfig({ version: 3 })).toEqual(EMPTY_CONFIG);
       });
     });
 
@@ -110,7 +120,10 @@ describe("validation", () => {
       it("returns a Config whose rooms, schedules and presets match the document", () => {
         const config = validateConfig(validRaw());
         expect(config.presets).toEqual({ comfort: 21, eco: 18, frost: 8, boost: 24 });
-        expect(config.schedules.map((s) => [s.id, s.name])).toEqual([["default", "Default week"]]);
+        expect(config.schedules.map((s) => [s.id, s.name])).toEqual([
+          ["default", "Default week"],
+          ["night", "Night"],
+        ]);
         expect(config.schedules[0]?.defaultWeek.mon).toHaveLength(3);
         expect(config.schedules[0]?.defaultWeek.mon[2]).toEqual({
           time: Temporal.PlainTime.from("22:00"),
@@ -118,35 +131,22 @@ describe("validation", () => {
           temperature: 18,
         });
         expect(config.schedules[0]?.defaultWeek.sat[0]?.preset).toBe("eco");
-        expect(config.rooms).toEqual([
-          {
-            id: "living",
-            name: "Living room",
-            areaId: "living_room",
-            scheduleId: "default",
-            valves: [{ valveId: "z2m:0x00124b0012345678" }],
-            sensors: [
-              { ref: "ha:sensor.bedroom_temperature", weight: 1 },
-              { ref: "ha:sensor.living_temperature", weight: 2 },
-            ],
-            presets: { comfort: 22, eco: undefined, frost: undefined, boost: undefined },
-          },
-        ]);
+        expect(config.rooms.get("living_room")).toEqual({
+          scheduleId: undefined,
+          sensors: [
+            { ref: "ha:sensor.bedroom_temperature", weight: 1 },
+            { ref: "ha:sensor.living_temperature", weight: 2 },
+          ],
+          presets: { comfort: 22, eco: undefined, frost: undefined, boost: undefined },
+        });
       });
 
       it('applies defaults: interval 300 000 ms, stale 7 200 000 ms, holdWrites true, language "en", timezone undefined, presets 20/17/7/23, sensor weight 1', () => {
         const raw = {
-          version: 2,
+          version: 3,
           schedules: validRaw().schedules,
-          rooms: [
-            {
-              id: "a",
-              name: "A",
-              schedule_id: "default",
-              valves: [{ id: "z2m:0x00124b0012345678" }],
-              sensors: [{ ref: "ha:sensor.x" }],
-            },
-          ],
+          default_schedule: "default",
+          rooms: { a: { sensors: [{ ref: "ha:sensor.x" }] } },
         };
         const config = validateConfig(raw);
         expect(config.settings).toEqual({
@@ -157,7 +157,7 @@ describe("validation", () => {
           language: "en",
         });
         expect(config.presets).toEqual({ comfort: 20, eco: 17, frost: 7, boost: 23 });
-        expect(config.rooms[0]?.sensors[0]?.weight).toBe(1);
+        expect(config.rooms.get("a")?.sensors[0]?.weight).toBe(1);
       });
 
       it('turns each "HH:MM" into a Temporal.PlainTime', () => {
@@ -167,7 +167,7 @@ describe("validation", () => {
       });
 
       it("keeps a room's partial presets sparse (unset fields are undefined)", () => {
-        const presets = validateConfig(validRaw()).rooms[0]?.presets;
+        const presets = validateConfig(validRaw()).rooms.get("living_room")?.presets;
         expect(presets?.comfort).toBe(22);
         expect([presets?.eco, presets?.frost, presets?.boost]).toEqual([
           undefined,
@@ -187,7 +187,7 @@ describe("validation", () => {
 
     describe('On a sensor ref "ha:sensor.<id>"', () => {
       it("the sensor id equals the ref", () => {
-        const sensor = validateConfig(validRaw()).rooms[0]?.sensors[1];
+        const sensor = validateConfig(validRaw()).rooms.get("living_room")?.sensors[1];
         expect(sensor === undefined ? undefined : sensorId(sensor)).toBe(
           "ha:sensor.living_temperature",
         );
@@ -206,7 +206,7 @@ describe("validation", () => {
     });
 
     describe("On a missing or unsupported version", () => {
-      it.each([{}, { version: 3 }, { version: "2" }, { version: null }, { version: 0 }])(
+      it.each([{}, { version: 4 }, { version: "3" }, { version: null }, { version: 0 }])(
         "throws ConfigError with code version_unsupported (%j)",
         (raw) => {
           expect(codesOf(raw)).toEqual(["version_unsupported"]);
@@ -221,10 +221,9 @@ describe("validation", () => {
         [["presets", "extra"], "presets.extra"],
         [["schedules", 0, "extra"], "schedules[0].extra"],
         [[...BLOCK, "extra"], "schedules[0].week[0].extra"],
-        [[...ROOM, "extra"], "rooms[0].extra"],
-        [[...ROOM, "valves", 0, "extra"], "rooms[0].valves[0].extra"],
-        [[...SENSORS, 0, "extra"], "rooms[0].sensors[0].extra"],
-        [[...ROOM, "presets", "extra"], "rooms[0].presets.extra"],
+        [[...ROOM, "extra"], "rooms.living_room.extra"],
+        [[...SENSORS, 0, "extra"], "rooms.living_room.sensors[0].extra"],
+        [[...ROOM, "presets", "extra"], "rooms.living_room.presets.extra"],
       ] as const)("throws ConfigError with code key_unknown (%j)", (path, expected) => {
         const raw = path[0] === "extra" ? { ...validRaw(), extra: 1 } : patched(path, 1);
         expectIssue(raw, "key_unknown", expected);
@@ -238,12 +237,7 @@ describe("validation", () => {
         [[...WEEK], "schedules[0].week"],
         [[...DAYS], "schedules[0].week[0].days"],
         [[...PLAN], "schedules[0].week[0].temperature"],
-        [[...ROOM, "id"], "rooms[0].id"],
-        [[...ROOM, "name"], "rooms[0].name"],
-        [[...ROOM, "schedule_id"], "rooms[0].schedule_id"],
-        [[...ROOM, "valves"], "rooms[0].valves"],
-        [[...ROOM, "valves", 0, "id"], "rooms[0].valves[0].id"],
-        [[...SENSORS, 0, "ref"], "rooms[0].sensors[0].ref"],
+        [[...SENSORS, 0, "ref"], "rooms.living_room.sensors[0].ref"],
       ] as const)("throws ConfigError with code key_missing (%j)", (path, expected) => {
         expectIssue(removed(path), "key_missing", expected);
       });
@@ -263,20 +257,20 @@ describe("validation", () => {
         ["a block", "schedules[0].week[0]"],
         ["days", "schedules[0].week[0].days"],
         ["a day plan", "schedules[0].week[0].temperature"],
+        ["the default schedule", "default_schedule"],
         ["rooms", "rooms"],
-        ["a room id", "rooms[0].id"],
-        ["an area", "rooms[0].area_id"],
-        ["valves", "rooms[0].valves"],
-        ["a valve", "rooms[0].valves[0]"],
-        ["a sensor ref", "rooms[0].sensors[0].ref"],
-        ["a weight", "rooms[0].sensors[1].weight"],
-        ["room presets", "rooms[0].presets"],
+        ["an entry", "rooms.living_room"],
+        ["an entry's schedule", "rooms.office.schedule"],
+        ["sensors", "rooms.living_room.sensors"],
+        ["a sensor ref", "rooms.living_room.sensors[0].ref"],
+        ["a weight", "rooms.living_room.sensors[1].weight"],
+        ["entry presets", "rooms.living_room.presets"],
       ])("throws ConfigError with code type_invalid (%s)", (_label, path) => {
         const steps = path.match(/[^.[\]]+/g)?.map((s) => (/^\d+$/.test(s) ? Number(s) : s)) ?? [];
         const numeric = [
           "settings.external_write_interval_min",
           "presets.comfort",
-          "rooms[0].sensors[1].weight",
+          "rooms.living_room.sensors[1].weight",
         ];
         const wrong = numeric.includes(path) ? "x" : 7;
         expectIssue(patched(steps, wrong), "type_invalid", path);
@@ -571,7 +565,7 @@ describe("validation", () => {
           expectIssue(
             patched([...ROOM, "presets", "comfort"], t),
             "temperature_invalid",
-            "rooms[0].presets.comfort",
+            "rooms.living_room.presets.comfort",
           );
         },
       );
@@ -601,14 +595,11 @@ describe("validation", () => {
       });
     });
 
-    describe("On duplicate schedule ids or duplicate room ids", () => {
+    describe("On duplicate schedule ids", () => {
       it("throws ConfigError with code id_duplicate", () => {
         const doc = validRaw();
         const schedule = doc.schedules?.[0];
-        const room = doc.rooms?.[0];
         expectIssue({ ...doc, schedules: [schedule, schedule] }, "id_duplicate", "schedules[1].id");
-        const second = { ...room, valves: [{ id: "z2m:0x00124b00aaaaaaaa" }] };
-        expectIssue({ ...doc, rooms: [room, second] }, "id_duplicate", "rooms[1].id");
       });
     });
 
@@ -617,12 +608,12 @@ describe("validation", () => {
         "throws ConfigError with code id_invalid (%j)",
         (id) => {
           expectIssue(patched(["schedules", 0, "id"], id), "id_invalid", "schedules[0].id");
-          expectIssue(patched([...ROOM, "id"], id), "id_invalid", "rooms[0].id");
         },
       );
 
       it.each(["a", "a-b_c", "a".repeat(32), "0"])("accepts %j", (id) => {
-        expect(() => validateConfig(patched([...ROOM, "id"], id))).not.toThrow();
+        const raw = { ...patched(["schedules", 0, "id"], id), default_schedule: id };
+        expect(() => validateConfig(raw)).not.toThrow();
       });
     });
 
@@ -631,68 +622,22 @@ describe("validation", () => {
         "throws ConfigError with code name_invalid (%j)",
         (name) => {
           expectIssue(patched(["schedules", 0, "name"], name), "name_invalid", "schedules[0].name");
-          expectIssue(patched([...ROOM, "name"], name), "name_invalid", "rooms[0].name");
         },
       );
     });
 
-    describe("On a room whose schedule_id matches no schedule", () => {
-      it("throws ConfigError with code schedule_unknown", () => {
-        expectIssue(
-          patched([...ROOM, "schedule_id"], "nope"),
-          "schedule_unknown",
-          "rooms[0].schedule_id",
-        );
-      });
-    });
-
-    describe("On a room with no valves", () => {
-      it("throws ConfigError with code valves_empty", () => {
-        expectIssue(patched([...ROOM, "valves"], []), "valves_empty", "rooms[0].valves");
-      });
-    });
-
-    describe("On the same valve id in two rooms, or twice in one room", () => {
-      it("throws ConfigError with code valve_duplicate", () => {
-        const doc = validRaw();
-        const room = doc.rooms?.[0];
-        const other = { ...room, id: "other", valves: [{ id: "z2m:0x00124b0012345678" }] };
-        expectIssue({ ...doc, rooms: [room, other] }, "valve_duplicate", "rooms[1].valves[0].id");
-        expectIssue(
-          onlyRoom({
-            valves: [{ id: "z2m:0x00124b0012345678" }, { id: "z2m:0x00124b0012345678" }],
-          }),
-          "valve_duplicate",
-          "rooms[0].valves[1].id",
-        );
-      });
-    });
-
-    describe("On a valve id that is not `<transport>:<address>` with a lowercase transport name", () => {
-      it.each(["0x00124b0012345678", "Z2M:0x00124b0012345678", "z2m:", `z2m:${"a".repeat(65)}`])(
-        "throws ConfigError with code valve_id_invalid (%j)",
-        (id) => {
-          expectIssue(
-            patched([...ROOM, "valves", 0, "id"], id),
-            "valve_id_invalid",
-            "rooms[0].valves[0].id",
-          );
-        },
-      );
-    });
-
-    describe("On a sensor ref that is not `ha:` with an entity id", () => {
+    describe("With an entry sensor that is not ha:sensor.<id>", () => {
       it.each([
         "sensor.x",
         "zha:0x00124b0012345678",
         "z2m:0x00124b0087654321",
         "z2m:kitchen",
         "ha:",
-      ])("throws ConfigError with code sensor_ref_invalid (%j)", (ref) => {
+      ])("sensor_ref_invalid at its path (%j)", (ref) => {
         expectIssue(
           patched([...SENSORS, 0, "ref"], ref),
           "sensor_ref_invalid",
-          "rooms[0].sensors[0].ref",
+          "rooms.living_room.sensors[0].ref",
         );
       });
     });
@@ -704,7 +649,7 @@ describe("validation", () => {
           expectIssue(
             patched([...SENSORS, 1, "ref"], ref),
             "sensor_ref_invalid",
-            "rooms[0].sensors[1].ref",
+            "rooms.living_room.sensors[1].ref",
           );
         },
       );
@@ -715,24 +660,26 @@ describe("validation", () => {
         expectIssue(
           patched([...SENSORS, 1, "key"], "temperature"),
           "key_unknown",
-          "rooms[0].sensors[1].key",
+          "rooms.living_room.sensors[1].key",
         );
       });
     });
 
-    describe("On the same sensor ref twice in one room", () => {
-      it("throws ConfigError with code sensor_duplicate", () => {
+    describe("With an entry sensor listed twice in an entry", () => {
+      it("sensor_duplicate at its path", () => {
         const ha = { ref: "ha:sensor.living_temperature" };
-        expectIssue(onlyRoom({ sensors: [ha, ha] }), "sensor_duplicate", "rooms[0].sensors[1].ref");
+        expectIssue(
+          onlyRoom({ sensors: [ha, ha] }),
+          "sensor_duplicate",
+          "rooms.living_room.sensors[1].ref",
+        );
       });
     });
 
-    describe("On the same sensor id in two rooms", () => {
+    describe("On the same sensor id in two entries", () => {
       it("returns the Config", () => {
-        const doc = validRaw();
-        const room = doc.rooms?.[0];
-        const other = { ...room, id: "other", valves: [{ id: "z2m:0x00124b00aaaaaaaa" }] };
-        expect(validateConfig({ ...doc, rooms: [room, other] }).rooms).toHaveLength(2);
+        const room = validRaw().rooms?.living_room;
+        expect(validateConfig(withRooms({ living_room: room, other: room })).rooms.size).toBe(2);
       });
     });
 
@@ -741,13 +688,14 @@ describe("validation", () => {
         expectIssue(
           patched([...SENSORS, 1, "weight"], weight),
           "weight_invalid",
-          "rooms[0].sensors[1].weight",
+          "rooms.living_room.sensors[1].weight",
         );
       });
 
       it.each([0.1, 10])("accepts %j", (weight) => {
         expect(
-          validateConfig(patched([...SENSORS, 1, "weight"], weight)).rooms[0]?.sensors[1]?.weight,
+          validateConfig(patched([...SENSORS, 1, "weight"], weight)).rooms.get("living_room")
+            ?.sensors[1]?.weight,
         ).toBe(weight);
       });
     });
@@ -843,8 +791,8 @@ describe("validation", () => {
       it("throws sensor_duplicate together with the other issue", () => {
         const ha = { ref: "ha:sensor.living_temperature", weight: 0 };
         const raw = onlyRoom({ sensors: [{ ref: ha.ref }, ha] });
-        expectIssue(raw, "sensor_duplicate", "rooms[0].sensors[1].ref");
-        expectIssue(raw, "weight_invalid", "rooms[0].sensors[1].weight");
+        expectIssue(raw, "sensor_duplicate", "rooms.living_room.sensors[1].ref");
+        expectIssue(raw, "weight_invalid", "rooms.living_room.sensors[1].weight");
       });
     });
 
@@ -852,18 +800,17 @@ describe("validation", () => {
       it("throws key_unknown and sensor_duplicate", () => {
         const ha = { ref: "ha:sensor.living_temperature" };
         const raw = onlyRoom({ sensors: [ha, { ...ha, unexpected: 1 }] });
-        expectIssue(raw, "key_unknown", "rooms[0].sensors[1].unexpected");
-        expectIssue(raw, "sensor_duplicate", "rooms[0].sensors[1].ref");
+        expectIssue(raw, "key_unknown", "rooms.living_room.sensors[1].unexpected");
+        expectIssue(raw, "sensor_duplicate", "rooms.living_room.sensors[1].ref");
       });
     });
 
     describe("On a container of the wrong type", () => {
       it.each([
-        [["rooms", 0], "rooms[0]"],
+        [[...ROOM], "rooms.living_room"],
         [["schedules", 0], "schedules[0]"],
         [[...BLOCK], "schedules[0].week[0]"],
-        [[...ROOM, "valves", 0], "rooms[0].valves[0]"],
-        [[...SENSORS, 0], "rooms[0].sensors[0]"],
+        [[...SENSORS, 0], "rooms.living_room.sensors[0]"],
       ] as const)("reports only type_invalid at %j", (path, expected) => {
         expect(issuesOf(patched(path, 7))).toEqual([
           expect.objectContaining({ code: "type_invalid", path: expected }),
@@ -884,11 +831,10 @@ describe("validation", () => {
       );
     });
 
-    describe("On more than 64 rooms, 64 schedules, 8 valves or 16 sensors in a room", () => {
+    describe("On more than 64 schedules or 16 sensors in an entry", () => {
       it("throws ConfigError with code too_many", () => {
         const doc = validRaw();
         const schedule = doc.schedules?.[0] as { id: string };
-        const room = doc.rooms?.[0] as { id: string };
         const many = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
         expectIssue(
           { ...doc, schedules: many(65).map((i) => ({ ...schedule, id: `s${String(i)}` })) },
@@ -896,42 +842,29 @@ describe("validation", () => {
           "schedules",
         );
         expectIssue(
-          { ...doc, rooms: many(65).map((i) => ({ ...room, id: `r${String(i)}` })) },
-          "too_many",
-          "rooms",
-        );
-        expectIssue(
-          onlyRoom({
-            valves: many(9).map((i) => ({ id: `z2m:0x${String(i).padStart(16, "0")}` })),
-          }),
-          "too_many",
-          "rooms[0].valves",
-        );
-        expectIssue(
           onlyRoom({ sensors: many(17).map((i) => ({ ref: `ha:sensor.s${String(i)}` })) }),
           "too_many",
-          "rooms[0].sensors",
+          "rooms.living_room.sensors",
         );
       });
 
-      it("accepts exactly 8 valves and 16 sensors", () => {
-        const room = onlyRoom({
-          valves: Array.from({ length: 8 }, (_, i) => ({
-            id: `z2m:0x${String(i).padStart(16, "0")}`,
-          })),
-          sensors: Array.from({ length: 16 }, (_, i) => ({ ref: `ha:sensor.s${String(i)}` })),
-        });
-        expect(validateConfig(room).rooms[0]?.sensors).toHaveLength(16);
+      it("accepts exactly 64 entries and 16 sensors", () => {
+        const sensors = Array.from({ length: 16 }, (_, i) => ({ ref: `ha:sensor.s${String(i)}` }));
+        const rooms = Object.fromEntries(
+          Array.from({ length: 64 }, (_, i) => [`area_${String(i)}`, { sensors }]),
+        );
+        expect(validateConfig(withRooms(rooms)).rooms.get("area_0")?.sensors).toHaveLength(16);
       });
     });
 
-    describe("On a document with several faults", () => {
-      it("throws one ConfigError listing every issue, each with its path", () => {
+    describe("With a document with several faults", () => {
+      it("every issue is listed", () => {
         const doc = validRaw();
         const raw = {
           ...doc,
           settings: { sensor_stale_min: 5, language: "de" },
-          rooms: [{ ...doc.rooms?.[0], schedule_id: "nope", valves: [] }],
+          default_schedule: "nope",
+          rooms: { living_room: { schedule: "nope", valves: [] }, "Living Room": {} },
         };
         expect(issuesOf(raw)).toEqual([
           expect.objectContaining({
@@ -939,16 +872,184 @@ describe("validation", () => {
             code: "setting_out_of_range",
           }),
           expect.objectContaining({ path: "settings.language", code: "language_unsupported" }),
-          expect.objectContaining({ path: "rooms[0].schedule_id", code: "schedule_unknown" }),
-          expect.objectContaining({ path: "rooms[0].valves", code: "valves_empty" }),
+          expect.objectContaining({ path: "default_schedule", code: "schedule_unknown" }),
+          expect.objectContaining({ path: "rooms.living_room.valves", code: "key_unknown" }),
+          expect.objectContaining({ path: "rooms.living_room.schedule", code: "schedule_unknown" }),
+          expect.objectContaining({ path: "rooms.Living Room", code: "area_id_invalid" }),
         ]);
+      });
+    });
+
+    describe("With validRaw", () => {
+      const config = validateConfig(validRaw());
+
+      it("returns a Config whose rooms map holds both entries", () => {
+        expect([...config.rooms.keys()]).toEqual(["living_room", "office"]);
+        expect(config.rooms.get("office")).toEqual({
+          scheduleId: "night",
+          sensors: [{ ref: "ha:sensor.office_temperature", weight: 1 }],
+          presets: NO_PRESETS,
+        });
+      });
+
+      it("defaultScheduleId is the schedule default_schedule names", () => {
+        expect(config.defaultScheduleId).toBe("default");
+      });
+    });
+
+    describe("With a version 2 document", () => {
+      it('throws ConfigError with one issue, version_unsupported at "version"', () => {
+        const v2 = { version: 2, rooms: [{ id: "living", name: "Living", valves: [] }] };
+        expect(issuesOf(v2)).toEqual([
+          expect.objectContaining({ code: "version_unsupported", path: "version" }),
+        ]);
+      });
+    });
+
+    describe("With a version 1 document", () => {
+      it('throws ConfigError with one issue, version_unsupported at "version", whose message names version 3', () => {
+        const issues = issuesOf({ ...validRaw(), version: 1 });
+        expect(issues).toEqual([
+          expect.objectContaining({ code: "version_unsupported", path: "version" }),
+        ]);
+        expect(issues[0]?.message).toContain("version must be 3");
+      });
+    });
+
+    describe('With the rooms keys "living_room" and "0f3c9a8e5d2b4c1a9e7f6d5c4b3a2918"', () => {
+      it("both are accepted", () => {
+        const config = validateConfig(
+          withRooms({ living_room: {}, "0f3c9a8e5d2b4c1a9e7f6d5c4b3a2918": {} }),
+        );
+        expect([...config.rooms.keys()]).toEqual([
+          "living_room",
+          "0f3c9a8e5d2b4c1a9e7f6d5c4b3a2918",
+        ]);
+      });
+    });
+
+    describe('With each of the rooms keys "Living Room", "living-room" and a key of 65 characters', () => {
+      it.each(["Living Room", "living-room", "a".repeat(65)])(
+        "area_id_invalid at rooms.<key>, for each (%j)",
+        (key) => {
+          expectIssue(withRooms({ [key]: {} }), "area_id_invalid", `rooms.${key}`);
+        },
+      );
+    });
+
+    describe("With an entry that is {}", () => {
+      it("the entry has no schedule, no sensor and no preset", () => {
+        expect(validateConfig(withRooms({ hall: {} })).rooms.get("hall")).toEqual({
+          scheduleId: undefined,
+          sensors: [],
+          presets: NO_PRESETS,
+        });
+      });
+    });
+
+    describe("With an entry naming an unknown schedule", () => {
+      it("schedule_unknown at rooms.<key>.schedule", () => {
+        expectIssue(
+          withRooms({ hall: { schedule: "nope" } }),
+          "schedule_unknown",
+          "rooms.hall.schedule",
+        );
+      });
+    });
+
+    describe("With schedules and no default_schedule", () => {
+      it("key_missing at default_schedule", () => {
+        expectIssue(removed(["default_schedule"]), "key_missing", "default_schedule");
+      });
+    });
+
+    describe("With default_schedule naming an unknown schedule", () => {
+      it("schedule_unknown at default_schedule", () => {
+        expectIssue(patched(["default_schedule"], "nope"), "schedule_unknown", "default_schedule");
+      });
+    });
+
+    describe("With no schedule and no default_schedule", () => {
+      it("returns a Config with no schedule", () => {
+        const config = validateConfig({ version: 3, rooms: { hall: {} } });
+        expect(config.schedules).toEqual([]);
+        expect(config.defaultScheduleId).toBeUndefined();
+      });
+    });
+
+    describe("With no schedule and a default_schedule", () => {
+      it("schedule_unknown at default_schedule", () => {
+        expectIssue(
+          { version: 3, default_schedule: "default" },
+          "schedule_unknown",
+          "default_schedule",
+        );
+      });
+    });
+
+    describe("With an entry holding valves, id, name, area_id or schedule_id", () => {
+      it("key_unknown at each of them", () => {
+        const entry = {
+          valves: [{ id: "z2m:0x00124b0012345678" }],
+          id: "living",
+          name: "Living room",
+          area_id: "living_room",
+          schedule_id: "default",
+        };
+        const issues = issuesOf(withRooms({ living_room: entry }));
+        expect(issues).toEqual(
+          ["valves", "id", "name", "area_id", "schedule_id"].map((key): unknown =>
+            expect.objectContaining({ code: "key_unknown", path: `rooms.living_room.${key}` }),
+          ),
+        );
+      });
+    });
+
+    describe('With two schedules named "Night" and "night"', () => {
+      it("name_duplicate at the second one's name", () => {
+        const raw = {
+          version: 3,
+          schedules: [
+            { id: "a", name: "Night", week: ECO_WEEK },
+            { id: "b", name: "night", week: ECO_WEEK },
+          ],
+          default_schedule: "a",
+        };
+        expect(issuesOf(raw)).toEqual([
+          expect.objectContaining({ code: "name_duplicate", path: "schedules[1].name" }),
+        ]);
+      });
+    });
+
+    describe('With the schedule ids "work-week" and "work_week"', () => {
+      it("label_id_duplicate at the second one's id", () => {
+        const raw = {
+          version: 3,
+          schedules: [
+            { id: "work-week", name: "Work", week: ECO_WEEK },
+            { id: "work_week", name: "Week", week: ECO_WEEK },
+          ],
+          default_schedule: "work-week",
+        };
+        expect(issuesOf(raw)).toEqual([
+          expect.objectContaining({ code: "label_id_duplicate", path: "schedules[1].id" }),
+        ]);
+      });
+    });
+
+    describe("With 65 entries", () => {
+      it("too_many at rooms", () => {
+        const rooms = Object.fromEntries(
+          Array.from({ length: 65 }, (_, i) => [`area_${String(i)}`, {}]),
+        );
+        expectIssue(withRooms(rooms), "too_many", "rooms");
       });
     });
   });
 
   describe("configToRaw", () => {
-    describe("On any valid Config", () => {
-      fcTest.prop([arbConfig])("validateConfig(configToRaw(c)) equals c", (config) => {
+    describe("Property: for every arbConfig", () => {
+      fcTest.prop([arbConfig])("validateConfig(configToRaw(config)) equals config", (config) => {
         expect(validateConfig(configToRaw(config))).toEqual(config);
       });
 
@@ -1026,23 +1127,39 @@ describe("validation", () => {
       });
     });
 
-    describe("On a room with partial presets", () => {
+    describe("On an entry with partial presets", () => {
       it("the output holds only the fields that were set", () => {
         const raw = configToRaw(validateConfig(validRaw()));
-        expect(raw.rooms?.[0]?.presets).toStrictEqual({ comfort: 22 });
+        expect(raw.rooms?.living_room?.presets).toStrictEqual({ comfort: 22 });
       });
     });
 
-    describe("On a room with sensors", () => {
+    describe("On an entry with sensors", () => {
       it("no sensor has a key", () => {
         const raw = configToRaw(validateConfig(validRaw()));
-        for (const sensor of raw.rooms?.[0]?.sensors ?? [])
+        for (const sensor of raw.rooms?.living_room?.sensors ?? [])
           expect(sensor).not.toHaveProperty("key");
       });
+    });
 
-      it("the round trip config -> raw -> config leaves the config unchanged", () => {
+    describe("For the config of validRaw", () => {
+      it("validateConfig of the result equals the config", () => {
         const config = validateConfig(validRaw());
         expect(validateConfig(configToRaw(config))).toEqual(config);
+      });
+    });
+
+    describe("For a config with an entry that has nothing", () => {
+      it("the entry is written as {}", () => {
+        const config = validateConfig(withRooms({ hall: {} }));
+        expect(configToRaw(config).rooms?.hall).toStrictEqual({});
+      });
+    });
+
+    describe("For a config with no default schedule", () => {
+      it("default_schedule is left out", () => {
+        const raw: RawConfig = configToRaw(EMPTY_CONFIG);
+        expect(raw).not.toHaveProperty("default_schedule");
       });
     });
 
@@ -1054,11 +1171,11 @@ describe("validation", () => {
   });
 
   describe("migrateRaw", () => {
-    describe("With a version 2 document", () => {
+    describe("With a version 3 document", () => {
       it("returns an equal document", () => {
         const doc = validRaw() as unknown as Record<string, unknown>;
         expect(migrateRaw(doc)).toStrictEqual(doc);
-        expect(CONFIG_VERSION).toBe(2);
+        expect(CONFIG_VERSION).toBe(3);
       });
     });
   });
@@ -1073,6 +1190,7 @@ describe("validation", () => {
       const doc = structuredClone(validRaw()) as Record<string, unknown>;
       doc.version = 1;
       doc.schedules = [{ id: "default", name: "Default week", default_week: week }];
+      doc.rooms = {};
       return doc;
     }
 
@@ -1111,7 +1229,7 @@ describe("validation", () => {
           sat: day,
           sun: day,
         });
-        const config = validateConfig(upgradeRawV1(doc));
+        const config = validateConfig({ ...(upgradeRawV1(doc) as object), version: 3 });
         const week = config.schedules[0]?.defaultWeek;
         expect(week?.mon).toEqual(week?.wed);
         expect(week?.tue.map((p) => p.temperature)).toEqual([17]);
@@ -1122,11 +1240,13 @@ describe("validation", () => {
         const doc = v1({ mon: "x" });
         const upgraded = upgradeRawV1(doc) as { schedules: [Record<string, unknown>] };
         expect(upgraded.schedules[0]).toHaveProperty("default_week");
-        expect(() => validateConfig(upgraded)).toThrow(ConfigError);
+        expect(issuesOf({ ...upgraded, version: 3 }).map((i) => i.path)).toContain(
+          "schedules[0].default_week",
+        );
       });
     });
 
-    describe("With a version 2 document", () => {
+    describe("With a document of another version", () => {
       it("returns it unchanged", () => {
         const doc = validRaw();
         expect(upgradeRawV1(doc)).toBe(doc);
@@ -1136,8 +1256,14 @@ describe("validation", () => {
 
   describe("effectivePresets", () => {
     const config: Config = validateConfig(validRaw());
-    const room = config.rooms[0];
-    if (room === undefined) throw new Error("the valid document has a room");
+    const room: Room = {
+      id: "living_room",
+      name: "Living room",
+      scheduleId: "default",
+      valves: [],
+      sensors: [],
+      presets: { ...NO_PRESETS, comfort: 22 },
+    };
 
     describe("With a room that sets comfort only", () => {
       it("comfort is the room's value and the other three are the house values", () => {

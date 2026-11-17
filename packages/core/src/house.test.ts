@@ -1,15 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { makeMembership, makeSnapshot } from "../test/builders.ts";
+import { makeConfig, makeMembership, makeSnapshot, weekOf } from "../test/builders.ts";
 import {
   membershipFrom,
+  resolveRooms,
+  roomsOf,
   sameMembership,
   scheduleLabelId,
   scheduleLabelName,
   type AreaMembership,
 } from "./house.ts";
+import type { StoredConfig } from "./ledger.ts";
+import type { Config, RoomEntry, Schedule } from "./model.ts";
 
 const A = "z2m:0x00124b0000000001";
 const B = "z2m:0x00124b0000000002";
+
+const NO_PRESETS = { comfort: undefined, eco: undefined, frost: undefined, boost: undefined };
+const OFFICE_SENSOR = { ref: "ha:sensor.office", weight: 2 };
+const NIGHT: Schedule = { id: "night", name: "Night", defaultWeek: weekOf([]) };
+
+/** The builder config (default schedule `default`) plus `night`, with the given entries. */
+function configWith(entries: Readonly<Record<string, RoomEntry>>): Config {
+  const config = makeConfig();
+  return {
+    ...config,
+    schedules: [...config.schedules, NIGHT],
+    rooms: new Map(Object.entries(entries)),
+  };
+}
+
+const OFFICE_ENTRY: RoomEntry = {
+  scheduleId: "night",
+  sensors: [OFFICE_SENSOR],
+  presets: { ...NO_PRESETS, comfort: 22 },
+};
+
+function storedWith(config: Config): StoredConfig {
+  return { config, revision: 1, releasing: new Map() };
+}
 
 describe("house", () => {
   describe("scheduleLabelId", () => {
@@ -229,6 +257,115 @@ describe("house", () => {
       it("returns false", () => {
         expect(sameMembership(base(), undefined)).toBe(false);
         expect(sameMembership(undefined, base())).toBe(false);
+      });
+    });
+  });
+
+  describe("resolveRooms", () => {
+    describe("With membership {office: [v1]} and an entry for office naming night", () => {
+      it("one Room office with the area's name, valve v1, schedule night, and the entry's sensors and presets", () => {
+        const membership: AreaMembership = {
+          rooms: new Map([["office", { name: "Office", valveIds: [A] }]]),
+          ignored: [],
+        };
+        expect(resolveRooms(configWith({ office: OFFICE_ENTRY }), membership).rooms).toEqual([
+          {
+            id: "office",
+            name: "Office",
+            scheduleId: "night",
+            valves: [{ valveId: A }],
+            sensors: [OFFICE_SENSOR],
+            presets: { ...NO_PRESETS, comfort: 22 },
+          },
+        ]);
+      });
+    });
+
+    describe("With a room that has no entry", () => {
+      it("its schedule is the default and it has no sensor and no preset", () => {
+        const resolved = resolveRooms(configWith({}), makeMembership({ hall: [A] }));
+        expect(resolved.rooms).toEqual([
+          {
+            id: "hall",
+            name: "hall",
+            scheduleId: "default",
+            valves: [{ valveId: A }],
+            sensors: [],
+            presets: NO_PRESETS,
+          },
+        ]);
+      });
+    });
+
+    describe("With an entry for an area that is no room", () => {
+      const resolved = resolveRooms(
+        configWith({ office: OFFICE_ENTRY, attic: OFFICE_ENTRY }),
+        makeMembership({ office: [A] }),
+      );
+      it("unused lists it and no Room has its id", () => {
+        expect(resolved.unused).toEqual(["attic"]);
+        expect(resolved.rooms.map((room) => room.id)).toEqual(["office"]);
+      });
+    });
+
+    describe("With a config with no schedule", () => {
+      it("rooms is empty", () => {
+        const config: Config = { ...configWith({}), schedules: [], defaultScheduleId: undefined };
+        expect(resolveRooms(config, makeMembership({ hall: [A] })).rooms).toEqual([]);
+      });
+    });
+
+    describe("With membership undefined", () => {
+      it("rooms is empty and unused lists every entry", () => {
+        const resolved = resolveRooms(
+          configWith({ office: OFFICE_ENTRY, attic: OFFICE_ENTRY }),
+          undefined,
+        );
+        expect(resolved.rooms).toEqual([]);
+        expect(resolved.unused).toEqual(["office", "attic"]);
+      });
+    });
+  });
+
+  describe("roomsOf", () => {
+    const stored = storedWith(configWith({ office: OFFICE_ENTRY }));
+
+    describe("With house unlinked", () => {
+      it("returns undefined", () => {
+        expect(roomsOf("ok", stored, { kind: "unlinked" })).toBeUndefined();
+      });
+    });
+
+    describe("With house frozen on a saved membership", () => {
+      it("returns the rooms of the saved membership", () => {
+        const saved = makeMembership({ office: [A], hall: [B] });
+        const house = { kind: "frozen", membership: saved, reason: "link_down" } as const;
+        expect(roomsOf("ok", stored, house)).toEqual(resolveRooms(stored.config, saved).rooms);
+        expect(roomsOf("ok", stored, house)?.map((room) => room.id)).toEqual(["hall", "office"]);
+      });
+    });
+
+    describe("With configState unreadable", () => {
+      it("returns an empty list", () => {
+        const house = { kind: "live", membership: makeMembership({ office: [A] }), notInHa: [] };
+        expect(roomsOf("unreadable", stored, { ...house, kind: "live" })).toEqual([]);
+      });
+    });
+
+    describe("With house live on a membership holding a managed valve", () => {
+      it("returns the rooms of the live membership", () => {
+        const live = makeMembership({ office: [A] });
+        const rooms = roomsOf("ok", stored, { kind: "live", membership: live, notInHa: [] });
+        expect(rooms).toEqual([
+          {
+            id: "office",
+            name: "office",
+            scheduleId: "night",
+            valves: [{ valveId: A }],
+            sensors: [OFFICE_SENSOR],
+            presets: { ...NO_PRESETS, comfort: 22 },
+          },
+        ]);
       });
     });
   });
