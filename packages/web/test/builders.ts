@@ -13,6 +13,7 @@ export function stateView(over: Partial<StateView> = {}): StateView {
   return {
     revision: 3,
     configState: "ok",
+    house: "live",
     ledgerReadable: true,
     originalsCopyRecords: 0,
     held: false,
@@ -20,9 +21,11 @@ export function stateView(over: Partial<StateView> = {}): StateView {
     links: { z2m: true },
     transportFaults: {},
     rooms: [],
+    unusedEntries: [],
     valves: [],
     unassigned: [],
     problems: [],
+    haChanges: [],
     ...over,
   };
 }
@@ -31,6 +34,7 @@ export function roomView(over: Partial<RoomView> = {}): RoomView {
   return {
     roomId: "living",
     name: "Living room",
+    managed: true,
     sync: "in_sync",
     degraded: false,
     diverged: false,

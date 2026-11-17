@@ -3,7 +3,8 @@
  * imports them. A key that is left out means "unknown" or "none"; `null` appears only where stated.
  */
 
-import type { ConfigState, Membership } from "./ledger.ts";
+import type { UnplacedReason } from "./house.ts";
+import type { ConfigState, DroppedRoomReason, HaChangeKind, Membership } from "./ledger.ts";
 import type { Liveness } from "./observation.ts";
 import type { Evidence, SettingKey, ValveMode } from "./settings.ts";
 import type { ProblemKind, Severity, Subject, SyncState } from "./status.ts";
@@ -15,10 +16,17 @@ export type ApiError = Readonly<{
   data: Readonly<Record<string, unknown>>;
 }>;
 
+/**
+ * A room of the membership the page shows: the live one, or the saved one while rooms are frozen or
+ * there is no Home Assistant link. `managed` says whether Heatmaster acts on it; `scheduleId` and
+ * `scheduleName` are its schedule, left out when the config has none.
+ */
 export type RoomView = Readonly<{
   roomId: string;
   name: string;
-  areaName?: string;
+  managed: boolean;
+  scheduleId?: string;
+  scheduleName?: string;
   currentTemperature?: number;
   target?: number;
   /** Epoch milliseconds. */
@@ -51,6 +59,7 @@ export type ValveView = Readonly<{
 /**
  * A followed valve that is in no room and not releasing: whether it has reported since the start,
  * and what it showed. `values` is keyed by setting key and holds the `describeValue` forms.
+ * `reason` says why Home Assistant puts it in no room, when it does.
  */
 export type UnassignedValveView = Readonly<{
   valveId: string;
@@ -58,7 +67,32 @@ export type UnassignedValveView = Readonly<{
   observed: boolean;
   liveness: Liveness;
   values: Readonly<Record<string, unknown>>;
+  reason?: UnplacedReason;
 }>;
+
+export type HaChangeItemView = Readonly<{
+  kind: HaChangeKind;
+  areaId?: string;
+  entityId?: string;
+  scheduleId?: string;
+}>;
+
+/** A config revision made from label edits in Home Assistant; `at` is epoch milliseconds. */
+export type HaChangeView = Readonly<{
+  revision: number;
+  at: number;
+  items: readonly HaChangeItemView[];
+}>;
+
+export type DroppedRoomView = Readonly<{
+  roomId: string;
+  name: string;
+  valveIds: readonly string[];
+  reason: DroppedRoomReason;
+}>;
+
+/** The report of the conversion from a version 2 config. */
+export type UpgradeView = Readonly<{ fromVersion: 2; droppedRooms: readonly DroppedRoomView[] }>;
 
 export type ProblemView = Readonly<{
   kind: ProblemKind;
@@ -68,9 +102,16 @@ export type ProblemView = Readonly<{
   data: Readonly<Record<string, string>>;
 }>;
 
+/**
+ * `house`: `live` while rooms follow Home Assistant, `frozen` while they are frozen on the saved
+ * membership (`frozenReason` says why), `unlinked` without a Home Assistant link. `unusedEntries`
+ * lists the config's room entries of areas that are no room; `haChanges` is oldest first.
+ */
 export type StateView = Readonly<{
   revision: number;
   configState: ConfigState;
+  house: "live" | "frozen" | "unlinked";
+  frozenReason?: "not_loaded" | "link_down";
   ledgerReadable: boolean;
   originalsCopyRecords: number;
   held: boolean;
@@ -78,9 +119,12 @@ export type StateView = Readonly<{
   links: Readonly<Record<string, boolean>>;
   transportFaults: Readonly<Record<string, string>>;
   rooms: readonly RoomView[];
+  unusedEntries: readonly string[];
   valves: readonly ValveView[];
   unassigned: readonly UnassignedValveView[];
   problems: readonly ProblemView[];
+  haChanges: readonly HaChangeView[];
+  upgrade?: UpgradeView;
 }>;
 
 /** `value` is the `describeValue` form, or `null` when the setting could not be read. */

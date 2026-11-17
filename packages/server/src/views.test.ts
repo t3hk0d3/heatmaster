@@ -1,4 +1,4 @@
-import { EMPTY_CONFIG, capture, findProfile } from "@heatmaster/core";
+import { EMPTY_CONFIG, FRESH_STORED, capture, findProfile } from "@heatmaster/core";
 import type {
   ChangePlan,
   DeviceState,
@@ -69,8 +69,9 @@ function room(roomId: string, over: Partial<RoomSnapshot> = {}): RoomSnapshot {
   return {
     roomId,
     name: `Room ${roomId}`,
-    areaId: undefined,
-    areaName: undefined,
+    managed: true,
+    scheduleId: undefined,
+    scheduleName: undefined,
     valveIds: [],
     sensorIds: [],
     status: undefined,
@@ -82,6 +83,8 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
   return {
     revision: 3,
     configState: "ok",
+    house: "live",
+    houseFrozenReason: undefined,
     ledgerReadable: true,
     originalsCopyRecords: 0,
     held: false,
@@ -89,6 +92,9 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
     timeZone: "Europe/Amsterdam",
     tickedAt: 1,
     rooms: [],
+    unusedEntries: [],
+    haChanges: [],
+    upgrade: undefined,
     problems: [],
     memberships: {},
     devices: [],
@@ -130,6 +136,7 @@ describe("views", () => {
           {
             roomId: "living",
             name: "Room living",
+            managed: true,
             currentTemperature: 19.5,
             target: 21,
             nextChangeAt: Date.UTC(2026, 10, 16, 18, 0, 0),
@@ -242,10 +249,119 @@ describe("views", () => {
       });
     });
 
-    describe("With a room that has an area name", () => {
-      it("areaName is set", () => {
-        const [view] = viewOf({ rooms: [room("living", { areaName: "Living room" })] }).rooms;
-        expect(view?.areaName).toBe("Living room");
+    describe("With a managed room on the schedule main named Main", () => {
+      it("managed is true and scheduleId and scheduleName are set", () => {
+        const [view] = viewOf({
+          rooms: [room("living", { scheduleId: "main", scheduleName: "Main" })],
+        }).rooms;
+        expect(view).toMatchObject({ managed: true, scheduleId: "main", scheduleName: "Main" });
+      });
+    });
+
+    describe("With a room that is not managed and has no schedule", () => {
+      it("managed is false and scheduleId and scheduleName are left out", () => {
+        const [view] = viewOf({ rooms: [room("living", { managed: false })] }).rooms;
+        expect(view?.managed).toBe(false);
+        expect(Object.hasOwn(view ?? {}, "scheduleId")).toBe(false);
+        expect(Object.hasOwn(view ?? {}, "scheduleName")).toBe(false);
+      });
+    });
+
+    describe("With a live house", () => {
+      it("house is live and frozenReason is left out", () => {
+        const view = viewOf({ house: "live" });
+        expect(view.house).toBe("live");
+        expect(Object.hasOwn(view, "frozenReason")).toBe(false);
+      });
+    });
+
+    describe("With a house frozen because the link is down", () => {
+      it("house is frozen and frozenReason is link_down", () => {
+        const view = viewOf({ house: "frozen", houseFrozenReason: "link_down" });
+        expect(view).toMatchObject({ house: "frozen", frozenReason: "link_down" });
+      });
+    });
+
+    describe("With the unused entries attic and shed", () => {
+      it("unusedEntries lists them in that order", () => {
+        expect(viewOf({ unusedEntries: ["attic", "shed"] }).unusedEntries).toEqual([
+          "attic",
+          "shed",
+        ]);
+      });
+    });
+
+    describe("With an HA change of two items", () => {
+      it("haChanges holds it with camelCase keys, at in epoch ms and only the item keys that are set", () => {
+        const at = Date.UTC(2026, 10, 16, 9, 0, 0);
+        const view = viewOf({
+          haChanges: [
+            {
+              revision: 7,
+              at,
+              items: [
+                { kind: "schedule", areaId: "office", entityId: undefined, scheduleId: "night" },
+                {
+                  kind: "sensor_added",
+                  areaId: "office",
+                  entityId: "sensor.office",
+                  scheduleId: undefined,
+                },
+              ],
+            },
+          ],
+        });
+        expect(view.haChanges).toEqual([
+          {
+            revision: 7,
+            at,
+            items: [
+              { kind: "schedule", areaId: "office", scheduleId: "night" },
+              { kind: "sensor_added", areaId: "office", entityId: "sensor.office" },
+            ],
+          },
+        ]);
+      });
+    });
+
+    describe("With an upgrade report", () => {
+      it("upgrade holds the old version and the dropped rooms in camelCase", () => {
+        const view = viewOf({
+          upgrade: {
+            fromVersion: 2,
+            droppedRooms: [{ roomId: "hall", name: "Hall", valveIds: [A], reason: "no_area" }],
+          },
+        });
+        expect(view.upgrade).toEqual({
+          fromVersion: 2,
+          droppedRooms: [{ roomId: "hall", name: "Hall", valveIds: [A], reason: "no_area" }],
+        });
+      });
+    });
+
+    describe("Without an upgrade report", () => {
+      it("upgrade is left out", () => {
+        expect(Object.hasOwn(viewOf({}), "upgrade")).toBe(false);
+      });
+    });
+
+    describe("With an unassigned valve whose device has no area", () => {
+      it("its reason is no_area", () => {
+        const view = viewOf({
+          devices: [device(A)],
+          unassigned: [
+            {
+              valveId: A,
+              name: "valve 0xa1",
+              observed: true,
+              liveness: "live",
+              heardAt: 5000,
+              values: {},
+              reason: "no_area",
+            },
+          ],
+        });
+        expect(view.unassigned[0]?.reason).toBe("no_area");
       });
     });
 
@@ -327,6 +443,7 @@ describe("views", () => {
         expect(view).toEqual({
           roomId: "living",
           name: "Room living",
+          managed: true,
           sync: "unverified",
           degraded: false,
           diverged: false,
@@ -375,6 +492,7 @@ describe("views", () => {
         liveness: "live" as const,
         heardAt: 5000,
         values: { sensor_source: "internal" },
+        reason: undefined,
       }));
       const view = viewOf({ devices: [device(B), device(A)], unassigned });
 
@@ -416,8 +534,27 @@ describe("views", () => {
               liveness: "unknown",
               heardAt: undefined,
               values: {},
+              reason: "ignored_area",
             },
           ],
+          house: "frozen",
+          houseFrozenReason: "not_loaded",
+          unusedEntries: ["attic"],
+          haChanges: [
+            {
+              revision: 2,
+              at: 1000,
+              items: [
+                {
+                  kind: "sensor_removed",
+                  areaId: "x",
+                  entityId: "sensor.x",
+                  scheduleId: undefined,
+                },
+              ],
+            },
+          ],
+          upgrade: { fromVersion: 2, droppedRooms: [] },
           devices: [device(A), device(B)],
         });
         expect(JSON.parse(JSON.stringify(view))).toEqual(view);
@@ -441,9 +578,9 @@ describe("views", () => {
     function plan(over: Partial<ChangePlan> = {}, holdWrites = false): ChangePlan {
       return {
         stored: {
+          ...FRESH_STORED,
           config: { ...EMPTY_CONFIG, settings: { ...EMPTY_CONFIG.settings, holdWrites } },
           revision: 4,
-          releasing: new Map(),
         },
         ledger: undefined,
         effects: [],

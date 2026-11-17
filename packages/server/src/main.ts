@@ -81,7 +81,7 @@ export async function start(
   const mqtt = createMqttClient(options.mqtt, clock, DEFAULT_TUNING, log);
   late.mqtt = mqtt;
   const runtime = createRuntime({
-    configStore: createConfigStore(options.dataDir, clock),
+    configStore: createConfigStore(options.dataDir, clock, log),
     pacingStore: createPacingStore(options.dataDir),
     ledgerStore: createLedgerStore(
       { dataDir: options.dataDir, publicDir: options.publicDir },

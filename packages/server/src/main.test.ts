@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -379,26 +379,39 @@ function weekOf(weekend: number): unknown[] {
   ];
 }
 
-function houseConfig(rooms: boolean, weekend = 20): Record<string, unknown> {
+/** The house's config: the area living's entry holds the Home Assistant sensor. */
+function houseConfig(weekend = 20): Record<string, unknown> {
   return {
-    version: 2,
+    version: 3,
     settings: { hold_writes: false, timezone: "Europe/Amsterdam" },
     schedules: [{ id: "main", name: "Main", week: weekOf(weekend) }],
-    rooms: rooms
-      ? [
-          {
-            id: "living",
-            name: "Living",
-            schedule_id: "main",
-            valves: [{ id: VALVE }],
-            sensors: [{ ref: `ha:${SENSOR_ENTITY}` }],
-          },
-        ]
-      : [],
+    default_schedule: "main",
+    rooms: { living: { sensors: [{ ref: `ha:${SENSOR_ENTITY}` }] } },
   };
 }
 
+const VALVE_DEVICE = { id: "valve", identifiers: [["mqtt", `zigbee2mqtt_${IEEE}`]] } as const;
+
+/** Home Assistant puts the valve's device in the area living. */
+function placeValve(ha: FakeHa): void {
+  ha.setArea({ area_id: "living", name: "Living" });
+  ha.setDevice({ ...VALVE_DEVICE, area_id: "living" });
+}
+
+/**
+ * Writes into config.json the saved membership of the valve in the area living, as plan 2's
+ * Task 7 saves it with the config: a start whose Home Assistant link has not loaded yet freezes
+ * the rooms on it.
+ */
+function saveMembership(dataDir: string): void {
+  const file = path.join(dataDir, "config.json");
+  const stored = JSON.parse(readFileSync(file, "utf8")) as { data: Record<string, unknown> };
+  stored.data.membership = { rooms: { living: { name: "Living", valves: [VALVE] } }, ignored: [] };
+  writeFileSync(file, JSON.stringify(stored));
+}
+
 function seedHa(ha: FakeHa): void {
+  placeValve(ha);
   ha.setDevice({ id: "d1", identifiers: [["mqtt", "zigbee2mqtt_0x5e"]] });
   ha.setEntity({ entity_id: SENSOR_ENTITY, device_id: "d1" });
   ha.setState(
@@ -799,7 +812,10 @@ describe("main (runtime)", () => {
           // From here on every answer of the fake is held until the test lets it go.
           world.fake.holdAnswers();
           begin();
-          const plan = await world.running.runtime.apply(houseConfig(true), NO_CHANGE);
+          await vi.waitFor(() => {
+            expect(world.running.runtime.snapshot().house).toBe("live");
+          }, WAIT);
+          const plan = await world.running.runtime.apply(houseConfig(), NO_CHANGE);
           expect(plan.joining.map((c) => c.valveId)).toEqual([VALVE]);
           copyFiles();
           await vi.waitFor(() => {
@@ -845,7 +861,7 @@ describe("main (runtime)", () => {
         it("only the changed days are published", async () => {
           await advance(5000);
           begin();
-          await world.running.runtime.apply(houseConfig(true, 22), NO_CHANGE);
+          await world.running.runtime.apply(houseConfig(22), NO_CHANGE);
           await advanceUntil(() => {
             expect(daySets()).toHaveLength(1);
           });
@@ -868,6 +884,7 @@ describe("main (runtime)", () => {
           // days are published, so the link stays down and the sensor pending.
           world.ha.refuseConnections(true);
           await world.running.stop();
+          saveMembership(dirs.dataDir);
           // This story is about what the first start sequence sends. The budget a restart keeps
           // (pacing.json) is tested in runtime.test.ts; here the file is removed, as if the hours
           // the story skips had passed.
@@ -949,7 +966,15 @@ describe("main (runtime)", () => {
         it("its original sensor source is published and no day is published", async () => {
           await advance(60 * 60 * 1000);
           begin();
-          await world.running.runtime.apply(houseConfig(false), NO_CHANGE);
+          // The device leaves its area while Home Assistant is unreachable; once the link is back
+          // its full load is taken at once and the valve is in no room.
+          world.ha.setDevice({ ...VALVE_DEVICE, area_id: null });
+          world.ha.refuseConnections(false);
+          await advanceUntil(() => {
+            expect(world.running.runtime.snapshot().memberships[VALVE]).toBe("orphan");
+          });
+          // Restoring the orphan stands in for the automatic release of plan 2's Task 7.
+          await world.running.runtime.restoreValve(VALVE);
           copyFiles();
           await advanceUntil(() => {
             expect(sets()).toContainEqual({ temperature_sensor_select: "local_temperature" });
@@ -1035,9 +1060,11 @@ const PRESETS: Shape = { fields: { comfort: "leaf", eco: "leaf", frost: "leaf", 
 const WEEK_BLOCK: Shape = {
   fields: { days: "leaf", temperature: { mapOf: "leaf", keys: (key) => TIME_KEY.test(key) } },
 };
+const AREA_ID = /^[a-z0-9_]{1,64}$/;
 const CONFIG_DOCUMENT: Shape = {
   fields: {
     version: "leaf",
+    default_schedule: "leaf",
     settings: {
       fields: {
         external_write_interval_min: "leaf",
@@ -1058,17 +1085,14 @@ const CONFIG_DOCUMENT: Shape = {
       },
     },
     rooms: {
-      listOf: {
+      mapOf: {
         fields: {
-          id: "leaf",
-          name: "leaf",
-          area_id: "leaf",
-          schedule_id: "leaf",
-          valves: { listOf: { fields: { id: "leaf" } } },
+          schedule: "leaf",
           sensors: { listOf: { fields: { ref: "leaf", weight: "leaf" } } },
           presets: PRESETS,
         },
       },
+      keys: (key) => AREA_ID.test(key),
     },
   },
 };
@@ -1080,6 +1104,44 @@ const CONFIG_FILE: Shape = {
         revision: "leaf",
         releasing: { mapOf: "leaf", keys: (key) => VALVE_ID.test(key) },
         config: CONFIG_DOCUMENT,
+        membership: {
+          fields: {
+            rooms: {
+              mapOf: { fields: { name: "leaf", valves: { listOf: "leaf" } } },
+              keys: (key) => AREA_ID.test(key),
+            },
+            ignored: { listOf: "leaf" },
+          },
+        },
+        sensor_import: "leaf",
+        ha_changes: {
+          listOf: {
+            fields: {
+              revision: "leaf",
+              at: "leaf",
+              items: {
+                listOf: {
+                  fields: { kind: "leaf", area_id: "leaf", entity_id: "leaf", schedule_id: "leaf" },
+                },
+              },
+            },
+          },
+        },
+        upgrade: {
+          fields: {
+            from_version: "leaf",
+            dropped_rooms: {
+              listOf: {
+                fields: {
+                  room_id: "leaf",
+                  name: "leaf",
+                  valves: { listOf: "leaf" },
+                  reason: "leaf",
+                },
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -1136,8 +1198,11 @@ describe("main (discovery)", () => {
   async function restarted(holdWrites: boolean) {
     const fake = await startFakeZ2m();
     live.push(() => fake.stop());
+    const ha = await startFakeHa();
+    live.push(() => ha.stop());
+    placeValve(ha);
     const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
-    const options = liveOptions(await freePort(), fake, undefined, dirs);
+    const options = liveOptions(await freePort(), fake, ha, dirs);
     const clock = createManualClock(T);
     fake.addDevice({ ieee: IEEE, name: "living/valve", modelId: "TRVZB" }, TRVZB_STATE);
     const first = await start(options, clock, false);
@@ -1146,12 +1211,14 @@ describe("main (discovery)", () => {
     await vi.waitFor(() => {
       if (!observed()) fake.republish(IEEE);
       expect(observed()).toBe(true);
+      expect(first.runtime.snapshot().house).toBe("live");
     }, WAIT);
-    const config = houseConfig(true);
+    const config = houseConfig();
     config.settings = { hold_writes: holdWrites, timezone: "Europe/Amsterdam" };
-    config.rooms = [{ id: "living", name: "Living", schedule_id: "main", valves: [{ id: VALVE }] }];
+    config.rooms = { living: {} };
     await first.runtime.apply(config, NO_CHANGE);
     await first.stop();
+    saveMembership(dirs.dataDir);
     const running = await start(options, clock, false);
     live.push(() => running.stop());
     return { fake, running };

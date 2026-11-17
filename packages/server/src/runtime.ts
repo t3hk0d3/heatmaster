@@ -21,6 +21,7 @@ import {
   forgetValve as coreForgetValve,
   ledgerToRaw,
   liveness,
+  membershipFrom,
   memberships,
   newState,
   planChange,
@@ -28,7 +29,9 @@ import {
   problemPacingUnreadable,
   problemStoreWriteFailed,
   problemTickFailed,
+  resolveRooms,
   restoreValve as coreRestoreValve,
+  roomsOf,
   sensorId,
   storedToRaw,
   tick,
@@ -37,6 +40,7 @@ import {
   withHold,
 } from "@heatmaster/core";
 import type {
+  AreaMembership,
   Binding,
   BucketStart,
   ChangeOptions,
@@ -49,12 +53,16 @@ import type {
   Effect,
   Event,
   Group,
+  HaChange,
+  HouseInput,
   Inbox,
   Ledger,
   Liveness,
   Memory,
   Membership,
+  MembershipView,
   Problem,
+  Room,
   RoomStatus,
   SensorInfo,
   SensorReading,
@@ -62,12 +70,14 @@ import type {
   SettingKey,
   StoredConfig,
   TickResult,
+  UnplacedReason,
+  UpgradeReport,
   ValveSpec,
   World,
 } from "@heatmaster/core";
 import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
-import type { HaLink } from "./ha-link.ts";
+import type { HaEvent, HaLink } from "./ha-link.ts";
 import type { ConfigStore, LedgerStore, PacingStamps, PacingStore } from "./stores.ts";
 import type { DeviceInfo, RawEvent, Transport } from "./transport.ts";
 
@@ -81,6 +91,8 @@ export const DIRECT_ASK_SPACING_MS = 60 * SECOND_MS;
 export const DIRECT_ASK_WINDOW_MS = 1 * HOUR_MS;
 export const DIRECT_ASK_WINDOW_LIMIT = 6;
 export const CLOCK_JUMP_MS = 5 * MINUTE_MS;
+/** Registry changes are acted on once this long has passed without another one. */
+export const HA_SETTLE_MS = 5 * SECOND_MS;
 export const HA_LINK_KEY = "ha";
 
 const HA_PREFIX = "ha:";
@@ -109,11 +121,16 @@ export type ApplyOptions = Readonly<{
   overwriteUnreadable: boolean;
 }>;
 
+/**
+ * One room of the membership: the accepted one while the house is live, the saved one while it is
+ * frozen or unlinked. `managed` is false while unlinked and when the config has no schedule.
+ */
 export type RoomSnapshot = Readonly<{
   roomId: string;
   name: string;
-  areaId: string | undefined;
-  areaName: string | undefined;
+  managed: boolean;
+  scheduleId: string | undefined;
+  scheduleName: string | undefined;
   valveIds: readonly string[];
   sensorIds: readonly string[];
   status: RoomStatus | undefined;
@@ -140,6 +157,8 @@ export type UnassignedValve = Readonly<{
   liveness: Liveness;
   heardAt: number | undefined;
   values: Readonly<Record<string, unknown>>;
+  /** Why Home Assistant puts it in no room, while the house is live. */
+  reason: UnplacedReason | undefined;
 }>;
 
 export type SensorSnapshot = Readonly<{
@@ -155,6 +174,8 @@ export type SensorSnapshot = Readonly<{
 export type Snapshot = Readonly<{
   revision: number;
   configState: ConfigState;
+  house: HouseInput["kind"];
+  houseFrozenReason: "not_loaded" | "link_down" | undefined;
   ledgerReadable: boolean;
   originalsCopyRecords: number;
   held: boolean;
@@ -162,6 +183,10 @@ export type Snapshot = Readonly<{
   timeZone: string;
   tickedAt: number | undefined;
   rooms: readonly RoomSnapshot[];
+  /** The config's room entries, in its order, of areas that are no room. */
+  unusedEntries: readonly string[];
+  haChanges: readonly HaChange[];
+  upgrade: UpgradeReport | undefined;
   problems: readonly Problem[];
   memberships: Readonly<Record<string, Membership>>;
   devices: readonly DeviceSnapshot[];
@@ -369,11 +394,12 @@ function zoneAccepted(zone: string | undefined): zone is string {
   }
 }
 
+/** The sensors of every room entry, used or not, each once, in the config's order. */
 function roomSensors(config: Config | undefined): readonly SensorRef[] {
   const seen = new Set<string>();
   const sensors: SensorRef[] = [];
-  for (const room of config?.rooms ?? []) {
-    for (const sensor of room.sensors) {
+  for (const entry of config?.rooms.values() ?? []) {
+    for (const sensor of entry.sensors) {
       const id = sensorId(sensor);
       if (seen.has(id)) continue;
       seen.add(id);
@@ -442,6 +468,16 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   const directAsks = new Map<string, number[]>();
   const listeners = new Set<(snapshot: Snapshot) => void>();
 
+  /** The membership acted on while the house is live, and the valves it was placed for. */
+  let accepted: MembershipView | undefined;
+  let acceptedFor: ReadonlySet<string> = new Set();
+  /** Whether the link_up handler has accepted a membership for the current connection. */
+  let acceptedLive = false;
+  /** Counts the link's drops: a link_up handler queued before a drop is for a connection gone. */
+  let connection = 0;
+  let cancelSettle: (() => void) | undefined;
+  let placingAgain = false;
+
   let cancelInterval: (() => void) | undefined;
   let cancelDebounce: (() => void) | undefined;
   let executing = false;
@@ -496,8 +532,25 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return configState === "ok" ? stored : undefined;
   }
 
+  /**
+   * The house: unlinked without a Home Assistant link; frozen on the saved membership until the
+   * link has loaded, while it is down, and on a reconnect until its link_up handler has run; live
+   * on the accepted membership otherwise.
+   */
+  function houseInput(): HouseInput {
+    if (ha === undefined) return { kind: "unlinked" };
+    const saved = stored?.membership;
+    if (!ha.ready()) return { kind: "frozen", membership: saved, reason: "not_loaded" };
+    if (!ha.up() || !acceptedLive || accepted === undefined) {
+      return { kind: "frozen", membership: saved, reason: "link_down" };
+    }
+    return { kind: "live", membership: accepted.membership, notInHa: accepted.notInHa };
+  }
+
   function currentMemberships(): ReadonlyMap<string, Membership> {
-    return memberships(configState, stored, ledger);
+    const house = houseInput();
+    const rooms = roomsOf(configState, stored, house);
+    return memberships(configState, stored, ledger, rooms, house.kind);
   }
 
   function listed(
@@ -612,6 +665,111 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return { sensors: readings, unobservable };
   }
 
+  // ---- rooms from Home Assistant ---------------------------------------------------------------
+
+  /**
+   * The valves Home Assistant may place in a room: every followed valve with a profile, and every
+   * valve with a ledger record or in releasing, listed by its transport or not.
+   */
+  function placedValves(): ReadonlySet<string> {
+    const ids = new Set<string>();
+    for (const followedIds of followed.values()) {
+      for (const id of followedIds) if (profileOf(id) !== undefined) ids.add(id);
+    }
+    for (const id of ledger?.records.keys() ?? []) ids.add(id);
+    for (const id of stored?.releasing.keys() ?? []) ids.add(id);
+    return ids;
+  }
+
+  function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+    return a.size === b.size && [...a].every((id) => b.has(id));
+  }
+
+  /**
+   * Takes the membership Home Assistant gives now. Runs under the lock; its callers then queue a
+   * tick at once (a debounce would only delay one change).
+   */
+  function accept(previous: AreaMembership | undefined): boolean {
+    const snapshot = ha?.snapshot();
+    if (snapshot === undefined) return false;
+    const placed = placedValves();
+    accepted = membershipFrom(snapshot, placed, previous);
+    acceptedFor = placed;
+    return true;
+  }
+
+  /** The link_up handler: after the link's full load the house is live at once. */
+  function linkUp(at: number): void {
+    if (!started || stopping || at !== connection || ha?.up() !== true) return;
+    if (!accept(accepted?.membership ?? stored?.membership)) return;
+    acceptedLive = true;
+    queueTick();
+  }
+
+  /** A burst of registry changes gives one settle, HA_SETTLE_MS after the last of them. */
+  function armSettle(): void {
+    if (!started || stopping) return;
+    cancelSettle?.();
+    cancelSettle = clock.after(HA_SETTLE_MS, () => {
+      cancelSettle = undefined;
+      void withLock(() => {
+        if (!stopping && houseInput().kind === "live" && accept(accepted?.membership)) {
+          queueTick();
+        }
+        return Promise.resolve();
+      });
+    });
+  }
+
+  /**
+   * While live, a change of the valves Home Assistant may place (a transport lists or drops one, a
+   * record is added or removed) places them again at once: no label edit is involved, so no settle.
+   */
+  function placeAgainIfChanged(): void {
+    if (placingAgain || houseInput().kind !== "live" || sameSet(placedValves(), acceptedFor)) {
+      return;
+    }
+    placingAgain = true;
+    void withLock(() => {
+      placingAgain = false;
+      if (
+        houseInput().kind === "live" &&
+        !sameSet(placedValves(), acceptedFor) &&
+        accept(accepted?.membership)
+      ) {
+        queueTick();
+      }
+      return Promise.resolve();
+    });
+  }
+
+  function onHaEvent(event: HaEvent): void {
+    if (stopping) return;
+    switch (event.kind) {
+      case "link_up": {
+        const at = connection;
+        void withLock(() => {
+          linkUp(at);
+          return Promise.resolve();
+        });
+        break;
+      }
+      case "link_down":
+        connection += 1;
+        acceptedLive = false;
+        cancelSettle?.();
+        cancelSettle = undefined;
+        requestTick();
+        break;
+      case "registries_changed":
+        armSettle();
+        break;
+      case "changed":
+        requestTick();
+        break;
+    }
+  }
+
   function buildWorld(nowMs: number, extraSensors: readonly SensorRef[] = []): World {
     const devices = new Map<string, DeviceView>();
     for (const [key, ids] of followed) {
@@ -637,6 +795,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return {
       configState,
       stored: worldStored(),
+      house: houseInput(),
       ledger,
       devices,
       links: linkStates(),
@@ -710,6 +869,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       }
       ha.watch(entities);
     }
+    placeAgainIfChanged();
   }
 
   // ---- events ---------------------------------------------------------------------------------
@@ -718,8 +878,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     inbox = applyEvent(inbox, event, specs(), nowMs);
   }
 
+  /** A tick after EVENT_DEBOUNCE_MS; none while a queued tick has not begun (it sees the change). */
   function requestTick(): void {
-    if (!started || stopping || cancelDebounce !== undefined) return;
+    if (!started || stopping || tickQueued || cancelDebounce !== undefined) return;
     cancelDebounce = clock.after(EVENT_DEBOUNCE_MS, () => {
       cancelDebounce = undefined;
       queueTick();
@@ -776,6 +937,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     cancelInterval = undefined;
     cancelDebounce?.();
     cancelDebounce = undefined;
+    cancelSettle?.();
+    cancelSettle = undefined;
     wakeIdle();
   }
 
@@ -1121,15 +1284,29 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const membershipRecord: Record<string, Membership> = {};
     for (const [id, kind] of sorted(kinds, ([id]) => id)) membershipRecord[id] = kind;
 
-    const rooms: RoomSnapshot[] = (readable?.config.rooms ?? []).map((room) => ({
-      roomId: room.id,
-      name: room.name,
-      areaId: room.areaId,
-      areaName: room.areaId === undefined ? undefined : ha?.areaName(room.areaId),
-      valveIds: room.valves.map((v) => v.valveId),
-      sensorIds: room.sensors.map((s) => sensorId(s)),
-      status: lastTick?.rooms.get(room.id),
-    }));
+    const house = houseInput();
+    const membership = house.kind === "unlinked" ? stored?.membership : house.membership;
+    const config = readable?.config ?? EMPTY_CONFIG;
+    const resolved = resolveRooms(config, membership);
+    const resolvedById = new Map(resolved.rooms.map((room) => [room.id, room]));
+    const managed = new Set((roomsOf(configState, stored, house) ?? []).map((room) => room.id));
+    const rooms: RoomSnapshot[] = sorted(membership?.rooms ?? [], ([id]) => id).map(
+      ([areaId, area]) => {
+        const room = resolvedById.get(areaId);
+        const scheduleId = room?.scheduleId;
+        const sensors = room?.sensors ?? config.rooms.get(areaId)?.sensors ?? [];
+        return {
+          roomId: areaId,
+          name: area.name,
+          managed: managed.has(areaId),
+          scheduleId,
+          scheduleName: config.schedules.find((schedule) => schedule.id === scheduleId)?.name,
+          valveIds: area.valveIds,
+          sensorIds: sensors.map((sensor) => sensorId(sensor)),
+          status: lastTick?.rooms.get(areaId),
+        };
+      },
+    );
 
     const devices: DeviceSnapshot[] = [];
     for (const key of keys) {
@@ -1165,6 +1342,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         liveness: device.liveness,
         heardAt: device.heardAt,
         values: describeValues(inbox.states.get(device.deviceId)),
+        reason: house.kind === "live" ? accepted?.unplaced.get(device.deviceId) : undefined,
       });
     }
 
@@ -1188,6 +1366,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return {
       revision: readable?.revision ?? 0,
       configState,
+      house: house.kind,
+      houseFrozenReason: house.kind === "frozen" ? house.reason : undefined,
       ledgerReadable: ledger !== undefined,
       originalsCopyRecords: copyRecords,
       held: heldNow(),
@@ -1195,6 +1375,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       timeZone: lastTick?.timeZone ?? zone(),
       tickedAt: lastTick?.tickedAt,
       rooms,
+      unusedEntries: resolved.unused,
+      haChanges: readable?.haChanges ?? [],
+      upgrade: readable?.upgrade,
       problems: [
         ...(lastTick?.problems ?? []),
         ...storeProblems(),
@@ -1291,7 +1474,10 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       devices,
       sensors,
       memory: memoryDiagnostics(nowMs),
+      house: snapshot.house,
+      houseFrozenReason: snapshot.houseFrozenReason,
       rooms: snapshot.rooms,
+      unusedEntries: snapshot.unusedEntries,
       problems: snapshot.problems,
       preview: previewed,
       links: snapshot.links,
@@ -1316,10 +1502,21 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       const loaded = await deps.configStore.load();
       configState = loaded.state;
       stored = loaded.stored;
+      if (loaded.state === "unreadable") {
+        log.error("the config cannot be read", { reason: loaded.reason });
+      }
+      if (loaded.convertedFrom !== undefined && stored !== undefined) {
+        log.info("config converted", { fromVersion: loaded.convertedFrom });
+        // Saved once: the file holds version 3 from now on (the store keeps the original's copy).
+        await execute([{ kind: "saveConfig", stored }], false);
+      }
+      // A ledger file is expected when the stored state implies records.
       const expected =
         configState === "unreadable" ||
         (stored !== undefined &&
-          (stored.config.rooms.some((room) => room.valves.length > 0) ||
+          ([...(stored.membership?.rooms.values() ?? [])].some(
+            (room) => room.valveIds.length > 0,
+          ) ||
             stored.releasing.size > 0));
       ledger = await deps.ledgerStore.load(expected);
       copyRecords = await deps.ledgerStore.copyRecords();
@@ -1334,21 +1531,29 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       if (unreadable) log.error("the saved write budget cannot be read; every valve starts empty");
       started = true;
       stopping = false;
-      // Nothing waits for Home Assistant or for a replay. After a restart a valve is left alone
-      // until its first message; the tick asks it to report. The feed gap this leaves: with sensors
-      // through Home Assistant, a room is fresh as soon as the link is up and the sensor's newest
-      // report is under the 120-min staleness, so the gap is 30 min since the last heartbeat push
-      // plus the downtime plus the time until the valve answers.
-      ha?.start(() => {
-        requestTick();
-      });
-      for (const key of keys) {
-        await transports[key]?.start((event) => {
-          onTransportEvent(key, event);
+      // The first tick below sees every event that arrives before it begins: none needs a debounce.
+      tickQueued = true;
+      try {
+        // Nothing waits for Home Assistant or for a replay. After a restart a valve is left alone
+        // until its first message; the tick asks it to report. The feed gap this leaves: with
+        // sensors through Home Assistant, a room is fresh as soon as the link is up and the
+        // sensor's newest report is under the 120-min staleness, so the gap is 30 min since the
+        // last heartbeat push plus the downtime plus the time until the valve answers.
+        ha?.start(onHaEvent);
+        for (const key of keys) {
+          await transports[key]?.start((event) => {
+            onTransportEvent(key, event);
+          });
+        }
+        refollow();
+        await withLock(async () => {
+          tickQueued = false;
+          await runTick();
         });
+      } catch (error) {
+        tickQueued = false;
+        throw error;
       }
-      refollow();
-      await withLock(runTick);
       if (!isStopping()) {
         cancelInterval = clock.every(TICK_INTERVAL_MS, () => {
           queueTick();
@@ -1363,6 +1568,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       await withLock(() => Promise.resolve());
       cancelTimers();
       queue.length = 0;
+      acceptedLive = false;
       await ha?.stop();
       for (const key of keys) await transports[key]?.stop();
       started = false;
@@ -1412,7 +1618,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         if (roomId === undefined) {
           valveIds = [...currentMemberships().keys()];
         } else {
-          const room = readableStored()?.config.rooms.find((r) => r.id === roomId);
+          const rooms: readonly Room[] = roomsOf(configState, stored, houseInput()) ?? [];
+          const room = rooms.find((r) => r.id === roomId);
           if (room === undefined) throw new HeatmasterError("room_unknown", { roomId });
           valveIds = room.valves.map((v) => v.valveId);
         }

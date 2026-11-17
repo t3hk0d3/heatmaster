@@ -4,6 +4,8 @@ import { describeValue, findProfile, groupOf } from "@heatmaster/core";
 import type {
   ChangePlan,
   Evidence,
+  HaChange,
+  HaChangeView,
   JoiningView,
   OriginalView,
   PlanView,
@@ -12,6 +14,8 @@ import type {
   SettingKey,
   StateView,
   UnassignedValveView,
+  UpgradeReport,
+  UpgradeView,
   ValveRefView,
   ValveStatus,
   ValveView,
@@ -40,7 +44,9 @@ function roomView(room: RoomSnapshot, snapshot: Snapshot): RoomView {
   return present<RoomView>({
     roomId: room.roomId,
     name: room.name,
-    areaName: room.areaName,
+    managed: room.managed,
+    scheduleId: room.scheduleId,
+    scheduleName: room.scheduleName,
     currentTemperature: status?.currentTemperature,
     target: status?.target,
     nextChangeAt: status?.nextChangeAt,
@@ -71,6 +77,33 @@ function problemName(
     case "system":
       return id;
   }
+}
+
+function haChangeView(change: HaChange): HaChangeView {
+  return {
+    revision: change.revision,
+    at: change.at,
+    items: change.items.map((item) =>
+      present<HaChangeView["items"][number]>({
+        kind: item.kind,
+        areaId: item.areaId,
+        entityId: item.entityId,
+        scheduleId: item.scheduleId,
+      }),
+    ),
+  };
+}
+
+function upgradeView(report: UpgradeReport): UpgradeView {
+  return {
+    fromVersion: report.fromVersion,
+    droppedRooms: report.droppedRooms.map((room) => ({
+      roomId: room.roomId,
+      name: room.name,
+      valveIds: room.valveIds,
+      reason: room.reason,
+    })),
+  };
 }
 
 export function stateView(snapshot: Snapshot): StateView {
@@ -105,15 +138,16 @@ export function stateView(snapshot: Snapshot): StateView {
     });
   });
 
-  const unassigned = snapshot.unassigned
-    .toSorted(byId((v) => v.valveId))
-    .map((valve): UnassignedValveView => ({
+  const unassigned = snapshot.unassigned.toSorted(byId((v) => v.valveId)).map((valve) =>
+    present<UnassignedValveView>({
       valveId: valve.valveId,
       name: valve.name,
       observed: valve.observed,
       liveness: valve.liveness,
       values: valve.values,
-    }));
+      reason: valve.reason,
+    }),
+  );
 
   const problems = snapshot.problems.map((problem): ProblemView => ({
     kind: problem.kind,
@@ -123,9 +157,11 @@ export function stateView(snapshot: Snapshot): StateView {
     data: problem.data,
   }));
 
-  return {
+  return present<StateView>({
     revision: snapshot.revision,
     configState: snapshot.configState,
+    house: snapshot.house,
+    frozenReason: snapshot.houseFrozenReason,
     ledgerReadable: snapshot.ledgerReadable,
     originalsCopyRecords: snapshot.originalsCopyRecords,
     held: snapshot.held,
@@ -133,10 +169,13 @@ export function stateView(snapshot: Snapshot): StateView {
     links: snapshot.links,
     transportFaults: snapshot.transportFaults,
     rooms: snapshot.rooms.map((room) => roomView(room, snapshot)),
+    unusedEntries: snapshot.unusedEntries,
     valves,
     unassigned,
     problems,
-  };
+    haChanges: snapshot.haChanges.map(haChangeView),
+    upgrade: snapshot.upgrade === undefined ? undefined : upgradeView(snapshot.upgrade),
+  });
 }
 
 // ---- plans ---------------------------------------------------------------------------------------

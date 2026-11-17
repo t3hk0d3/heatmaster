@@ -26,6 +26,7 @@ function room(id: string, extra: Partial<RoomView> = {}): RoomView {
   return {
     roomId: id,
     name: id.toUpperCase(),
+    managed: true,
     currentTemperature: 19.6,
     target: 20,
     sync: "in_sync",
@@ -51,6 +52,7 @@ function view(extra: Partial<StateView> = {}): StateView {
   return {
     revision: 1,
     configState: "ok",
+    house: "live",
     ledgerReadable: true,
     originalsCopyRecords: 0,
     held: false,
@@ -58,9 +60,11 @@ function view(extra: Partial<StateView> = {}): StateView {
     links: {},
     transportFaults: {},
     rooms: [room("a"), room("b")],
+    unusedEntries: [],
     valves: [],
     unassigned: [],
     problems: [],
+    haChanges: [],
     ...extra,
   };
 }
@@ -224,23 +228,67 @@ describe("discovery", () => {
       });
     }
 
-    describe("With a room that has an area name", () => {
-      it("suggested_area is that name", () => {
-        const config = parse(
-          configMessages(view({ rooms: [room("a", { areaName: "Upstairs" })] }), OPTIONS).get(
-            roomConfigTopic("homeassistant", "a"),
-          ),
+    describe('With a managed room office named "Кабинет"', () => {
+      const config = parse(
+        configMessages(view({ rooms: [room("office", { name: "Кабинет" })] }), OPTIONS).get(
+          roomConfigTopic("homeassistant", "office"),
+        ),
+      );
+
+      it("unique ids start with heatmaster_room_office", () => {
+        const ids = Object.values<Config>(config.components).map((c) => c.unique_id as string);
+        expect(ids.length).toBeGreaterThan(0);
+        for (const id of [...ids, ...(config.device.identifiers as string[])]) {
+          expect(id.startsWith("heatmaster_room_office")).toBe(true);
+        }
+      });
+
+      it("default_entity_id of the temperature is sensor.heatmaster_office_temperature", () => {
+        expect(config.components.temperature.default_entity_id).toBe(
+          "sensor.heatmaster_office_temperature",
         );
-        expect(config.device.suggested_area).toBe("Upstairs");
+      });
+
+      it('the device name and suggested_area are "Кабинет"', () => {
+        expect(config.device.name).toBe("Кабинет");
+        expect(config.device.suggested_area).toBe("Кабинет");
       });
     });
 
-    describe("With a room without one", () => {
-      it("there is no suggested_area key", () => {
-        const config = parse(
-          configMessages(view(), OPTIONS).get(roomConfigTopic("homeassistant", "a")),
+    describe("With a listed room that is not managed", () => {
+      it("it has no device", () => {
+        const state = view({ rooms: [room("a"), room("b", { managed: false })] });
+        expect([...configMessages(state, OPTIONS).keys()]).toEqual([
+          systemConfigTopic("homeassistant"),
+          roomConfigTopic("homeassistant", "a"),
+        ]);
+        expect(stateMessages(state).has(roomStateTopic("b"))).toBe(false);
+      });
+    });
+
+    describe("When the area is renamed", () => {
+      it("the device name changes and every id stays", () => {
+        const before = parse(
+          configMessages(view({ rooms: [room("office", { name: "Office" })] }), OPTIONS).get(
+            roomConfigTopic("homeassistant", "office"),
+          ),
         );
-        expect(Object.hasOwn(config.device, "suggested_area")).toBe(false);
+        const after = parse(
+          configMessages(view({ rooms: [room("office", { name: "Study" })] }), OPTIONS).get(
+            roomConfigTopic("homeassistant", "office"),
+          ),
+        );
+        expect([before.device.name, after.device.name]).toEqual(["Office", "Study"]);
+        const ids = (config: Config): unknown => ({
+          identifiers: config.device.identifiers,
+          components: Object.fromEntries(
+            Object.entries<Config>(config.components).map(([key, c]) => [
+              key,
+              [c.unique_id, c.default_entity_id, c.state_topic],
+            ]),
+          ),
+        });
+        expect(ids(after)).toEqual(ids(before));
       });
     });
 

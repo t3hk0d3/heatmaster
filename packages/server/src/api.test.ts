@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { ChangeRefused, ConfigError, EMPTY_CONFIG } from "@heatmaster/core";
+import { ChangeRefused, ConfigError, EMPTY_CONFIG, FRESH_STORED } from "@heatmaster/core";
 import type { ApiError, ChangePlan, EventMessage, PlanView, StateView } from "@heatmaster/core";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { startFakeZ2m, type FakeZ2m } from "../test/fake-z2m.ts";
 import { createManualClock } from "../test/manual-clock.ts";
+import { createStubHaLink } from "../test/stub-ha-link.ts";
 import {
   EVENTS_BUFFER_LIMIT,
   buildApi,
@@ -34,6 +35,8 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
   return {
     revision: 2,
     configState: "ok",
+    house: "live",
+    houseFrozenReason: undefined,
     ledgerReadable: true,
     originalsCopyRecords: 0,
     held: false,
@@ -41,6 +44,9 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
     timeZone: "Europe/Amsterdam",
     tickedAt: 1,
     rooms: [],
+    unusedEntries: [],
+    haChanges: [],
+    upgrade: undefined,
     problems: [],
     memberships: {},
     devices: [],
@@ -55,9 +61,9 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
 function planOf(revision = 3): ChangePlan {
   return {
     stored: {
+      ...FRESH_STORED,
       config: { ...EMPTY_CONFIG, settings: { ...EMPTY_CONFIG.settings, holdWrites: true } },
       revision,
-      releasing: new Map(),
     },
     ledger: undefined,
     effects: [],
@@ -68,7 +74,7 @@ function planOf(revision = 3): ChangePlan {
   };
 }
 
-const DOCUMENT = { version: 2, settings: { timezone: "Europe/Amsterdam" }, rooms: [] };
+const DOCUMENT = { version: 3, settings: { timezone: "Europe/Amsterdam" }, rooms: {} };
 
 type Stub = Readonly<{
   runtime: ApiRuntime;
@@ -518,9 +524,9 @@ describe("api", () => {
   describe("GET /api/config", () => {
     describe("With a stored config", () => {
       const config = {
-        version: 2,
+        version: 3,
         settings: { timezone: "Europe/Amsterdam", hold_writes: false },
-        rooms: [{ id: "living", name: "Living", valves: [{ id: VALVE }] }],
+        rooms: { living: { sensors: [{ ref: "ha:sensor.living" }] } },
       };
 
       it("answers the revision, the document and its YAML text", async () => {
@@ -569,9 +575,9 @@ describe("api", () => {
       });
     });
 
-    describe("With a 21:00 set point and a room named off", () => {
+    describe("With a 21:00 set point and a room on the schedule off", () => {
       const config = {
-        rooms: [{ id: "off", name: "off" }],
+        rooms: { office: { schedule: "off" } },
         schedules: [{ week: [{ days: ["mon"], temperature: { "21:00": 20 } }] }],
       };
 
@@ -626,7 +632,7 @@ describe("api", () => {
     describe("With the same document as YAML text", () => {
       it("preview receives an equal document", async () => {
         const { app, stub: runtime } = await rig();
-        const yaml = "version: 2\nsettings:\n  timezone: Europe/Amsterdam\nrooms: []\n";
+        const yaml = "version: 3\nsettings:\n  timezone: Europe/Amsterdam\nrooms: {}\n";
         await post(app, "/api/config/preview", { yaml });
         expect(runtime.preview.mock.calls[0]?.[0]).toEqual(DOCUMENT);
       });
@@ -1262,7 +1268,7 @@ describe("api", () => {
     };
 
     const document = {
-      version: 2,
+      version: 3,
       settings: { hold_writes: true, timezone: "Europe/Amsterdam" },
       schedules: [
         {
@@ -1271,15 +1277,8 @@ describe("api", () => {
           week: [{ days: "all", temperature: { "00:00": 16, "07:00": 20 } }],
         },
       ],
-      rooms: [
-        {
-          id: "living",
-          name: "Living",
-          schedule_id: "main",
-          valves: [{ id: `z2m:${IEEE}` }],
-          sensors: [],
-        },
-      ],
+      default_schedule: "main",
+      rooms: { living: {} },
     };
 
     const state = async (): Promise<StateView> =>
@@ -1297,12 +1296,20 @@ describe("api", () => {
         { url: fake.url, username: undefined, password: undefined, clientId: undefined },
         clock,
       );
+      // Home Assistant puts the valve's device in the area living.
+      const ha = createStubHaLink();
+      ha.setSnapshot({
+        areas: new Map([["living", { name: "Living", labels: [] }]]),
+        valveAreas: new Map([[`z2m:${IEEE}`, "living"]]),
+        entities: new Map(),
+        labels: new Map(),
+      });
       const runtime = createRuntime({
         configStore: createConfigStore(dataDir, clock),
         ledgerStore: createLedgerStore({ dataDir, publicDir }, clock, "test"),
         pacingStore: createPacingStore(dataDir),
         transports: buildTransports(mqtt, { baseTopic: "zigbee2mqtt" }),
-        ha: undefined,
+        ha,
         clock,
         processTimeZone: "Europe/Amsterdam",
         log: { info: () => undefined, warn: () => undefined, error: () => undefined },
@@ -1340,10 +1347,12 @@ describe("api", () => {
     });
 
     describe("With one TRVZB on the fake bridge that has reported", () => {
-      it("GET /api/state lists it with supported true and no roomId", async () => {
-        const valve = (await state()).valves.find((v) => v.valveId === `z2m:${IEEE}`);
-        expect(valve).toMatchObject({ supported: true, name: "living/valve" });
-        expect(Object.hasOwn(valve ?? {}, "roomId")).toBe(false);
+      it("GET /api/state lists it with supported true, in its area's room that is not managed yet, and no membership", async () => {
+        const current = await state();
+        const valve = current.valves.find((v) => v.valveId === `z2m:${IEEE}`);
+        expect(valve).toMatchObject({ supported: true, name: "living/valve", roomId: "living" });
+        expect(Object.hasOwn(valve ?? {}, "membership")).toBe(false);
+        expect(current.rooms).toMatchObject([{ roomId: "living", managed: false }]);
       });
 
       it("POST /api/config/preview with a room for it answers one joining valve and its planned writes", async () => {
@@ -1353,6 +1362,18 @@ describe("api", () => {
         expect(planned.applied).toBe(false);
         expect(planned.joining.map((j) => j.valveId)).toEqual([`z2m:${IEEE}`]);
         expect(planned.writes.length).toBeGreaterThan(0);
+      });
+
+      it("POST /api/config/preview with a version 2 document answers 400 with the issue version_unsupported at version", async () => {
+        const response = await post(world.app, "/api/config/preview", {
+          config: { ...document, version: 2 },
+        });
+        expect(response.statusCode).toBe(400);
+        const error = errorOf(response);
+        expect(error.code).toBe("config_invalid");
+        expect(error.data.issues).toEqual([
+          expect.objectContaining({ code: "version_unsupported", path: "version" }),
+        ]);
       });
 
       it("POST /api/config/preview with a version 1 document is refused with the version issue", async () => {
@@ -1387,17 +1408,18 @@ describe("api", () => {
         const exported = response.json<{ revision: number; config: Record<string, unknown> }>();
         expect(exported.revision).toBe(1);
         expect(exported.config).toMatchObject({
+          version: 3,
           settings: { timezone: "Europe/Amsterdam" },
-          rooms: [{ id: "living", name: "Living", valves: [{ id: `z2m:${IEEE}` }] }],
           schedules: [{ id: "main", name: "Main", week: document.schedules[0]?.week }],
+          default_schedule: "main",
         });
         expect(response.body).not.toContain("releasing");
       });
 
-      it("GET /api/config shows the week as blocks of days under version 2 in the YAML text", async () => {
+      it("GET /api/config shows the week as blocks of days under version 3 in the YAML text", async () => {
         const response = await world.app.inject({ method: "GET", url: "/api/config" });
         const { yaml } = response.json<{ yaml: string }>();
-        expect(yaml).toContain("version: 2");
+        expect(yaml).toContain("version: 3");
         expect(yaml).toContain("days: all");
         expect(yaml).toContain('"07:00": 20');
         expect(yaml).not.toContain("default_week");

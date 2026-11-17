@@ -92,16 +92,16 @@ function template(key: string): string {
 function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOptions): string {
   const stateTopic = roomStateTopic(room.roomId);
   const id = `heatmaster_room_${room.roomId}`;
-  const device: Record<string, unknown> = {
-    identifiers: [id],
-    name: room.name,
-    manufacturer: "Heatmaster",
-    model: texts.roomModel,
-    via_device: DISCOVERY_NODE,
-  };
-  if (room.areaName !== undefined) device.suggested_area = room.areaName;
   return JSON.stringify({
-    device,
+    device: {
+      identifiers: [id],
+      name: room.name,
+      manufacturer: "Heatmaster",
+      model: texts.roomModel,
+      via_device: DISCOVERY_NODE,
+      // The room is the Home Assistant area of the same name.
+      suggested_area: room.name,
+    },
     origin: origin(options),
     availability_topic: STATUS_TOPIC,
     payload_available: STATUS_ONLINE,
@@ -209,7 +209,16 @@ function systemConfig(texts: EntityTexts, options: DiscoveryOptions): string {
   });
 }
 
-/** Topic → JSON text: the system device first, then the rooms in order (only when the config is ok). */
+/** The rooms Heatmaster manages: only they have a device. */
+function managedRooms(state: StateView): readonly RoomView[] {
+  return state.rooms.filter((room) => room.managed);
+}
+
+/**
+ * Topic → JSON text: the system device first, then the managed rooms in order (only when the
+ * config is ok). A room's ids come from its room id, the Home Assistant area id; its name is the
+ * area's name.
+ */
 export function configMessages(
   state: StateView,
   options: DiscoveryOptions,
@@ -218,7 +227,7 @@ export function configMessages(
   const messages = new Map<string, string>();
   messages.set(systemConfigTopic(options.prefix), systemConfig(texts, options));
   if (state.configState !== "ok") return messages;
-  for (const room of state.rooms) {
+  for (const room of managedRooms(state)) {
     messages.set(roomConfigTopic(options.prefix, room.roomId), roomConfig(room, texts, options));
   }
   return messages;
@@ -238,10 +247,10 @@ function problemEntry(problem: ProblemView): ProblemView {
   };
 }
 
-/** Topic → JSON text: the rooms in order, then the system state, then the problems. */
+/** Topic → JSON text: the managed rooms in order, then the system state, then the problems. */
 export function stateMessages(state: StateView): ReadonlyMap<string, string> {
   const messages = new Map<string, string>();
-  for (const room of state.rooms) {
+  for (const room of managedRooms(state)) {
     messages.set(
       roomStateTopic(room.roomId),
       JSON.stringify({
@@ -338,7 +347,7 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
       await publish(topic, text);
     }
     if (!ok) return;
-    const present = new Set(state.rooms.map((room) => room.roomId));
+    const present = new Set(managedRooms(state).map((room) => room.roomId));
     for (const topic of [...knownRooms]) {
       const id = roomIdOf(topic);
       if (id === undefined || present.has(id)) continue;

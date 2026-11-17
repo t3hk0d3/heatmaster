@@ -1,4 +1,4 @@
-import type { SensorInfo } from "@heatmaster/core";
+import type { HaSnapshot, SensorInfo } from "@heatmaster/core";
 import type { HaEvent, HaHouse, HaLink, HaLinkState, HaSensor } from "../src/ha-link.ts";
 
 export type StubHaLink = HaLink &
@@ -11,6 +11,10 @@ export type StubHaLink = HaLink &
     setSensorInfo(entityId: string, info: SensorInfo): void;
     setEntityName(entityId: string, name: string): void;
     setAreaName(areaId: string, name: string): void;
+    /** What `snapshot()` answers from now on. */
+    setSnapshot(snapshot: HaSnapshot | undefined): void;
+    /** How many times `snapshot()` was called. */
+    snapshotReads(): number;
     emit(event: HaEvent): void;
     /** Every set given to `watch`, oldest first. */
     watched(): readonly ReadonlySet<string>[];
@@ -24,11 +28,23 @@ export type StubHaLink = HaLink &
 
 const UNKNOWN: SensorInfo = { exists: false, isTemperature: false, onValve: false };
 
-/** A new stub is up and ready, with no house, no sensors and no names. */
+export const EMPTY_HA_SNAPSHOT: HaSnapshot = {
+  areas: new Map(),
+  valveAreas: new Map(),
+  entities: new Map(),
+  labels: new Map(),
+};
+
+/**
+ * A new stub is up and ready, with no house, no sensors, no names and an empty snapshot. Like a
+ * link whose full load is done, its `start` sends `link_up` at once while it is up and ready.
+ */
 export function createStubHaLink(): StubHaLink {
   let state: HaLinkState = "up";
   let ready: boolean | undefined;
   let house: HaHouse | undefined;
+  let snapshot: HaSnapshot | undefined = EMPTY_HA_SNAPSHOT;
+  let snapshotReads = 0;
   let listener: ((event: HaEvent) => void) | undefined;
   const sensors = new Map<string, HaSensor>();
   const infos = new Map<string, SensorInfo>();
@@ -44,6 +60,7 @@ export function createStubHaLink(): StubHaLink {
     start(next) {
       started = true;
       listener = next;
+      if (state === "up" && (ready ?? true)) next({ kind: "link_up" });
     },
     stop() {
       stopped = true;
@@ -65,7 +82,10 @@ export function createStubHaLink(): StubHaLink {
     },
     entityName: (entityId) => names.get(entityId),
     areaName: (areaId) => areas.get(areaId),
-    snapshot: () => undefined,
+    snapshot() {
+      snapshotReads += 1;
+      return snapshot;
+    },
     setState(next) {
       state = next;
     },
@@ -88,6 +108,10 @@ export function createStubHaLink(): StubHaLink {
     setAreaName(areaId, name) {
       areas.set(areaId, name);
     },
+    setSnapshot(next) {
+      snapshot = next;
+    },
+    snapshotReads: () => snapshotReads,
     emit(event) {
       listener?.(event);
     },

@@ -129,6 +129,7 @@ describe("ConfigStore", () => {
           state: "unreadable",
           stored: undefined,
           convertedFrom: undefined,
+          reason: expect.any(String) as unknown,
         });
       });
     });
@@ -242,6 +243,15 @@ describe("ConfigStore", () => {
         expect(loaded.convertedFrom).toBeUndefined();
         expect(readFileSync(w.file("config.json"), "utf8")).toBe(text);
       });
+
+      it("reason names the failure, for the log", async () => {
+        const w = world();
+        const text = fixtureText("house-config.v2.json").replaceAll('"default"', '"Not Valid!"');
+        put(w.file("config.json"), text);
+        const { reason } = await w.config.load();
+        expect(typeof reason).toBe("string");
+        expect(reason).not.toBe("");
+      });
     });
 
     describe("With a version 4 file", () => {
@@ -281,6 +291,31 @@ describe("ConfigStore", () => {
     });
 
     describe("After loading a v2 file", () => {
+      async function convertedAndSaved(w: ReturnType<typeof world>): Promise<void> {
+        put(w.file("config.json"), fixtureText("house-config.v2.json"));
+        const { stored } = await w.config.load();
+        if (stored === undefined) throw new Error("the fixture loads");
+        await w.config.save(stored);
+      }
+
+      it("config.v2.json beside it holds the original file, byte for byte", async () => {
+        const w = world();
+        await convertedAndSaved(w);
+        expect(readFileSync(w.file("config.v2.json"), "utf8")).toBe(
+          fixtureText("house-config.v2.json"),
+        );
+      });
+
+      it("a second save leaves config.v2.json as it is", async () => {
+        const w = world();
+        await convertedAndSaved(w);
+        await w.config.save({ ...convertedStored(), revision: 9 });
+        expect(readFileSync(w.file("config.v2.json"), "utf8")).toBe(
+          fixtureText("house-config.v2.json"),
+        );
+        expect(names(w.dataDir)).toEqual(["config.json", "config.v2.json"]);
+      });
+
       it("the written file has version 3 and the converted data", async () => {
         const w = world();
         put(w.file("config.json"), fixtureText("house-config.v2.json"));
@@ -291,6 +326,61 @@ describe("ConfigStore", () => {
         expect(file.version).toBe(3);
         expect(file.data).toEqual(storedToRaw(convertedStored()));
         expect(storedFromRaw(file.data)).toEqual(convertedStored());
+      });
+    });
+
+    describe("After loading a v2 file, with a config.v2.json already there", () => {
+      it("that file is not overwritten", async () => {
+        const w = world();
+        put(w.file("config.v2.json"), "an older copy");
+        put(w.file("config.json"), fixtureText("house-config.v2.json"));
+        const { stored } = await w.config.load();
+        if (stored === undefined) throw new Error("the fixture loads");
+        await w.config.save(stored);
+        expect(readFileSync(w.file("config.v2.json"), "utf8")).toBe("an older copy");
+        expect(jsonOf(w.file("config.json")).version).toBe(3);
+      });
+    });
+
+    describe("After loading a v2 file, with the copy failing", () => {
+      it("the failure is logged at error level and the converted file is saved", async () => {
+        const w = world();
+        const errors: string[] = [];
+        const store = createConfigStore(w.dataDir, w.clock, {
+          error: (message) => errors.push(message),
+        });
+        // A directory where the copy's temporary file goes: opening it for writing fails.
+        mkdirSync(w.file("config.v2.json.tmp"));
+        put(w.file("config.json"), fixtureText("house-config.v2.json"));
+        const { stored } = await store.load();
+        if (stored === undefined) throw new Error("the fixture loads");
+        await store.save(stored);
+        expect(errors).toHaveLength(1);
+        expect(jsonOf(w.file("config.json")).version).toBe(3);
+        expect(existsSync(w.file("config.v2.json"))).toBe(false);
+      });
+    });
+
+    describe("After loading a v1 file", () => {
+      it("config.v1.json beside it holds the original file", async () => {
+        const w = world();
+        put(w.file("config.json"), fixtureText("house-config.v1.json"));
+        const { stored } = await w.config.load();
+        if (stored === undefined) throw new Error("the fixture loads");
+        await w.config.save(stored);
+        expect(readFileSync(w.file("config.v1.json"), "utf8")).toBe(
+          fixtureText("house-config.v1.json"),
+        );
+      });
+    });
+
+    describe("After loading a v3 file", () => {
+      it("no copy is written", async () => {
+        const w = world();
+        put(w.file("config.json"), fixtureText("house-config.v3.json"));
+        await w.config.load();
+        await w.config.save(sampleStored());
+        expect(names(w.dataDir)).toEqual(["config.json"]);
       });
     });
 

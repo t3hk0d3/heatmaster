@@ -7,6 +7,7 @@ import {
   ConfigError,
   EMPTY_CONFIG,
   EMPTY_LEDGER,
+  FRESH_STORED,
   REFILL_MS,
   configToRaw,
   findProfile,
@@ -15,8 +16,12 @@ import {
   validateConfig,
 } from "@heatmaster/core";
 import type {
+  AreaMembership,
+  AreaRoom,
   Binding,
   Effect,
+  HaArea,
+  HaSnapshot,
   Ledger,
   RawConfig,
   StoredConfig,
@@ -32,6 +37,7 @@ import {
   CLOCK_JUMP_MS,
   DIRECT_ASK_SPACING_MS,
   EVENT_DEBOUNCE_MS,
+  HA_SETTLE_MS,
   TICK_INTERVAL_MS,
   createRuntime,
   executeEffects,
@@ -86,6 +92,10 @@ const B = "z2m:0xb2";
 const C = "z2m:0xc3";
 const S = "z2m:0x5e";
 const ROOM_SENSOR = "ha:sensor.living";
+const V2_FIXTURE = path.resolve(
+  import.meta.dirname,
+  "../test/fixtures/stores/house-config.v2.json",
+);
 const TRVZB = findProfile("TRVZB", "z2m");
 if (TRVZB === undefined) throw new Error("no TRVZB profile");
 const TRVZB_BINDING = TRVZB.binding;
@@ -111,8 +121,45 @@ type RoomSpec = Readonly<{
   id?: string;
   valves?: readonly string[];
   sensors?: readonly string[];
-  areaId?: string;
 }>;
+
+/** Area id to the valves Home Assistant puts in it, in any order. */
+type House = Readonly<Record<string, readonly string[]>>;
+
+/** The house of `raw()` without options: valve A in the area `living`. */
+const DEFAULT_HOUSE: House = { living: [A] };
+
+/**
+ * The house each document built by `raw` was written for: its room specs' areas and valves. A
+ * version 3 document names no valve, so the rig puts them in Home Assistant (and in the saved
+ * membership) from here.
+ */
+const housesOf = new WeakMap<RawConfig, House>();
+
+function areaName(areaId: string): string {
+  return `Area ${areaId}`;
+}
+
+/** What Home Assistant says about `house`: one area per key, each valve's device in its area. */
+function haSnapshot(house: House): HaSnapshot {
+  const areas = new Map<string, HaArea>();
+  const valveAreas = new Map<string, string | null>();
+  for (const [areaId, valves] of Object.entries(house)) {
+    areas.set(areaId, { name: areaName(areaId), labels: [] });
+    for (const valveId of valves) valveAreas.set(valveId, areaId);
+  }
+  return { areas, valveAreas, entities: new Map(), labels: new Map() };
+}
+
+/** The saved membership of `house`: its areas that hold a valve. */
+function membershipOf(house: House): AreaMembership {
+  const rooms = new Map<string, AreaRoom>();
+  for (const areaId of Object.keys(house).sort()) {
+    const valveIds = [...(house[areaId] ?? [])].sort();
+    if (valveIds.length > 0) rooms.set(areaId, { name: areaName(areaId), valveIds });
+  }
+  return { rooms, ignored: [] };
+}
 
 function week(temperature = 20): NonNullable<RawConfig["schedules"]> {
   const day = { "00:00": 16, "07:00": temperature };
@@ -125,31 +172,46 @@ function week(temperature = 20): NonNullable<RawConfig["schedules"]> {
   ];
 }
 
+/**
+ * A version 3 document with schedule `main` as the default and one entry per room spec (`living`,
+ * then `room1`, `room2`… unless named), holding the spec's sensors. Its house puts each spec's
+ * valves (A unless given) in the spec's area.
+ */
 function raw(
   options: Readonly<{
     rooms?: readonly RoomSpec[];
     hold?: boolean;
     timezone?: string | null;
     temperature?: number;
+    /** False: a document without schedules. */
+    schedules?: boolean;
   }> = {},
 ): RawConfig {
   const timezone = options.timezone === undefined ? ZONE : options.timezone;
-  return {
-    version: 2,
+  const specs = (options.rooms ?? [{}]).map((room, i) => ({
+    ...room,
+    id: room.id ?? (i === 0 ? "living" : `room${String(i)}`),
+  }));
+  const document: RawConfig = {
+    version: 3,
     settings: {
       hold_writes: options.hold ?? false,
       ...(timezone === null ? {} : { timezone }),
     },
-    schedules: week(options.temperature),
-    rooms: (options.rooms ?? [{}]).map((room, i) => ({
-      id: room.id ?? (i === 0 ? "living" : `room${String(i)}`),
-      name: room.id ?? `Room ${String(i)}`,
-      ...(room.areaId === undefined ? {} : { area_id: room.areaId }),
-      schedule_id: "main",
-      valves: (room.valves ?? [A]).map((id) => ({ id })),
-      sensors: (room.sensors ?? []).map((ref) => ({ ref })),
-    })),
+    ...(options.schedules === false
+      ? {}
+      : { schedules: week(options.temperature), default_schedule: "main" }),
+    rooms: Object.fromEntries(
+      specs.map((room) => [
+        room.id,
+        room.sensors === undefined || room.sensors.length === 0
+          ? {}
+          : { sensors: room.sensors.map((ref) => ({ ref })) },
+      ]),
+    ),
   };
+  housesOf.set(document, Object.fromEntries(specs.map((room) => [room.id, room.valves ?? [A]])));
+  return document;
 }
 
 function record(valveId: string, source: "internal" | "external" = "internal"): ValveRecord {
@@ -186,6 +248,10 @@ type Seed = Readonly<{
   /** A pacing file: valve id to bucketFullAt, or one that cannot be read. */
   pacing?: Readonly<Record<string, number>> | "unreadable";
   config?: RawConfig | "unreadable";
+  /** The saved membership: by default the house of `config`; null for none. */
+  membership?: House | null;
+  /** The text of the config file, written as it is (in place of `config`). */
+  configFile?: string;
   revision?: number;
   releasing?: Readonly<Record<string, number>>;
   ledger?: readonly ValveRecord[] | "unreadable";
@@ -193,17 +259,23 @@ type Seed = Readonly<{
 }>;
 
 function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
-  if (seed.config === "unreadable") {
+  if (seed.configFile !== undefined) {
+    writeFileSync(path.join(dataDir, "config.json"), seed.configFile);
+  } else if (seed.config === "unreadable") {
     writeFileSync(path.join(dataDir, "config.json"), "{ not json");
   } else if (seed.config !== undefined) {
+    const house = seed.membership === undefined ? housesOf.get(seed.config) : seed.membership;
     const stored: StoredConfig = {
+      ...FRESH_STORED,
       config: validateConfig(seed.config),
       revision: seed.revision ?? 1,
       releasing: new Map(Object.entries(seed.releasing ?? {})),
+      membership: house === null || house === undefined ? undefined : membershipOf(house),
+      sensorImport: "done",
     };
     writeFileSync(
       path.join(dataDir, "config.json"),
-      JSON.stringify({ version: 2, data: storedToRaw(stored) }),
+      JSON.stringify({ version: 3, data: storedToRaw(stored) }),
     );
   }
   if (seed.ledger === "unreadable") {
@@ -337,6 +409,12 @@ function wrapLedger(store: LedgerStore, control: StoreControl): LedgerStore {
 
 // ---- a runtime under test ------------------------------------------------------------------------
 
+type Logged = Readonly<{
+  level: "info" | "warn" | "error";
+  message: string;
+  data: Readonly<Record<string, unknown>> | undefined;
+}>;
+
 type Rig = Readonly<{
   rt: HeatmasterRuntime;
   clock: ManualClock;
@@ -346,6 +424,8 @@ type Rig = Readonly<{
   dataDir: string;
   publicDir: string;
   logs: string[];
+  /** Every log line with its level and data. */
+  logged: Logged[];
   snapshots: Snapshot[];
   /** Moves both clocks and waits until the runtime has settled. */
   advance(ms: number): Promise<void>;
@@ -373,6 +453,10 @@ async function boot(
     gate?: Promise<void>;
     /** A restart: the same folders and clock as this earlier rig, which is stopped first. */
     after?: Rig;
+    /** Home Assistant's areas: by default the house of the seed's config, else DEFAULT_HOUSE. */
+    house?: House;
+    /** Home Assistant's snapshot, in place of the one of `house`. */
+    snapshot?: HaSnapshot;
   }> = {},
 ): Promise<Rig> {
   if (options.after !== undefined) await options.after.rt.stop();
@@ -394,12 +478,21 @@ async function boot(
   };
   z2m.setDevices(options.devices ?? [trvzb(A)]);
   const ha = options.ha === null ? undefined : (options.ha ?? createStubHaLink());
+  const seeded = options.seed?.config;
+  const house =
+    options.house ??
+    (seeded === undefined || seeded === "unreadable" ? undefined : housesOf.get(seeded)) ??
+    DEFAULT_HOUSE;
+  ha?.setSnapshot(options.snapshot ?? haSnapshot(house));
   const logs: string[] = [];
-  const log: RuntimeLog = {
-    info: (message) => logs.push(`info ${message}`),
-    warn: (message) => logs.push(`warn ${message}`),
-    error: (message) => logs.push(`error ${message}`),
-  };
+  const logged: Logged[] = [];
+  const logAt =
+    (level: Logged["level"]) =>
+    (message: string, data?: Readonly<Record<string, unknown>>): void => {
+      logs.push(`${level} ${message}`);
+      logged.push({ level, message, data });
+    };
+  const log: RuntimeLog = { info: logAt("info"), warn: logAt("warn"), error: logAt("error") };
   const rt = createRuntime({
     configStore: wrapConfig(createConfigStore(dataDir, clock), stores),
     ledgerStore: wrapLedger(createLedgerStore({ dataDir, publicDir }, clock, "test"), stores),
@@ -430,6 +523,7 @@ async function boot(
     dataDir,
     publicDir,
     logs,
+    logged,
     snapshots,
     async advance(ms) {
       // In steps of at most one tick interval, so every timer's tick runs at its own time.
@@ -551,7 +645,7 @@ type ExecRig = Readonly<{
   overwrite: boolean[];
 }>;
 
-const STORED: StoredConfig = { config: EMPTY_CONFIG, revision: 1, releasing: new Map() };
+const STORED: StoredConfig = { ...FRESH_STORED, config: EMPTY_CONFIG, revision: 1 };
 
 function execRig(
   options: Readonly<{
@@ -577,7 +671,13 @@ function execRig(
     order.push(`end ${name}`);
   }
   const configStore: ConfigStore = {
-    load: () => Promise.resolve({ state: "empty", stored: undefined }),
+    load: () =>
+      Promise.resolve({
+        state: "empty",
+        stored: undefined,
+        convertedFrom: undefined,
+        reason: undefined,
+      }),
     async save(_stored, overwriteUnreadable) {
       overwrite.push(overwriteUnreadable === true);
       await step("saveConfig");
@@ -987,10 +1087,254 @@ describe("runtime", () => {
     });
   });
 
+  describe("house", () => {
+    const roomIds = (rig: Rig): string[] => rig.rt.snapshot().rooms.map((room) => room.roomId);
+    const valvesOf = (rig: Rig, roomId: string): readonly string[] | undefined =>
+      rig.rt.snapshot().rooms.find((room) => room.roomId === roomId)?.valveIds;
+
+    describe("Without a Home Assistant link", () => {
+      it("start resolves", async () => {
+        const rig = await boot({ ha: null, seed: managedSeed([A]) });
+        expect(rig.rt.snapshot().tickedAt).toBe(T);
+      });
+
+      it("the snapshot's house is unlinked", async () => {
+        const rig = await boot({ ha: null, seed: managedSeed([A]) });
+        expect(rig.rt.snapshot().house).toBe("unlinked");
+      });
+
+      it("rooms lists the stored membership's rooms, none of them managed (none are listed when no membership is saved)", async () => {
+        const rig = await boot({ ha: null, seed: managedSeed([A]) });
+        expect(rig.rt.snapshot().rooms.map((room) => [room.roomId, room.managed])).toEqual([
+          ["living", false],
+        ]);
+        const bare = await boot({ ha: null, seed: { ...managedSeed([A]), membership: null } });
+        expect(bare.rt.snapshot().rooms).toEqual([]);
+      });
+
+      it("every recorded valve is frozen", async () => {
+        const rig = await boot({
+          ha: null,
+          devices: [trvzb(A), trvzb(B)],
+          seed: { config: raw({ rooms: [{ valves: [A] }] }), ledger: [record(A), record(B)] },
+        });
+        expect(rig.rt.snapshot().memberships).toEqual({ [A]: "frozen", [B]: "frozen" });
+      });
+    });
+
+    describe("Before the link has loaded", () => {
+      async function loading(): Promise<Rig> {
+        const ha = createStubHaLink();
+        ha.setState("connecting");
+        return boot({ ha, seed: managedSeed([A]), house: { office: [A] } });
+      }
+
+      it("rooms come from the stored membership and house is frozen", async () => {
+        const rig = await loading();
+        expect(roomIds(rig)).toEqual(["living"]);
+        expect(rig.rt.snapshot().house).toBe("frozen");
+      });
+
+      it("frozenReason is not_loaded", async () => {
+        const rig = await loading();
+        expect(rig.rt.snapshot().houseFrozenReason).toBe("not_loaded");
+      });
+    });
+
+    describe("After the first load", () => {
+      async function loaded(): Promise<Rig> {
+        const ha = createStubHaLink();
+        ha.setState("connecting");
+        const rig = await boot({ ha, seed: managedSeed([A]), house: { office: [A] } });
+        ha.setState("up");
+        ha.emit({ kind: "link_up" });
+        await vi.waitFor(() => {
+          expect(rig.rt.snapshot().house).toBe("live");
+        });
+        return rig;
+      }
+
+      it("rooms come from Home Assistant at once and house is live", async () => {
+        const rig = await loaded();
+        expect(roomIds(rig)).toEqual(["office"]);
+        expect(rig.rt.snapshot().house).toBe("live");
+        expect(rig.clock.nowMs()).toBe(T);
+      });
+
+      it("frozenReason is absent", async () => {
+        const rig = await loaded();
+        expect(rig.rt.snapshot().houseFrozenReason).toBeUndefined();
+      });
+    });
+
+    describe("When a device moves to another area", () => {
+      async function moved(): Promise<Rig> {
+        const rig = await boot({ seed: managedSeed([A]) });
+        rig.ha?.setSnapshot(haSnapshot({ office: [A] }));
+        rig.ha?.emit({ kind: "registries_changed" });
+        return rig;
+      }
+
+      it("rooms are unchanged until HA_SETTLE_MS has passed without another registry change", async () => {
+        const rig = await moved();
+        await rig.advance(3000);
+        rig.ha?.emit({ kind: "registries_changed" });
+        await rig.advance(HA_SETTLE_MS - 1);
+        expect(roomIds(rig)).toEqual(["living"]);
+        await rig.advance(1);
+        expect(roomIds(rig)).toEqual(["office"]);
+      });
+
+      it("after that the valve is in the new room", async () => {
+        const rig = await moved();
+        await rig.advance(HA_SETTLE_MS);
+        expect(valvesOf(rig, "office")).toEqual([A]);
+        expect(valvesOf(rig, "living")).toBeUndefined();
+      });
+    });
+
+    describe("With three registries_changed 2 s apart", () => {
+      it("the membership is taken once, HA_SETTLE_MS after the last", async () => {
+        const ha = createStubHaLink();
+        const rig = await boot({ ha, seed: managedSeed([A]) });
+        const before = ha.snapshotReads();
+        for (const areaId of ["office", "hall", "kitchen"]) {
+          if (areaId !== "office") await rig.advance(2000);
+          ha.setSnapshot(haSnapshot({ [areaId]: [A] }));
+          ha.emit({ kind: "registries_changed" });
+        }
+        await rig.advance(HA_SETTLE_MS - 1);
+        expect(ha.snapshotReads()).toBe(before);
+        await rig.advance(1);
+        expect(ha.snapshotReads()).toBe(before + 1);
+        expect(roomIds(rig)).toEqual(["kitchen"]);
+      });
+    });
+
+    describe("When the link goes down", () => {
+      async function down(): Promise<Rig> {
+        const rig = await boot({ seed: managedSeed([A]), house: { office: [A] } });
+        rig.ha?.setReady(true);
+        rig.ha?.setState("down");
+        rig.ha?.emit({ kind: "link_down" });
+        return rig;
+      }
+
+      it("rooms are those of the stored membership and house is frozen", async () => {
+        const rig = await down();
+        expect(roomIds(rig)).toEqual(["living"]);
+        expect(rig.rt.snapshot().house).toBe("frozen");
+      });
+
+      it("frozenReason is link_down", async () => {
+        const rig = await down();
+        expect(rig.rt.snapshot().houseFrozenReason).toBe("link_down");
+      });
+
+      it("no settle runs while it is down", async () => {
+        const ha = createStubHaLink();
+        const rig = await boot({ ha, seed: managedSeed([A]) });
+        ha.emit({ kind: "registries_changed" });
+        await rig.advance(1000);
+        ha.setReady(true);
+        ha.setState("down");
+        ha.emit({ kind: "link_down" });
+        const before = ha.snapshotReads();
+        await rig.advance(HA_SETTLE_MS);
+        ha.emit({ kind: "registries_changed" });
+        await rig.advance(HA_SETTLE_MS);
+        expect(ha.snapshotReads()).toBe(before);
+      });
+    });
+
+    describe("With Home Assistant loaded before Zigbee2MQTT has listed a recorded valve", () => {
+      it("the valve stays in its room", async () => {
+        const rig = await boot({ devices: [], seed: managedSeed([A]) });
+        expect(rig.rt.snapshot().house).toBe("live");
+        expect(valvesOf(rig, "living")).toEqual([A]);
+      });
+    });
+
+    describe("With Home Assistant loaded before Zigbee2MQTT lists a new valve that Home Assistant puts in a room", () => {
+      it("once Zigbee2MQTT lists it, the snapshot lists it in that room, with no settle wait", async () => {
+        const rig = await boot({ seed: managedSeed([A]), house: { living: [A], office: [B] } });
+        expect(roomIds(rig)).toEqual(["living"]);
+        rig.z2m.setDevices([trvzb(A), trvzb(B)]);
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        expect(valvesOf(rig, "office")).toEqual([B]);
+      });
+    });
+
+    describe("On a reconnect, between ha.up() and the link_up handler", () => {
+      it("house is frozen with reason link_down", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        rig.ha?.setReady(true);
+        rig.ha?.setState("down");
+        rig.ha?.emit({ kind: "link_down" });
+        rig.ha?.setState("up");
+        const snapshot = rig.rt.snapshot();
+        expect(snapshot.house).toBe("frozen");
+        expect(snapshot.houseFrozenReason).toBe("link_down");
+      });
+    });
+  });
+
   describe("start", () => {
+    describe("With a config file of version 2", () => {
+      const seed: Seed = { configFile: readFileSync(V2_FIXTURE, "utf8") };
+
+      it("the converted file is saved once", async () => {
+        const rig = await boot({ seed });
+        expect(rig.stores.calls.filter((call) => call === "config.save")).toHaveLength(1);
+        expect(readJson(path.join(rig.dataDir, "config.json")).version).toBe(3);
+      });
+
+      it('"config converted" is logged once', async () => {
+        const rig = await boot({ seed });
+        expect(rig.logged.filter((line) => line.message === "config converted")).toEqual([
+          { level: "info", message: "config converted", data: { fromVersion: 2 } },
+        ]);
+      });
+
+      it("writes are held", async () => {
+        const rig = await boot({ seed });
+        expect(rig.rt.snapshot().held).toBe(true);
+      });
+
+      it("the original file is kept next to it as config.v2.json", async () => {
+        const rig = await boot({ seed });
+        expect(readFileSync(path.join(rig.dataDir, "config.v2.json"), "utf8")).toBe(
+          seed.configFile,
+        );
+      });
+    });
+
+    describe("With a config file of version 3", () => {
+      it("nothing is saved at start", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        expect(rig.stores.calls.filter((call) => call.startsWith("config."))).toEqual([]);
+      });
+    });
+
+    describe("With no ledger file and a stored membership that holds a valve", () => {
+      it("the ledger counts as expected and its absence is handled as plan 1 handles a missing ledger", async () => {
+        const rig = await boot({ seed: { config: raw() } });
+        expect(rig.stores.expected).toEqual([true]);
+        expect(rig.rt.snapshot().ledgerReadable).toBe(false);
+        expect(problemKinds(rig.rt.snapshot())).toContain("ledger_unreadable");
+      });
+    });
+
+    describe("With no ledger file, entries in the config, an empty membership and nothing releasing", () => {
+      it("the ledger does not count as expected", async () => {
+        const rig = await boot({ seed: { config: raw(), membership: {} } });
+        expect(rig.stores.expected).toEqual([false]);
+      });
+    });
+
     describe("With no stored files", () => {
       it("snapshot has configState empty, revision 0, no rooms and no problems", async () => {
-        const rig = await boot();
+        const rig = await boot({ house: {} });
         const snapshot = rig.rt.snapshot();
         expect(snapshot.configState).toBe("empty");
         expect(snapshot.revision).toBe(0);
@@ -1038,6 +1382,27 @@ describe("runtime", () => {
         const snapshot = rig.rt.snapshot();
         expect(snapshot.configState).toBe("unreadable");
         expect(problemKinds(snapshot)).toContain("config_unreadable");
+      });
+
+      it("the reason is logged at error level", async () => {
+        const rig = await boot({ seed: { config: "unreadable" } });
+        expect(rig.logged).toContainEqual({
+          level: "error",
+          message: "the config cannot be read",
+          data: { reason: expect.any(String) as unknown },
+        });
+      });
+    });
+
+    describe("With a version 2 config file that cannot be converted", () => {
+      it("the conversion's error is logged at error level and the page shows config_unreadable", async () => {
+        const v2 = JSON.parse(readFileSync(V2_FIXTURE, "utf8")) as { data: { revision?: unknown } };
+        delete v2.data.revision;
+        const rig = await boot({ seed: { configFile: JSON.stringify(v2) } });
+        const line = rig.logged.find((entry) => entry.message === "the config cannot be read");
+        expect(line?.level).toBe("error");
+        expect(line?.data?.reason).toEqual(expect.any(String));
+        expect(problemKinds(rig.rt.snapshot())).toContain("config_unreadable");
       });
     });
 
@@ -2146,7 +2511,7 @@ describe("runtime", () => {
         const ha = createStubHaLink();
         const rig = await boot({ ha });
         rig.say(A, "a-1");
-        const bad = { ...raw({ rooms: [{ valves: ["bad id"], sensors: [ROOM_SENSOR] }] }) };
+        const bad = { ...raw({ rooms: [{ sensors: [ROOM_SENSOR] }] }), default_schedule: "nope" };
         const error = await rejectionOf(rig.rt.apply(bad, APPLY));
         expect(error).toBeInstanceOf(ConfigError);
         expect(rig.stores.calls).toEqual([]);
@@ -2179,8 +2544,8 @@ describe("runtime", () => {
 
     describe("With two new valves that have sent no message", () => {
       it("the transport received one read for each", async () => {
-        const rig = await boot({ devices: [trvzb(A), trvzb(B)] });
-        await rejectionOf(rig.rt.apply(raw({ rooms: [{ valves: [A, B] }] }), APPLY));
+        const rig = await boot({ devices: [trvzb(A), trvzb(B)], house: { living: [A, B] } });
+        await rejectionOf(rig.rt.apply(raw(), APPLY));
         expect(rig.z2m.sent().map((s) => [s.kind, s.deviceId])).toEqual([
           ["read", A],
           ["read", B],
@@ -2237,16 +2602,18 @@ describe("runtime", () => {
       it("no direct ask is sent", async () => {
         const rig = await boot({
           devices: [trvzb(A), trvzb(B)],
-          seed: { config: raw({ rooms: [{ valves: [A] }] }), ledger: [record(A), record(B)] },
+          house: { living: [A, B] },
+          seed: { ledger: [record(A), record(B)] },
         });
         rig.say(A, "a-1");
         rig.say(B, "b-1");
         const before = rig.z2m.attempts().length;
-        await rig.rt.apply(raw({ rooms: [{ valves: [A] }], temperature: 21 }), APPLY);
+        const plan = await rig.rt.apply(raw(), APPLY);
+        expect(plan.rejoining).toEqual([A, B]);
         expect(rig.stores.sendsAtCall.at(-1)).toBe(before);
-        const plan = await rig.rt.apply(raw({ rooms: [{ valves: [A, B] }] }), APPLY);
-        expect(plan.rejoining).toEqual([B]);
-        expect(rig.stores.sendsAtCall.at(-1)).toBe(rig.stores.sendsAtCall.at(-2));
+        const again = rig.z2m.attempts().length;
+        await rig.rt.apply(raw({ temperature: 21 }), APPLY);
+        expect(rig.stores.sendsAtCall.at(-1)).toBe(again);
       });
     });
 
@@ -2500,6 +2867,13 @@ describe("runtime", () => {
         }
         expect(thrown).toBeInstanceOf(HeatmasterError);
         expect(codeOf(thrown)).toBe("config_unreadable");
+      });
+    });
+
+    describe("Always", () => {
+      it("returns a version 3 document", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        expect(rig.rt.exportConfig().config.version).toBe(3);
       });
     });
   });
@@ -2932,21 +3306,58 @@ describe("runtime", () => {
       });
     });
 
-    describe("With a room that has an area id the Home Assistant link knows", () => {
-      it("the room's areaName is the area's name", async () => {
-        const ha = createStubHaLink();
-        ha.setAreaName("area_living", "Living room");
-        const rig = await boot({
-          ha,
+    describe("With membership {office: [v1], hall: [v2]} and entries for office and attic", () => {
+      async function office(): Promise<Rig> {
+        const house: House = { office: [A], hall: [B] };
+        return boot({
+          devices: [trvzb(A), trvzb(B)],
+          house,
           seed: {
-            config: raw({ rooms: [{ valves: [A], areaId: "area_living" }] }),
-            ledger: [record(A)],
+            config: raw({ rooms: [{ id: "office" }, { id: "attic" }] }),
+            membership: house,
+            ledger: [record(A), record(B)],
           },
         });
-        expect(rig.rt.snapshot().rooms[0]).toMatchObject({
-          areaId: "area_living",
-          areaName: "Living room",
+      }
+
+      it("rooms lists office and hall as managed, each with its area's name", async () => {
+        const rig = await office();
+        expect(
+          rig.rt.snapshot().rooms.map((room) => [room.roomId, room.name, room.managed]),
+        ).toEqual([
+          ["hall", "Area hall", true],
+          ["office", "Area office", true],
+        ]);
+      });
+
+      it("unusedEntries lists attic", async () => {
+        const rig = await office();
+        expect(rig.rt.snapshot().unusedEntries).toEqual(["attic"]);
+      });
+    });
+
+    describe("With a config that has no schedule", () => {
+      it("rooms are listed with managed false", async () => {
+        const rig = await boot({
+          seed: { config: raw({ schedules: false }), ledger: [record(A)] },
         });
+        expect(rig.rt.snapshot().rooms.map((room) => [room.roomId, room.managed])).toEqual([
+          ["living", false],
+        ]);
+      });
+    });
+
+    describe("With a valve whose device has no area", () => {
+      it("unassigned lists it with reason no_area", async () => {
+        const house = haSnapshot({ living: [A] });
+        const snapshot: HaSnapshot = {
+          ...house,
+          valveAreas: new Map([...house.valveAreas, [B, null]]),
+        };
+        const rig = await boot({ devices: [trvzb(A), trvzb(B)], seed: managedSeed([A]), snapshot });
+        expect(rig.rt.snapshot().unassigned).toEqual([
+          expect.objectContaining({ valveId: B, reason: "no_area" }),
+        ]);
       });
     });
 
@@ -3048,7 +3459,9 @@ describe("runtime", () => {
         "devices",
         "sensors",
         "memory",
+        "house",
         "rooms",
+        "unusedEntries",
         "problems",
         "preview",
         "links",
@@ -3323,7 +3736,12 @@ describe("runtime", () => {
         await hear(rig, [A]);
         rig.stores.fail.config = 1;
         await rejectionOf(rig.rt.setHold(true));
-        await rig.rt.apply(raw({ rooms: [] }), APPLY);
+        // The device leaves its area; restoring the orphan stands in for plan 2's release.
+        rig.ha?.setSnapshot(haSnapshot({}));
+        rig.ha?.emit({ kind: "registries_changed" });
+        await rig.advance(HA_SETTLE_MS);
+        await rig.rt.restoreValve(A);
+        await rig.rt.apply(raw(), APPLY);
         for (let minute = 0; minute < 20; minute++) {
           rig.say(A, `a-r${String(minute)}`);
           await rig.advance(MINUTE);

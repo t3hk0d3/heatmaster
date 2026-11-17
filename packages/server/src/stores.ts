@@ -1,8 +1,18 @@
 /** The config file, the ledger file, the pacing file and the readable copy of the originals. */
 
-import { constants, copyFile, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import {
+  access,
+  constants,
+  copyFile,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
 import {
+  ConfigError,
   EMPTY_LEDGER,
   PROFILES,
   SETTING_KEYS,
@@ -16,7 +26,7 @@ import {
 } from "@heatmaster/core";
 import type { ConfigState, Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
 import type { Clock } from "./clock.ts";
-import { HeatmasterError } from "./errors.ts";
+import { consoleErrorLog, HeatmasterError, type ErrorLog } from "./errors.ts";
 
 /**
  * Version 3 holds rooms from Home Assistant: an entry per area, the saved membership, the HA
@@ -33,12 +43,16 @@ export const COPY_GENERATIONS = 5;
 export type StoreDirs = Readonly<{ dataDir: string; publicDir: string }>;
 
 export type ConfigStore = Readonly<{
-  /** `convertedFrom` is the file version of a readable file older than the current one. */
+  /**
+   * `convertedFrom` is the file version of a readable file older than the current one. `reason`
+   * says why a file is unreadable (its JSON, its conversion or its validation), for the log.
+   */
   load(): Promise<
     Readonly<{
       state: ConfigState;
       stored: StoredConfig | undefined;
       convertedFrom: number | undefined;
+      reason: string | undefined;
     }>
   >;
   save(stored: StoredConfig, overwriteUnreadable?: boolean): Promise<void>;
@@ -158,8 +172,13 @@ function render(document: unknown): string {
 
 type Read =
   | Readonly<{ kind: "missing" }>
-  | Readonly<{ kind: "unreadable" }>
-  | Readonly<{ kind: "ok"; file: File }>;
+  | Readonly<{ kind: "unreadable"; reason: string }>
+  | Readonly<{ kind: "ok"; file: File; text: string }>;
+
+/** A failure as one line of text for the log. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
 
 /** A file that does not exist is missing; one that exists but is not a JSON object is unreadable. */
 async function readJson(file: string): Promise<Read> {
@@ -167,13 +186,27 @@ async function readJson(file: string): Promise<Read> {
   try {
     text = await readFile(file, "utf8");
   } catch (error) {
-    return errnoCode(error) === "ENOENT" ? { kind: "missing" } : { kind: "unreadable" };
+    return errnoCode(error) === "ENOENT"
+      ? { kind: "missing" }
+      : { kind: "unreadable", reason: reasonOf(error) };
   }
   try {
     const parsed: unknown = JSON.parse(text);
-    return isFile(parsed) ? { kind: "ok", file: parsed } : { kind: "unreadable" };
-  } catch {
-    return { kind: "unreadable" };
+    return isFile(parsed)
+      ? { kind: "ok", file: parsed, text }
+      : { kind: "unreadable", reason: "the file holds no JSON object" };
+  } catch (error) {
+    return { kind: "unreadable", reason: reasonOf(error) };
+  }
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -238,34 +271,61 @@ function ledgerFromData(data: unknown): Ledger | undefined {
   }
 }
 
-export function createConfigStore(dataDir: string, clock: Clock): ConfigStore {
+/**
+ * The config file. A file converted from an older version is kept as it was, as
+ * `config.v<old version>.json` beside it, before the first save overwrites it; that copy is never
+ * replaced, and a copy that cannot be written is logged and the save goes on.
+ */
+export function createConfigStore(
+  dataDir: string,
+  clock: Clock,
+  log: ErrorLog = consoleErrorLog,
+): ConfigStore {
   const file = path.join(dataDir, "config.json");
   // `undefined` until a load has finished: a store that was never loaded is locked.
   let state: ConfigState | undefined;
+  /** The text of a converted file, until a save has overwritten it. */
+  let original: Readonly<{ version: number; text: string }> | undefined;
+
+  async function keepOriginal(): Promise<void> {
+    if (original === undefined) return;
+    const copy = path.join(dataDir, `config.v${String(original.version)}.json`);
+    try {
+      if (!(await exists(copy))) await writeAtomic(copy, original.text);
+    } catch (error) {
+      log.error("the copy of the converted config file was not written", {
+        file: copy,
+        err: reasonOf(error),
+      });
+    }
+  }
 
   return {
     async load() {
+      original = undefined;
       const read = await readJson(file);
       if (read.kind === "missing") {
         state = "empty";
-        return { state: "empty", stored: undefined, convertedFrom: undefined };
+        return { state: "empty", stored: undefined, convertedFrom: undefined, reason: undefined };
       }
+      let reason = read.kind === "unreadable" ? read.reason : "";
       if (read.kind === "ok") {
         try {
           const stored = storedFromRaw(migrateConfigFile(read.file).data);
           state = "ok";
           const version = read.file.version as number;
-          return {
-            state: "ok",
-            stored,
-            convertedFrom: version < CONFIG_FILE_VERSION ? version : undefined,
-          };
-        } catch {
-          // fall through: unreadable
+          const convertedFrom = version < CONFIG_FILE_VERSION ? version : undefined;
+          if (convertedFrom !== undefined) original = { version, text: read.text };
+          return { state: "ok", stored, convertedFrom, reason: undefined };
+        } catch (error) {
+          reason =
+            error instanceof ConfigError
+              ? error.issues.map((issue) => `${issue.path}: ${issue.code}`).join("; ")
+              : reasonOf(error);
         }
       }
       state = "unreadable";
-      return { state: "unreadable", stored: undefined, convertedFrom: undefined };
+      return { state: "unreadable", stored: undefined, convertedFrom: undefined, reason };
     },
 
     async save(stored, overwriteUnreadable = false) {
@@ -274,7 +334,9 @@ export function createConfigStore(dataDir: string, clock: Clock): ConfigStore {
       }
       const text = render({ version: CONFIG_FILE_VERSION, data: storedToRaw(stored) });
       if (state === "unreadable") await setAside(file, "config", clock);
+      await keepOriginal();
       await writeAtomic(file, text);
+      original = undefined;
       state = "ok";
     },
 
