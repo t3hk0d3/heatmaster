@@ -78,9 +78,9 @@ export const ru: Dictionary = {
   "others.reported": "Сообщённые значения",
 
   "house.frozen.not_loaded":
-    "Комнаты заморожены по последним сохранённым зонам: Home Assistant ещё не загружен. Клапаны продолжают работать по расписаниям, но ни один клапан не входит в комнату и не выходит из неё.",
+    "Состав комнат зафиксирован по последним сохранённым данным Home Assistant: Home Assistant ещё не загружен. Клапаны продолжают работать по расписаниям, но ни один клапан не добавляется в комнату и не убирается из неё.",
   "house.frozen.link_down":
-    "Комнаты заморожены по последним сохранённым зонам: нет связи с Home Assistant. Клапаны продолжают работать по расписаниям, но ни один клапан не входит в комнату и не выходит из неё.",
+    "Состав комнат зафиксирован по последним сохранённым данным Home Assistant: нет связи с Home Assistant. Клапаны продолжают работать по расписаниям, но ни один клапан не добавляется в комнату и не убирается из неё.",
   "house.unlinked":
     "Связь с Home Assistant не настроена (HA_URL и HA_TOKEN), поэтому Heatmaster не управляет ни одной комнатой.",
   "frozen_reason.not_loaded": "Home Assistant ещё не загружен",
@@ -92,12 +92,12 @@ export const ru: Dictionary = {
   "config_unreadable.recover":
     "Чтобы всё исправить, напишите верную конфигурацию в редакторе ниже, отметьте «Перезаписать нечитаемую конфигурацию» и нажмите «Применить». Старый файл останется рядом под именем config.unreadable.<время>.json. Можно и поправить config.json вручную, а затем перезапустить Heatmaster.",
 
-  "pending.title": "Клапаны, ожидающие входа в комнату",
+  "pending.title": "Клапаны, ожидающие подключения к комнате",
   "pending.hint":
-    "Каждый из этих клапанов относится к комнате, но Heatmaster пока не взял его под управление. Попытка повторяется каждые несколько секунд.",
+    "Каждый из этих клапанов относится к комнате, но Heatmaster пока не взял его под управление. Heatmaster повторяет попытку не реже раза в 30 секунд и сразу, как только клапан что-то сообщит. Клапан с нечитаемыми исходными настройками ждёт, пока вы их не примете.",
   "pending.item": "{name} → комната «{room}»",
   "pending.unreadable": "Настройки, которые не удалось прочитать: {settings}",
-  "pending.reason.house_frozen": "комнаты заморожены, пока Home Assistant не вернётся",
+  "pending.reason.house_frozen": "состав комнат зафиксирован, пока Home Assistant не вернётся",
   "pending.reason.ledger_unreadable":
     "не удаётся прочитать сохранённые исходные настройки клапанов",
   "pending.reason.transport_unusable": "клапан сейчас недоступен",
@@ -109,11 +109,11 @@ export const ru: Dictionary = {
     "Принять неизвестные исходные настройки клапана {name}? Heatmaster возьмёт его под управление, не зная часть его исходных настроек, и не сможет вернуть их, когда клапан выйдет из комнаты.",
 
   "unused.title": "Неиспользуемые записи конфигурации",
-  "unused.hint": "Сохранены на случай, когда в зоне появится клапан.",
+  "unused.hint": "Сохранены на случай, если в зоне появится клапан.",
 
   "ha_changes.title": "Изменено в Home Assistant",
   "ha_changes.hint":
-    "Эти версии конфигурации появились из-за изменений меток в Home Assistant; сначала самые новые.",
+    "Эти версии конфигурации пришли из Home Assistant: изменения меток и импорт датчиков по метке room_temperature_sensor. Сначала самые новые.",
   "ha_changes.revision": "Версия {revision}, {time}",
   "ha_changes.item.schedule": "Расписание зоны «{area}»: {schedule}",
   "ha_changes.item.sensor_added": "Датчик {entity} добавлен в зону «{area}»",
@@ -163,7 +163,7 @@ export const ru: Dictionary = {
 
   "plan.title": "Планируемое изменение",
   "plan.revision": "Конфигурация станет версией {revision}.",
-  "plan.joining": "Клапаны, которые войдут в комнату",
+  "plan.joining": "Клапаны, которые будут подключены к комнате",
   "plan.original": "{setting}: {value} ({evidence})",
   "plan.unreadable": "{setting}: прочитать не удалось",
   "plan.writes": "Запись в клапаны",
@@ -179,7 +179,7 @@ export const ru: Dictionary = {
   "sync.frozen": "заморожено",
 
   "membership.managed": "управляется",
-  "membership.pending": "ожидает подключения",
+  "membership.pending": "ожидает подключения к комнате",
   "membership.releasing": "возвращается",
   "membership.stray": "посторонний",
   "membership.orphan": "без комнаты",
@@ -219,11 +219,11 @@ export const ru: Dictionary = {
     "Не удаётся прочитать сохранённый учёт разрешённых записей в клапаны. Heatmaster начинает с пустым запасом у каждого клапана и пишет по мере его восстановления: одна запись в 30 минут на клапан",
   "problem.transport_unusable": "Heatmaster не может использовать {transport}: {reason}",
   "problem.link_down": "Нет связи с {name}",
-  "problem.valve_pending": "Клапан {name} пока не может войти в комнату «{room}»: {reason}",
+  "problem.valve_pending": "Клапан {name} пока не удаётся подключить к комнате «{room}»: {reason}",
   "problem.ha_link_required":
     "Связь с Home Assistant не настроена (HA_URL и HA_TOKEN), поэтому комнаты не управляются",
   "problem.rooms_frozen":
-    "Комнаты заморожены по последним известным зонам Home Assistant: {reason}",
+    "Состав комнат зафиксирован по последним сохранённым данным Home Assistant: {reason}",
   "problem.no_schedule":
     "В конфигурации нет расписания, поэтому комнаты не управляются. Добавьте расписание в конфигурацию",
   "problem.valve_not_in_ha":
@@ -257,7 +257,7 @@ export const ru: Dictionary = {
   "problem.sensor_label_unused.sensor_on_valve": "он принадлежит клапану",
   "problem.sensor_label_unused.sensor_limit": "в комнате уже максимальное число датчиков",
   "problem.legacy_label_present":
-    "У комнаты «{name}» есть датчики Heatmaster, но у {entities} всё ещё стоит метка room_temperature_sensor. Ваша собственная автоматизация продолжает передавать температуру в комнату, пока вы не уберёте room_temperature_sensor из её датчиков",
+    "У комнаты «{name}» есть датчики Heatmaster, но у {entities} всё ещё стоит метка room_temperature_sensor. Ваша автоматизация продолжает передавать температуру в комнату, пока вы не снимете метку room_temperature_sensor с датчиков комнаты",
   "problem.entry_unavailable":
     "Для зоны {name} нельзя завести запись в конфигурации (записей уже 64 или идентификатор зоны не подходит Heatmaster), поэтому её метки {labels} не учитываются",
   "problem.label_foreign":
@@ -267,8 +267,8 @@ export const ru: Dictionary = {
   "label_op.createLabel": "создание метки",
   "label_op.renameLabel": "переименование метки",
   "label_op.deleteLabel": "удаление метки",
-  "label_op.labelArea": "пометка зоны",
-  "label_op.labelEntity": "пометка датчика",
+  "label_op.labelArea": "назначение метки зоне",
+  "label_op.labelEntity": "назначение метки датчику",
   "problem.sensor_unlabellable":
     "Датчик {name} есть в конфигурации, но в реестре Home Assistant его нет, поэтому Heatmaster не может его пометить",
 
@@ -291,7 +291,7 @@ export const ru: Dictionary = {
   "error.valve_managed":
     "Клапан {valveId} находится в комнате. Сначала уберите его из конфигурации.",
   "error.valve_not_pending":
-    "Клапан {valveId} не ожидает принятия неизвестных исходных настроек. Возможно, он уже вошёл в свою комнату.",
+    "Клапан {valveId} не ожидает принятия неизвестных исходных настроек. Возможно, он уже подключён к своей комнате.",
   "error.schedule_in_use":
     "Пока есть комнаты, в конфигурации нужно хотя бы одно расписание: например, оно нужно комнате {roomId}.",
   "error.not_ready": "Heatmaster ещё запускается. Повторите чуть позже.",

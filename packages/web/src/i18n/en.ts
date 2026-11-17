@@ -173,7 +173,7 @@ export const en = {
 
   "pending.title": "Valves waiting to join a room",
   "pending.hint":
-    "Each of these valves is in a room, but Heatmaster has not taken it over yet. It tries again every few seconds.",
+    "Each of these valves is in a room, but Heatmaster has not taken it over yet. It tries again at least every 30 seconds, and as soon as the valve reports. A valve whose original settings cannot be read waits until you accept them.",
   "pending.item": "{name} → room {room}",
   "pending.unreadable": "Settings that could not be read: {settings}",
   "pending.reason.house_frozen": "rooms are frozen until Home Assistant is back",
@@ -191,7 +191,7 @@ export const en = {
 
   "ha_changes.title": "Changed in Home Assistant",
   "ha_changes.hint":
-    "These configuration revisions came from label changes made in Home Assistant, newest first.",
+    "These configuration revisions came from Home Assistant: label changes, and the sensor import from room_temperature_sensor. Newest first.",
   "ha_changes.revision": "Revision {revision}, {time}",
   "ha_changes.item.schedule": "Schedule of {area}: {schedule}",
   "ha_changes.item.sensor_added": "Sensor {entity} added to {area}",

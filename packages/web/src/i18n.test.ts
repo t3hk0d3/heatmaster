@@ -144,6 +144,41 @@ describe("i18n", () => {
           }
         }
       });
+      it("say the pending valves are tried at least every 30 seconds, the tick", () => {
+        expect(DICTIONARIES.en["pending.hint"]).toContain("30 seconds");
+        expect(DICTIONARIES.ru["pending.hint"]).toContain("30 секунд");
+      });
+      it("say the changes from Home Assistant include the sensor import", () => {
+        expect(DICTIONARIES.en["ha_changes.hint"]).toContain("room_temperature_sensor");
+        expect(DICTIONARIES.ru["ha_changes.hint"]).toContain("room_temperature_sensor");
+      });
+    });
+    describe("ru", () => {
+      const ru = Object.entries(DICTIONARIES.ru);
+      it("calls a valve taking its room one thing, подключение к комнате, never войти в комнату", () => {
+        for (const [key, text] of ru) expect(text, key).not.toMatch(/вош[её]л|войт|входа в комнат/);
+        expect(DICTIONARIES.ru["pending.title"]).toContain("подключения к комнате");
+        expect(DICTIONARIES.ru["problem.valve_pending"]).toContain("подключить к комнате");
+      });
+      it("says the rooms are fixed, not frozen, while Home Assistant is away", () => {
+        for (const key of [
+          "house.frozen.not_loaded",
+          "house.frozen.link_down",
+          "problem.rooms_frozen",
+          "pending.reason.house_frozen",
+        ] as const) {
+          expect(DICTIONARIES.ru[key], key).toContain("зафиксирован");
+          expect(DICTIONARIES.ru[key], key).not.toContain("заморож");
+        }
+      });
+      it("uses the grammatical forms the review asked for", () => {
+        expect(DICTIONARIES.ru["unused.hint"]).toContain("на случай, если");
+        expect(DICTIONARIES.ru["problem.legacy_label_present"]).toContain(
+          "снимете метку room_temperature_sensor с датчиков",
+        );
+        expect(DICTIONARIES.ru["label_op.labelArea"]).toBe("назначение метки зоне");
+        expect(DICTIONARIES.ru["label_op.labelEntity"]).toBe("назначение метки датчику");
+      });
     });
   });
 });
