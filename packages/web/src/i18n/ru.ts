@@ -42,7 +42,12 @@ export const ru: Dictionary = {
   "group.sensor_source": "источник температуры",
 
   "rooms.title": "Комнаты",
-  "rooms.none": "Комнаты ещё не настроены.",
+  "rooms.none": "Пока ни в одной зоне Home Assistant нет клапана, поэтому комнат нет.",
+  "room.schedule": "Расписание: {name}",
+  "room.no_schedule": "Расписания нет",
+  "room.not_managed": "Не управляется",
+  "room.not_managed_hint":
+    "Heatmaster ничего не записывает в клапаны этой комнаты. Он начнёт, когда конфигурация будет сохранена, а связь с Home Assistant — настроена.",
   "rooms.temperature": "Температура",
   "rooms.target": "Цель",
   "rooms.sync": "Синхронизация",
@@ -65,9 +70,71 @@ export const ru: Dictionary = {
 
   "others.title": "Другие клапаны",
   "others.none": "Нет клапанов вне комнат.",
-  "others.hint": "Скопируйте идентификатор клапана в комнату в конфигурации, чтобы добавить его.",
+  "others.hint":
+    "Эти клапаны не входят ни в одну комнату. Чтобы клапан получил комнату, отнесите его устройство к зоне в Home Assistant.",
   "others.not_reported": "Клапан ещё ничего не сообщил.",
   "others.reported": "Сообщённые значения",
+
+  "house.frozen.not_loaded":
+    "Комнаты заморожены по последним сохранённым зонам: Home Assistant ещё не загружен. Клапаны продолжают работать по расписаниям, но ни один клапан не входит в комнату и не выходит из неё.",
+  "house.frozen.link_down":
+    "Комнаты заморожены по последним сохранённым зонам: нет связи с Home Assistant. Клапаны продолжают работать по расписаниям, но ни один клапан не входит в комнату и не выходит из неё.",
+  "house.unlinked":
+    "Связь с Home Assistant не настроена (HA_URL и HA_TOKEN), поэтому Heatmaster не управляет ни одной комнатой.",
+  "frozen_reason.not_loaded": "Home Assistant ещё не загружен",
+  "frozen_reason.link_down": "нет связи с Home Assistant",
+
+  "config_unreadable.title": "Сохранённую конфигурацию не удаётся прочитать",
+  "config_unreadable.why":
+    "Heatmaster не управляет комнатами и оставляет все клапаны как есть. После преобразования из старой версии так бывает, если конфигурация нарушает правило нового формата: например, два идентификатора расписаний дают одну и ту же метку Home Assistant (label_id_duplicate) или идентификатор расписания заканчивается дефисом или подчёркиванием с цифрами (schedule_id_reserved). Файл config.json в каталоге данных Heatmaster не изменён.",
+  "config_unreadable.recover":
+    "Чтобы всё исправить, напишите верную конфигурацию в редакторе ниже, отметьте «Перезаписать нечитаемую конфигурацию» и нажмите «Применить». Старый файл останется рядом под именем config.unreadable.<время>.json. Можно и поправить config.json вручную, а затем перезапустить Heatmaster.",
+
+  "pending.title": "Клапаны, ожидающие входа в комнату",
+  "pending.hint":
+    "Каждый из этих клапанов относится к комнате, но Heatmaster пока не взял его под управление. Попытка повторяется каждые несколько секунд.",
+  "pending.item": "{name} → комната «{room}»",
+  "pending.unreadable": "Настройки, которые не удалось прочитать: {settings}",
+  "pending.reason.house_frozen": "комнаты заморожены, пока Home Assistant не вернётся",
+  "pending.reason.ledger_unreadable":
+    "не удаётся прочитать сохранённые исходные настройки клапанов",
+  "pending.reason.transport_unusable": "клапан сейчас недоступен",
+  "pending.reason.valve_not_observed": "клапан ещё не сообщил свои настройки",
+  "pending.reason.originals_unreadable":
+    "часть текущих настроек клапана не удаётся прочитать, поэтому их нельзя сохранить как исходные",
+  "pending.accept": "Принять неизвестные исходные настройки",
+  "pending.accept_question":
+    "Принять неизвестные исходные настройки клапана {name}? Heatmaster возьмёт его под управление, не зная часть его исходных настроек, и не сможет вернуть их, когда клапан выйдет из комнаты.",
+
+  "unused.title": "Неиспользуемые записи конфигурации",
+  "unused.hint": "Сохранены на случай, когда в зоне появится клапан.",
+
+  "ha_changes.title": "Изменено в Home Assistant",
+  "ha_changes.hint":
+    "Эти версии конфигурации появились из-за изменений меток в Home Assistant; сначала самые новые.",
+  "ha_changes.revision": "Версия {revision}, {time}",
+  "ha_changes.item.schedule": "Расписание зоны «{area}»: {schedule}",
+  "ha_changes.item.sensor_added": "Датчик {entity} добавлен в зону «{area}»",
+  "ha_changes.item.sensor_removed": "Датчик {entity} убран из зоны «{area}»",
+  "ha_changes.item.sensors_imported":
+    "Датчики зоны «{area}» импортированы по метке room_temperature_sensor",
+
+  "upgrade.title": "Конфигурация преобразована",
+  "upgrade.intro":
+    "Ваша конфигурация преобразована из версии {version}. Теперь комнаты берутся из зон Home Assistant, поэтому эти старые комнаты сохранить не удалось:",
+  "upgrade.none_dropped": "Все комнаты сохранены.",
+  "upgrade.room": "{name} ({roomId}), клапаны: {valves}. Причина: {reason}",
+  "upgrade.no_valves": "нет",
+  "upgrade.dropped.no_area": "в ней не указана зона Home Assistant",
+  "upgrade.dropped.area_duplicate": "её зону уже занимает другая комната",
+  "upgrade.dropped.area_id_invalid": "идентификатор зоны недопустим для Home Assistant",
+  "upgrade.dismiss": "Скрыть",
+
+  "unassigned.reason.no_area": "у его устройства нет зоны в Home Assistant",
+  "unassigned.reason.ignored_area": "у его зоны есть метка heatmaster_ignore",
+  "unassigned.reason.not_in_ha": "в Home Assistant для него нет устройства",
+
+  "plan.pending": "Клапаны, которые продолжают ждать",
 
   "problems.title": "Проблемы",
   "problems.none": "Проблем нет.",
@@ -142,18 +209,20 @@ export const ru: Dictionary = {
   "evidence.none": "проверить нельзя",
 
   "problem.config_unreadable":
-    "Не удаётся прочитать конфигурацию Heatmaster. Клапаны оставлены как есть",
+    "Не удаётся прочитать конфигурацию Heatmaster. Клапаны оставлены как есть. Как всё исправить, написано в сообщении вверху страницы",
   "problem.ledger_unreadable":
     "Не удаётся прочитать сохранённые исходные настройки клапанов. Клапаны оставлены как есть",
   "problem.pacing_unreadable":
     "Не удаётся прочитать сохранённый учёт разрешённых записей в клапаны. Heatmaster начинает с пустым запасом у каждого клапана и пишет по мере его восстановления: одна запись в 30 минут на клапан",
   "problem.transport_unusable": "Heatmaster не может использовать {transport}: {reason}",
   "problem.link_down": "Нет связи с {name}",
-  "problem.valve_pending": "Клапан {name} находится в комнате, но ещё не подключён: {reason}",
-  "problem.ha_link_required": "Связь с Home Assistant не настроена, поэтому комнаты не управляются",
+  "problem.valve_pending": "Клапан {name} пока не может войти в комнату «{room}»: {reason}",
+  "problem.ha_link_required":
+    "Связь с Home Assistant не настроена (HA_URL и HA_TOKEN), поэтому комнаты не управляются",
   "problem.rooms_frozen":
     "Комнаты заморожены по последним известным зонам Home Assistant: {reason}",
-  "problem.no_schedule": "В конфигурации нет расписания, поэтому комнаты не управляются",
+  "problem.no_schedule":
+    "В конфигурации нет расписания, поэтому комнаты не управляются. Добавьте расписание в конфигурацию",
   "problem.valve_not_in_ha":
     "В Home Assistant нет устройства клапана {name}; он остаётся в прежней комнате",
   "problem.valve_orphan": "Клапан {name} больше не входит ни в одну комнату и не был возвращён",
@@ -175,16 +244,29 @@ export const ru: Dictionary = {
   "problem.tick_failed":
     "Внутренний сбой Heatmaster при выборе того, что отправить: клапаны не получают ни записей, ни температуры комнаты. Смотрите его журнал",
   "problem.sensor_label_unused":
-    "У датчика {name} есть метка датчика Heatmaster, но ни одна комната его не использует: {reason}",
+    "У датчика {name} есть метка heatmaster_temp_sensor, но ни одна комната его не использует: {reason}",
+  "problem.sensor_label_unused.no_area": "датчик не отнесён ни к одной зоне",
+  "problem.sensor_label_unused.area_not_room": "в его зоне нет клапана, поэтому это не комната",
+  "problem.sensor_label_unused.sensor_unknown": "Home Assistant не знает такого датчика",
+  "problem.sensor_label_unused.sensor_not_temperature": "это не датчик температуры",
+  "problem.sensor_label_unused.sensor_on_valve": "он принадлежит клапану",
+  "problem.sensor_label_unused.sensor_limit": "в комнате уже максимальное число датчиков",
   "problem.legacy_label_present":
-    "У комнаты «{name}» есть датчики Heatmaster, но у {entities} всё ещё есть метка room_temperature_sensor, поэтому ваша собственная автоматизация продолжает передавать температуру в комнату, пока вы не снимете эту метку",
+    "У комнаты «{name}» есть датчики Heatmaster, но у {entities} всё ещё стоит метка room_temperature_sensor. Ваша собственная автоматизация продолжает передавать температуру в комнату, пока вы не уберёте room_temperature_sensor из её датчиков",
   "problem.label_foreign":
-    "Метка Home Assistant {name} похожа на метку расписания Heatmaster, но ею не является; Heatmaster её не трогает",
-  "problem.ha_label_failed": "Heatmaster не смог записать изменение меток {op} для {name}: {error}",
+    "Метка Home Assistant {name} похожа на метку расписания Heatmaster, но ею не является, поэтому Heatmaster её не трогает",
+  "problem.ha_label_failed":
+    "Heatmaster не смог изменить метки в Home Assistant ({op}, {name}): {error}",
+  "label_op.createLabel": "создание метки",
+  "label_op.renameLabel": "переименование метки",
+  "label_op.deleteLabel": "удаление метки",
+  "label_op.labelArea": "пометка зоны",
+  "label_op.labelEntity": "пометка датчика",
   "problem.sensor_unlabellable":
-    "Датчик {name} указан в конфигурации, но в реестре Home Assistant его нет, поэтому пометить его нельзя",
+    "Датчик {name} есть в конфигурации, но в реестре Home Assistant его нет, поэтому Heatmaster не может его пометить",
 
-  "error.config_unreadable": "Конфигурацию не удаётся прочитать, поэтому её нельзя изменить.",
+  "error.config_unreadable":
+    "Конфигурацию не удаётся прочитать, поэтому её нельзя изменить. Смотрите сообщение вверху страницы.",
   "error.revision_conflict":
     "Конфигурацию изменил кто-то другой: вы правили версию {expected}, на сервере версия {current}. Загрузите её заново и внесите правки ещё раз.",
   "error.timezone_missing":
@@ -198,16 +280,13 @@ export const ru: Dictionary = {
   "error.ledger_unreadable":
     "Не удаётся прочитать сохранённые исходные настройки клапанов, поэтому добавлять клапаны нельзя.",
   "error.transport_unusable": "Клапан {valveId} сейчас недоступен через {transport}.",
-  "error.valve_not_observed":
-    "Клапаны {valveIds} ещё ничего не сообщили. Им отправлен запрос; повторите попытку чуть позже.",
-  "error.originals_unreadable":
-    "Не удалось прочитать исходные настройки клапана {valveId} ({settings}). Чтобы всё же добавить клапан, примите это ниже и повторите предпросмотр.",
   "error.valve_not_orphan": "Клапан {valveId} не лишён комнаты.",
   "error.valve_managed":
     "Клапан {valveId} находится в комнате. Сначала уберите его из конфигурации.",
-  "error.valve_not_pending": "Клапан {valveId} не ожидает принятия неизвестных исходных настроек.",
+  "error.valve_not_pending":
+    "Клапан {valveId} не ожидает принятия неизвестных исходных настроек. Возможно, он уже вошёл в свою комнату.",
   "error.schedule_in_use":
-    "Комната {roomId} использует расписание. Конфигурация без расписаний не принимается, пока есть комнаты.",
+    "Пока есть комнаты, в конфигурации нужно хотя бы одно расписание: например, оно нужно комнате {roomId}.",
   "error.not_ready": "Heatmaster ещё запускается. Повторите чуть позже.",
   "error.mqtt_fault": "Проблема с подключением к MQTT: {reason}.",
   "error.body_invalid": "Запрос некорректен.",
@@ -222,7 +301,7 @@ export const ru: Dictionary = {
   "error.ask_limited": "Клапан {valveId} только что получил запрос. Повторите через минуту.",
   "error.not_started": "Heatmaster ещё не закончил запуск.",
   "error.store_locked":
-    "Файл Heatmaster не удалось прочитать при загрузке, поэтому Heatmaster не будет его перезаписывать. Для исходных настроек клапанов нажмите «Импортировать сохранённые исходные настройки»; для конфигурации выберите «Перезаписать нечитаемую конфигурацию» и примените её снова.",
+    "Файл Heatmaster не удалось прочитать при загрузке, поэтому Heatmaster не будет его перезаписывать. Для исходных настроек клапанов нажмите «Импортировать сохранённые исходные настройки». Для конфигурации напишите верную в редакторе, отметьте «Перезаписать нечитаемую конфигурацию» и примените её; старый файл останется рядом.",
   "error.no_originals_copy": "Нет читаемой копии сохранённых исходных настроек.",
   "error.ledger_readable": "Сохранённые исходные настройки читаются, импортировать нечего.",
   "error.device_unknown": "Устройство {deviceId} неизвестно.",

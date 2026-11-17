@@ -46,6 +46,8 @@ function setup(
     restore: vi.fn<ApiClient["restore"]>(() => Promise.resolve(ok(undefined))),
     forget: vi.fn<ApiClient["forget"]>(() => Promise.resolve(ok(undefined))),
     importOriginals: vi.fn<ApiClient["importOriginals"]>(() => Promise.resolve(ok(undefined))),
+    acceptOriginals: vi.fn<ApiClient["acceptOriginals"]>(() => Promise.resolve(ok(undefined))),
+    dismissUpgrade: vi.fn<ApiClient["dismissUpgrade"]>(() => Promise.resolve(ok(undefined))),
     ...options.client,
   } satisfies ApiClient;
   const closed = vi.fn();
@@ -378,13 +380,13 @@ describe("app", () => {
       });
     });
 
-    describe("With preview refused as valve_not_observed", () => {
-      it('the "asked to report, try again" text is shown', async () => {
+    describe("With preview refused as schedule_in_use", () => {
+      it("the text that asks for at least one schedule is shown", async () => {
         const page = await typed();
-        page.client.preview.mockResolvedValueOnce(fail("valve_not_observed", { valveIds: ID }));
+        page.client.preview.mockResolvedValueOnce(fail("schedule_in_use", { roomId: "hall" }));
         page.button("preview").click();
         await settle();
-        expect(page.text()).toContain("They were asked to report; try again shortly.");
+        expect(page.text()).toContain("at least one schedule");
       });
     });
 
@@ -395,6 +397,132 @@ describe("app", () => {
         page.button("preview").click();
         await settle();
         expect(page.text()).toContain("Set timezone in the settings");
+      });
+    });
+  });
+
+  describe("accept originals", () => {
+    const pendingState = (): StateView =>
+      stateView({
+        rooms: [roomView({ roomId: "hall", name: "Hall" })],
+        pending: [
+          {
+            valveId: ID,
+            name: "Hall valve",
+            roomId: "hall",
+            reason: "originals_unreadable",
+            unreadable: ["sensor_source"],
+          },
+        ],
+      });
+    describe("When the Accept button is pressed", () => {
+      it("accept-originals is called with the valve id, after a question", async () => {
+        const page = setup();
+        await settle();
+        page.emit(pendingState());
+        page.button("accept-originals", ID).click();
+        await settle();
+        expect(page.confirm).toHaveBeenCalledOnce();
+        expect(page.client.acceptOriginals).toHaveBeenCalledWith(ID);
+      });
+    });
+    describe("When the question is declined", () => {
+      it("nothing is called", async () => {
+        const page = setup({ confirm: false });
+        await settle();
+        page.emit(pendingState());
+        page.button("accept-originals", ID).click();
+        await settle();
+        expect(page.client.acceptOriginals).not.toHaveBeenCalled();
+      });
+    });
+    describe("When it answers 409 valve_not_pending", () => {
+      it("the valve_not_pending text is shown", async () => {
+        const page = setup({
+          client: {
+            acceptOriginals: vi.fn(() =>
+              Promise.resolve(fail("valve_not_pending", { valveId: ID })),
+            ),
+          },
+        });
+        await settle();
+        page.emit(pendingState());
+        page.button("accept-originals", ID).click();
+        await settle();
+        expect(page.text()).toContain(en["error.valve_not_pending"].replace("{valveId}", ID));
+      });
+    });
+  });
+
+  describe("dismiss upgrade", () => {
+    describe("When Dismiss is pressed", () => {
+      it("dismissUpgrade is called", async () => {
+        const page = setup();
+        await settle();
+        page.emit(stateView({ upgrade: { fromVersion: 2, droppedRooms: [] } }));
+        page.button("dismiss-upgrade").click();
+        await settle();
+        expect(page.client.dismissUpgrade).toHaveBeenCalledOnce();
+      });
+    });
+    describe("When it is refused", () => {
+      it("the error is shown", async () => {
+        const page = setup({
+          client: { dismissUpgrade: vi.fn(() => Promise.resolve(fail("not_ready"))) },
+        });
+        await settle();
+        page.emit(stateView({ upgrade: { fromVersion: 2, droppedRooms: [] } }));
+        page.button("dismiss-upgrade").click();
+        await settle();
+        expect(page.text()).toContain(en["error.not_ready"]);
+      });
+    });
+  });
+
+  describe("sections of the new state", () => {
+    describe("With a state that holds every new section", () => {
+      it("the page shows the banner, the pending valve, the unused entry, the HA change and the report", async () => {
+        const page = setup();
+        await settle();
+        page.emit(
+          stateView({
+            house: "frozen",
+            frozenReason: "link_down",
+            unusedEntries: ["attic"],
+            haChanges: [
+              { revision: 4, at: 0, items: [{ kind: "sensors_imported", areaId: "hall" }] },
+            ],
+            upgrade: { fromVersion: 2, droppedRooms: [] },
+            pending: [
+              {
+                valveId: ID,
+                name: "Hall valve",
+                roomId: "hall",
+                reason: "valve_not_observed",
+                unreadable: [],
+              },
+            ],
+          }),
+        );
+        const out = page.text();
+        for (const part of [
+          en["house.frozen.link_down"],
+          en["pending.title"],
+          en["unused.title"],
+          "attic",
+          en["ha_changes.title"],
+          en["upgrade.title"],
+        ]) {
+          expect(out).toContain(part);
+        }
+      });
+    });
+    describe('With configState "unreadable"', () => {
+      it("the recovery notice is shown at the top", async () => {
+        const page = setup();
+        await settle();
+        page.emit(stateView({ configState: "unreadable" }));
+        expect(page.text()).toContain(en["config_unreadable.title"]);
       });
     });
   });

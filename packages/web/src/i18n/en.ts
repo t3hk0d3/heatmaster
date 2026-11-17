@@ -1,18 +1,44 @@
 import type {
   ChangeRefusedCode,
+  DroppedRoomReason,
   Evidence,
+  HaChangeKind,
+  LabelOp,
   Liveness,
   Membership,
+  PendingReason,
   ProblemKind,
   SettingKey,
   Severity,
   SyncState,
+  UnplacedReason,
   ValveMode,
 } from "@heatmaster/core";
+
+/** Why a sensor carries the Heatmaster label but is used by no room (`problemSensorLabelUnused`). */
+type SensorUnusedReason =
+  | "no_area"
+  | "area_not_room"
+  | "sensor_unknown"
+  | "sensor_not_temperature"
+  | "sensor_on_valve"
+  | "sensor_limit";
+
+type FrozenReason = "not_loaded" | "link_down";
+
+/** The kinds of label write a `ha_label_failed` problem names. */
+type LabelOpKind = LabelOp["kind"];
 
 /** The texts that must exist for every member of a fixed set; the compiler refuses a missing one. */
 type CodedKey =
   | `problem.${ProblemKind}`
+  | `problem.sensor_label_unused.${SensorUnusedReason}`
+  | `pending.reason.${PendingReason}`
+  | `unassigned.reason.${UnplacedReason}`
+  | `upgrade.dropped.${DroppedRoomReason}`
+  | `ha_changes.item.${HaChangeKind}`
+  | `frozen_reason.${FrozenReason}`
+  | `label_op.${LabelOpKind}`
   | `sync.${SyncState}`
   | `membership.${Membership}`
   | `liveness.${Liveness}`
@@ -23,6 +49,8 @@ type CodedKey =
 
 type ErrorCode =
   | ChangeRefusedCode
+  // Raised by the server's own ask (refresh), not by a config change.
+  | "transport_unusable"
   | "not_ready"
   | "mqtt_fault"
   | "body_invalid"
@@ -92,7 +120,12 @@ export const en = {
   "group.sensor_source": "temperature sensor source",
 
   "rooms.title": "Rooms",
-  "rooms.none": "No rooms are configured yet.",
+  "rooms.none": "No Home Assistant area holds a valve yet, so there are no rooms.",
+  "room.schedule": "Schedule: {name}",
+  "room.no_schedule": "No schedule",
+  "room.not_managed": "Not managed",
+  "room.not_managed_hint":
+    "Heatmaster writes nothing to the valves of this room. It starts once the configuration is saved and Home Assistant is linked.",
   "rooms.temperature": "Temperature",
   "rooms.target": "Target",
   "rooms.sync": "Sync",
@@ -115,9 +148,70 @@ export const en = {
 
   "others.title": "Other valves",
   "others.none": "No valves outside rooms.",
-  "others.hint": "Copy a valve id into a room of the configuration to add the valve.",
+  "others.hint":
+    "These valves are in no room. Put a valve's device into an area in Home Assistant to give it a room.",
   "others.not_reported": "The valve has not reported yet.",
   "others.reported": "Reported values",
+
+  "house.frozen.not_loaded":
+    "Rooms are frozen on the last saved areas: Home Assistant has not been loaded yet. Valves keep following their schedules, but no valve joins or leaves a room.",
+  "house.frozen.link_down":
+    "Rooms are frozen on the last saved areas: the connection to Home Assistant is down. Valves keep following their schedules, but no valve joins or leaves a room.",
+  "house.unlinked":
+    "No Home Assistant link is set up (HA_URL and HA_TOKEN), so Heatmaster manages no room.",
+  "frozen_reason.not_loaded": "Home Assistant has not been loaded yet",
+  "frozen_reason.link_down": "the connection to Home Assistant is down",
+
+  "config_unreadable.title": "The saved configuration cannot be read",
+  "config_unreadable.why":
+    "Heatmaster manages no room and leaves every valve as it is. After a conversion from an older version this happens when the configuration breaks a rule of the new format, for example when two schedule ids give the same Home Assistant label (label_id_duplicate), or when a schedule id ends in a dash or underscore and digits (schedule_id_reserved). The file config.json in Heatmaster's data directory has not been changed.",
+  "config_unreadable.recover":
+    "To recover, write a valid configuration in the editor below, tick “Overwrite the unreadable configuration” and press Apply. The old file is kept beside the new one as config.unreadable.<time>.json. Or correct config.json by hand and restart Heatmaster.",
+
+  "pending.title": "Valves waiting to join a room",
+  "pending.hint":
+    "Each of these valves is in a room, but Heatmaster has not taken it over yet. It tries again every few seconds.",
+  "pending.item": "{name} → room {room}",
+  "pending.unreadable": "Settings that could not be read: {settings}",
+  "pending.reason.house_frozen": "rooms are frozen until Home Assistant is back",
+  "pending.reason.ledger_unreadable": "the saved original valve settings cannot be read",
+  "pending.reason.transport_unusable": "the valve cannot be reached now",
+  "pending.reason.valve_not_observed": "the valve has not reported its settings yet",
+  "pending.reason.originals_unreadable":
+    "some of the valve's current settings cannot be read, so they cannot be saved as its originals",
+  "pending.accept": "Accept unknown originals",
+  "pending.accept_question":
+    "Accept unknown original settings for valve {name}? Heatmaster will take it over without knowing some of its original settings, and cannot give those back when the valve leaves.",
+
+  "unused.title": "Unused configuration entries",
+  "unused.hint": "Kept for when the area gets a valve.",
+
+  "ha_changes.title": "Changed in Home Assistant",
+  "ha_changes.hint":
+    "These configuration revisions came from label changes made in Home Assistant, newest first.",
+  "ha_changes.revision": "Revision {revision}, {time}",
+  "ha_changes.item.schedule": "Schedule of {area}: {schedule}",
+  "ha_changes.item.sensor_added": "Sensor {entity} added to {area}",
+  "ha_changes.item.sensor_removed": "Sensor {entity} removed from {area}",
+  "ha_changes.item.sensors_imported":
+    "Sensors of {area} imported from the room_temperature_sensor label",
+
+  "upgrade.title": "Configuration converted",
+  "upgrade.intro":
+    "Your configuration was converted from version {version}. Rooms now come from Home Assistant areas, so these old rooms could not be kept:",
+  "upgrade.none_dropped": "Every room was kept.",
+  "upgrade.room": "{name} ({roomId}), valves {valves}: {reason}",
+  "upgrade.no_valves": "none",
+  "upgrade.dropped.no_area": "it names no Home Assistant area",
+  "upgrade.dropped.area_duplicate": "its area is already used by another room",
+  "upgrade.dropped.area_id_invalid": "its area id is not a valid Home Assistant area id",
+  "upgrade.dismiss": "Dismiss",
+
+  "unassigned.reason.no_area": "its device has no area in Home Assistant",
+  "unassigned.reason.ignored_area": "its area carries the label heatmaster_ignore",
+  "unassigned.reason.not_in_ha": "Home Assistant has no device for it",
+
+  "plan.pending": "Valves that keep waiting",
 
   "problems.title": "Problems",
   "problems.none": "No problems.",
@@ -192,17 +286,19 @@ export const en = {
   "evidence.none": "cannot be checked",
 
   "problem.config_unreadable":
-    "The Heatmaster configuration cannot be read. Valves are left as they are",
+    "The Heatmaster configuration cannot be read. Valves are left as they are. The notice at the top of the page tells how to recover",
   "problem.ledger_unreadable":
     "The saved original valve settings cannot be read. Valves are left as they are",
   "problem.pacing_unreadable":
     "The saved record of how many writes each valve may still receive cannot be read. Heatmaster starts every valve with an empty budget and writes as it refills, one write per valve every 30 minutes",
   "problem.transport_unusable": "Heatmaster cannot use {transport}: {reason}",
   "problem.link_down": "The connection to {name} is down",
-  "problem.valve_pending": "Valve {name} is in a room but has not joined yet: {reason}",
-  "problem.ha_link_required": "No Home Assistant link is set up, so no room is managed",
+  "problem.valve_pending": "Valve {name} cannot join room {room} yet: {reason}",
+  "problem.ha_link_required":
+    "No Home Assistant link is set up (HA_URL and HA_TOKEN), so no room is managed",
   "problem.rooms_frozen": "Rooms are frozen on the last known Home Assistant areas: {reason}",
-  "problem.no_schedule": "The configuration has no schedule, so no room is managed",
+  "problem.no_schedule":
+    "The configuration has no schedule, so no room is managed. Add a schedule to the configuration",
   "problem.valve_not_in_ha":
     "Home Assistant has no device for valve {name}; it stays in its previous room",
   "problem.valve_orphan": "Valve {name} is no longer in any room and was not given back",
@@ -224,16 +320,29 @@ export const en = {
   "problem.tick_failed":
     "Heatmaster failed inside while deciding what to send, so valves get no writes and no room temperature. See its log",
   "problem.sensor_label_unused":
-    "Sensor {name} carries the Heatmaster sensor label but is used by no room: {reason}",
+    "Sensor {name} has the heatmaster_temp_sensor label, but no room uses it: {reason}",
+  "problem.sensor_label_unused.no_area": "the sensor is in no area",
+  "problem.sensor_label_unused.area_not_room": "its area holds no valve, so it is no room",
+  "problem.sensor_label_unused.sensor_unknown": "Home Assistant does not know the sensor",
+  "problem.sensor_label_unused.sensor_not_temperature": "it is not a temperature sensor",
+  "problem.sensor_label_unused.sensor_on_valve": "it belongs to a valve",
+  "problem.sensor_label_unused.sensor_limit": "the room already has the most sensors it can have",
   "problem.legacy_label_present":
-    "{name} has Heatmaster sensors, but {entities} still carry room_temperature_sensor, so your own automation still feeds the room until you remove that label",
+    "{name} has Heatmaster sensors, but {entities} still carry room_temperature_sensor. Your own automation still feeds the room until you remove room_temperature_sensor from its sensors",
   "problem.label_foreign":
-    "The Home Assistant label {name} looks like a Heatmaster schedule label but is not one; Heatmaster leaves it alone",
-  "problem.ha_label_failed": "Heatmaster could not write the label change {op} for {name}: {error}",
+    "The Home Assistant label {name} looks like a Heatmaster schedule label but is not one, so Heatmaster leaves it alone",
+  "problem.ha_label_failed":
+    "Heatmaster could not change labels in Home Assistant ({op}, {name}): {error}",
+  "label_op.createLabel": "create a label",
+  "label_op.renameLabel": "rename a label",
+  "label_op.deleteLabel": "delete a label",
+  "label_op.labelArea": "label an area",
+  "label_op.labelEntity": "label a sensor",
   "problem.sensor_unlabellable":
-    "Sensor {name} is configured but Home Assistant has no registry entry for it, so it cannot be labelled",
+    "Sensor {name} is in the configuration, but Home Assistant has no registry entry for it, so Heatmaster cannot label it",
 
-  "error.config_unreadable": "The configuration cannot be read, so it cannot be changed.",
+  "error.config_unreadable":
+    "The configuration cannot be read, so it cannot be changed. See the notice at the top of the page.",
   "error.revision_conflict":
     "The configuration was changed by someone else: you edited revision {expected}, the server has revision {current}. Reload and make your changes again.",
   "error.timezone_missing":
@@ -247,16 +356,12 @@ export const en = {
   "error.ledger_unreadable":
     "The saved original valve settings cannot be read, so valves cannot be added.",
   "error.transport_unusable": "Valve {valveId} cannot be reached through {transport} now.",
-  "error.valve_not_observed":
-    "Valves {valveIds} have not reported yet. They were asked to report; try again shortly.",
-  "error.originals_unreadable":
-    "The original settings of valve {valveId} could not be read ({settings}). To add the valve anyway, accept this below and preview again.",
   "error.valve_not_orphan": "Valve {valveId} is not an orphan.",
   "error.valve_managed": "Valve {valveId} is in a room. Take it out of the configuration first.",
   "error.valve_not_pending":
-    "Valve {valveId} is not waiting for its unknown original settings to be accepted.",
+    "Valve {valveId} is not waiting for its unknown original settings to be accepted. It may have joined its room already.",
   "error.schedule_in_use":
-    "Room {roomId} uses a schedule. A configuration without any schedule is refused while a room exists.",
+    "The configuration needs at least one schedule while rooms exist, for example room {roomId}.",
   "error.not_ready": "Heatmaster is still starting. Try again in a moment.",
   "error.mqtt_fault": "The MQTT connection has a fault: {reason}.",
   "error.body_invalid": "The request is not valid.",
@@ -271,7 +376,7 @@ export const en = {
   "error.ask_limited": "Valve {valveId} was asked a moment ago. Try again in a minute.",
   "error.not_started": "Heatmaster has not finished starting.",
   "error.store_locked":
-    "A Heatmaster file could not be read when it was loaded, so Heatmaster will not overwrite it. For the original valve settings, press Import saved originals; for the configuration, choose Overwrite the unreadable configuration and apply again.",
+    "A Heatmaster file could not be read when it was loaded, so Heatmaster will not overwrite it. For the original valve settings, press Import saved originals. For the configuration, write a valid one in the editor, tick Overwrite the unreadable configuration and apply it; the old file is kept beside it.",
   "error.no_originals_copy": "There is no readable copy of the saved original settings.",
   "error.ledger_readable":
     "The saved original settings can be read, so there is nothing to import.",

@@ -1,16 +1,22 @@
-import type { StateView } from "@heatmaster/core";
+import type { PendingReason, SettingKey, StateView } from "@heatmaster/core";
 import { describe, expect, it } from "vitest";
 import { edited, loaded, previewed, refused, request } from "./editor.ts";
 import { DICTIONARIES, translator } from "./i18n.ts";
 import {
   formatTemperature,
+  renderConfigUnreadable,
   renderEditorControls,
   renderError,
+  renderHaChanges,
   renderHeader,
+  renderHouse,
   renderOtherValves,
+  renderPending,
   renderPlan,
   renderProblems,
   renderRooms,
+  renderUnused,
+  renderUpgrade,
   valveActions,
 } from "./render.ts";
 import {
@@ -221,9 +227,231 @@ describe("render", () => {
         expect(out.querySelector("b")).toBeNull();
       });
     });
+    describe("With a managed room and its schedule", () => {
+      it("shows its area name and its schedule's name, and no not-managed mark", () => {
+        const state = stateView({
+          rooms: [roomView({ name: "Attic", scheduleId: "day", scheduleName: "Daytime" })],
+        });
+        const out = text(renderRooms(state, "en", t));
+        expect(out).toContain("Attic");
+        expect(out).toContain(t("room.schedule", { name: "Daytime" }));
+        expect(out).not.toContain(en["room.not_managed"]);
+      });
+    });
+    describe("With a room that is not managed (an area with a valve and no config yet)", () => {
+      it('shows "not managed" and says nothing is written to its valves', () => {
+        const state = stateView({
+          configState: "empty",
+          rooms: [roomView({ name: "Attic", managed: false })],
+        });
+        const out = text(renderRooms(state, "en", t));
+        expect(out).toContain(en["room.not_managed"]);
+        expect(out).toContain(en["room.not_managed_hint"]);
+        expect(en["room.not_managed_hint"]).toContain("writes nothing");
+        expect(out).toContain(en["room.no_schedule"]);
+      });
+    });
     describe("With no rooms", () => {
       it('shows the "no rooms" text', () => {
         expect(text(renderRooms(stateView(), "en", t))).toContain(en["rooms.none"]);
+      });
+    });
+  });
+
+  describe("renderHouse", () => {
+    describe("With house frozen before the first load", () => {
+      it("shows the not_loaded text", () => {
+        const state = stateView({ house: "frozen", frozenReason: "not_loaded" });
+        expect(text(renderHouse(state, t))).toBe(en["house.frozen.not_loaded"]);
+      });
+    });
+    describe("With house frozen after the link went down", () => {
+      it("shows the link_down text", () => {
+        const state = stateView({ house: "frozen", frozenReason: "link_down" });
+        expect(text(renderHouse(state, t))).toBe(en["house.frozen.link_down"]);
+      });
+    });
+    describe("With house unlinked", () => {
+      it("shows the unlinked text", () => {
+        expect(text(renderHouse(stateView({ house: "unlinked" }), t))).toBe(en["house.unlinked"]);
+      });
+    });
+    describe("With house live", () => {
+      it("shows nothing", () => {
+        expect(text(renderHouse(stateView(), t))).toBe("");
+      });
+    });
+  });
+
+  describe("renderConfigUnreadable", () => {
+    describe('With configState "unreadable"', () => {
+      it("says the file is unchanged, names the v2 rules, and tells how to recover", () => {
+        const out = text(renderConfigUnreadable(stateView({ configState: "unreadable" }), t));
+        expect(out).toContain(en["config_unreadable.title"]);
+        expect(out).toContain("label_id_duplicate");
+        expect(out).toContain("schedule_id_reserved");
+        expect(out).toContain("has not been changed");
+        expect(out).toContain("Overwrite the unreadable configuration");
+        expect(out).toContain("config.unreadable.");
+      });
+      it("is the same in Russian and names the recovery steps", () => {
+        const ru = translator("ru");
+        const out = text(renderConfigUnreadable(stateView({ configState: "unreadable" }), ru));
+        expect(out).toContain("label_id_duplicate");
+        expect(out).toContain("Перезаписать нечитаемую конфигурацию");
+      });
+    });
+    describe('With configState "ok"', () => {
+      it("shows nothing", () => {
+        expect(text(renderConfigUnreadable(stateView(), t))).toBe("");
+      });
+    });
+  });
+
+  describe("renderPending", () => {
+    const pending = (reason: PendingReason, unreadable: readonly SettingKey[] = []) =>
+      stateView({
+        rooms: [roomView({ roomId: "hall", name: "Hall" })],
+        pending: [{ valveId: ID, name: "Hall valve", roomId: "hall", reason, unreadable }],
+      });
+    describe("With a valve pending with originals_unreadable", () => {
+      it("shows its name, room and reason, and an Accept button for it", () => {
+        const out = renderPending(pending("originals_unreadable", ["sensor_source"]), t);
+        expect(text(out)).toContain("Hall valve");
+        expect(text(out)).toContain("Hall");
+        expect(text(out)).toContain(en["pending.reason.originals_unreadable"]);
+        expect(text(out)).toContain(en["setting.sensor_source"]);
+        expect(button(out, "accept-originals")?.dataset.valveId).toBe(ID);
+      });
+    });
+    describe("With a valve pending with valve_not_observed", () => {
+      it("shows its reason and no Accept button", () => {
+        const out = renderPending(pending("valve_not_observed"), t);
+        expect(text(out)).toContain(en["pending.reason.valve_not_observed"]);
+        expect(button(out, "accept-originals")).toBeNull();
+      });
+    });
+    describe("With each pending reason", () => {
+      it("shows readable text in en and ru, never the raw code", () => {
+        for (const language of ["en", "ru"] as const) {
+          for (const reason of [
+            "house_frozen",
+            "ledger_unreadable",
+            "transport_unusable",
+            "valve_not_observed",
+            "originals_unreadable",
+          ] as const) {
+            const out = text(renderPending(pending(reason), translator(language)));
+            expect(out, `${language} ${reason}`).not.toContain(reason);
+          }
+        }
+      });
+    });
+    describe("With no pending valve", () => {
+      it("shows nothing", () => {
+        expect(text(renderPending(stateView(), t))).toBe("");
+      });
+    });
+  });
+
+  describe("renderUnused", () => {
+    describe("With the unused entry attic", () => {
+      it("lists attic with the hint", () => {
+        const out = text(renderUnused(stateView({ unusedEntries: ["attic"] }), t));
+        expect(out).toContain("attic");
+        expect(out).toContain(en["unused.hint"]);
+      });
+    });
+    describe("With no unused entry", () => {
+      it("shows nothing", () => {
+        expect(text(renderUnused(stateView(), t))).toBe("");
+      });
+    });
+  });
+
+  describe("renderHaChanges", () => {
+    describe("With two HA changes", () => {
+      it("lists the newer first, each with its time and items", () => {
+        const older = Date.UTC(2026, 10, 1, 8, 0);
+        const newer = Date.UTC(2026, 10, 2, 9, 30);
+        const state = stateView({
+          rooms: [roomView({ roomId: "hall", name: "Hall" })],
+          haChanges: [
+            {
+              revision: 4,
+              at: older,
+              items: [{ kind: "sensor_added", areaId: "hall", entityId: "sensor.t1" }],
+            },
+            {
+              revision: 5,
+              at: newer,
+              items: [{ kind: "schedule", areaId: "hall", scheduleId: "night" }],
+            },
+          ],
+        });
+        const out = renderHaChanges(state, "en", t);
+        const entries = [...out.querySelectorAll("li.ha-change")].map((li) => li.textContent);
+        const stamp = (at: number) =>
+          new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(
+            new Date(at),
+          );
+        expect(entries).toHaveLength(2);
+        expect(entries[0]).toContain("Revision 5");
+        expect(entries[0]).toContain(stamp(newer));
+        expect(entries[0]).toContain("Schedule of Hall: night");
+        expect(entries[1]).toContain("Revision 4");
+        expect(entries[1]).toContain(stamp(older));
+        expect(entries[1]).toContain("Sensor sensor.t1 added to Hall");
+        expect(text(out)).toContain(en["ha_changes.title"]);
+      });
+    });
+    describe("With no HA change", () => {
+      it("shows nothing", () => {
+        expect(text(renderHaChanges(stateView(), "en", t))).toBe("");
+      });
+    });
+  });
+
+  describe("renderUpgrade", () => {
+    describe("With a report dropping a room without an area", () => {
+      it("names the room, its valves and the reason, with a Dismiss button", () => {
+        const state = stateView({
+          upgrade: {
+            fromVersion: 2,
+            droppedRooms: [{ roomId: "bath", name: "Bath", valveIds: [ID], reason: "no_area" }],
+          },
+        });
+        const out = renderUpgrade(state, t);
+        expect(text(out)).toContain("Bath");
+        expect(text(out)).toContain(ID);
+        expect(text(out)).toContain(en["upgrade.dropped.no_area"]);
+        expect(button(out, "dismiss-upgrade")).not.toBeNull();
+      });
+    });
+    describe("Without a report", () => {
+      it("shows nothing", () => {
+        expect(text(renderUpgrade(stateView(), t))).toBe("");
+      });
+    });
+  });
+
+  describe("renderOtherValves", () => {
+    describe("With a valve in an ignored area", () => {
+      it("shows the ignored_area reason", () => {
+        const state = stateView({
+          valves: [valveView({ valveId: ID, name: "Spare" })],
+          unassigned: [
+            {
+              valveId: ID,
+              name: "Spare",
+              observed: false,
+              liveness: "unknown",
+              values: {},
+              reason: "ignored_area",
+            },
+          ],
+        });
+        expect(text(renderOtherValves(state, t))).toContain(en["unassigned.reason.ignored_area"]);
       });
     });
   });
@@ -344,6 +572,82 @@ describe("render", () => {
         expect(text(renderProblems(stateView({ problems: [problem] }), t))).toContain(
           "The connection to Home Assistant is down",
         );
+      });
+    });
+    describe("With legacy_label_present for a room", () => {
+      it("names the room and room_temperature_sensor", () => {
+        const state = stateView({
+          problems: [
+            problemView({
+              kind: "legacy_label_present",
+              subject: { kind: "room", id: "hall" },
+              name: "Hall",
+              data: { entities: "sensor.a,sensor.b" },
+            }),
+          ],
+        });
+        const out = text(renderProblems(state, t));
+        expect(out).toContain("Hall");
+        expect(out).toContain("room_temperature_sensor");
+        expect(out).toContain("sensor.a, sensor.b");
+      });
+    });
+    describe("With sensor_label_unused and the reason sensor_on_valve", () => {
+      it("shows the reason in words", () => {
+        const state = stateView({
+          problems: [
+            problemView({
+              kind: "sensor_label_unused",
+              subject: { kind: "sensor", id: "ha:sensor.a" },
+              name: "Sensor A",
+              data: { reason: "sensor_on_valve" },
+            }),
+          ],
+        });
+        expect(text(renderProblems(state, t))).toContain(
+          en["problem.sensor_label_unused.sensor_on_valve"],
+        );
+      });
+    });
+    describe("With valve_pending for a valve and its room", () => {
+      it("names the valve, the room's name and the reason in words", () => {
+        const state = stateView({
+          rooms: [roomView({ roomId: "hall", name: "Hall" })],
+          problems: [
+            problemView({
+              kind: "valve_pending",
+              name: "Hall valve",
+              data: { reason: "valve_not_observed", roomId: "hall", settings: "" },
+            }),
+          ],
+        });
+        const out = text(renderProblems(state, t));
+        expect(out).toContain("Hall valve");
+        expect(out).toContain("room Hall");
+        expect(out).toContain(en["pending.reason.valve_not_observed"]);
+      });
+    });
+    describe("With rooms_frozen and ha_label_failed", () => {
+      it("shows the frozen reason and the failed operation in words", () => {
+        const state = stateView({
+          problems: [
+            problemView({
+              kind: "rooms_frozen",
+              subject: { kind: "system", id: "system" },
+              data: { reason: "link_down" },
+            }),
+            problemView({
+              kind: "ha_label_failed",
+              subject: { kind: "label", id: "heatmaster_schedule_day" },
+              name: "heatmaster_schedule_day",
+              data: { op: "createLabel", error: "unauthorized" },
+            }),
+          ],
+        });
+        const out = text(renderProblems(state, t));
+        expect(out).toContain(en["frozen_reason.link_down"]);
+        expect(out).toContain(en["label_op.createLabel"]);
+        expect(out).toContain("unauthorized");
       });
     });
     describe("With ledgerReadable false", () => {
@@ -498,6 +802,24 @@ describe("render", () => {
         expect(text(renderPlan(planView({ held: false }), t, []))).toContain(en["plan.not_held"]);
       });
     });
+    describe("With a pending valve in the plan", () => {
+      it("lists it with its reason", () => {
+        const plan = planView({
+          pending: [
+            {
+              valveId: "z2m:a",
+              name: "Waiting valve",
+              roomId: "office",
+              reason: "valve_not_observed",
+              unreadable: [],
+            },
+          ],
+        });
+        const out = text(renderPlan(plan, t, []));
+        expect(out).toContain("Waiting valve");
+        expect(out).toContain(en["pending.reason.valve_not_observed"]);
+      });
+    });
     describe("With a plan", () => {
       it("no rejoining or leaving list is shown", () => {
         const plan = planView({
@@ -514,7 +836,7 @@ describe("render", () => {
         const headings = [...renderPlan(plan, t, []).querySelectorAll("h4")].map(
           (heading) => heading.textContent,
         );
-        expect(headings).toEqual([en["plan.writes"]]);
+        expect(headings).toEqual([en["plan.pending"], en["plan.writes"]]);
       });
     });
   });

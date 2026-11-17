@@ -71,6 +71,61 @@ describe("i18n", () => {
         }
       });
     });
+    describe("The texts of the rooms from Home Assistant", () => {
+      it("exist in both languages for every code set the page shows", () => {
+        const keys = [
+          "house.frozen.not_loaded",
+          "house.frozen.link_down",
+          "house.unlinked",
+          "room.not_managed",
+          "room.schedule",
+          "pending.title",
+          "pending.accept",
+          "unused.title",
+          "unused.hint",
+          "ha_changes.title",
+          "upgrade.title",
+          "upgrade.dismiss",
+          "config_unreadable.title",
+          "config_unreadable.recover",
+          "error.valve_not_pending",
+          "error.schedule_in_use",
+          ...["house_frozen", "ledger_unreadable", "transport_unusable"].map(
+            (code) => `pending.reason.${code}`,
+          ),
+          ...["valve_not_observed", "originals_unreadable"].map((code) => `pending.reason.${code}`),
+          ...["schedule", "sensor_added", "sensor_removed", "sensors_imported"].map(
+            (kind) => `ha_changes.item.${kind}`,
+          ),
+          ...["no_area", "area_duplicate", "area_id_invalid"].map(
+            (reason) => `upgrade.dropped.${reason}`,
+          ),
+          ...["no_area", "ignored_area", "not_in_ha"].map(
+            (reason) => `unassigned.reason.${reason}`,
+          ),
+          ...[
+            "legacy_label_present",
+            "label_foreign",
+            "ha_label_failed",
+            "sensor_unlabellable",
+          ].map((kind) => `problem.${kind}`),
+          ...["no_area", "area_not_room", "sensor_unknown", "sensor_not_temperature"].map(
+            (reason) => `problem.sensor_label_unused.${reason}`,
+          ),
+        ];
+        for (const language of ["en", "ru"] as const) {
+          for (const key of keys) {
+            expect(Object.hasOwn(DICTIONARIES[language], key), `${language} ${key}`).toBe(true);
+          }
+        }
+      });
+      it("have no text for the removed accept flow", () => {
+        for (const language of ["en", "ru"] as const) {
+          expect(Object.hasOwn(DICTIONARIES[language], "error.valve_not_observed")).toBe(false);
+          expect(Object.hasOwn(DICTIONARIES[language], "error.originals_unreadable")).toBe(false);
+        }
+      });
+    });
     describe("en and ru", () => {
       it("have the same keys", () => {
         expect(Object.keys(DICTIONARIES.ru).sort()).toEqual(Object.keys(DICTIONARIES.en).sort());

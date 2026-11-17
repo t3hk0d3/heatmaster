@@ -1,5 +1,6 @@
 import type {
   ApiError,
+  PendingView,
   PlanView,
   ProblemView,
   RoomView,
@@ -181,6 +182,37 @@ function renderValveRow(valve: ValveView, t: Translate): HTMLElement {
   return row;
 }
 
+function roomName(state: StateView, roomId: string): string {
+  return state.rooms.find((room) => room.roomId === roomId)?.name ?? roomId;
+}
+
+/** The banner while rooms are frozen on the saved areas, or without a Home Assistant link. */
+export function renderHouse(state: StateView, t: Translate): HTMLElement {
+  const box = el("div", { class: "house" });
+  if (state.house === "frozen") {
+    const key =
+      state.frozenReason === "link_down" ? "house.frozen.link_down" : "house.frozen.not_loaded";
+    box.append(textElement("p", t(key), { class: "banner", role: "status" }));
+  } else if (state.house === "unlinked") {
+    box.append(textElement("p", t("house.unlinked"), { class: "banner", role: "status" }));
+  }
+  return box;
+}
+
+/** What a user does about a saved configuration that cannot be read; nothing otherwise. */
+export function renderConfigUnreadable(state: StateView, t: Translate): HTMLElement {
+  const box = el("div", { class: "config-unreadable" });
+  if (state.configState !== "unreadable") return box;
+  const notice = el("section", { class: "banner error", role: "alert" });
+  notice.append(
+    textElement("h2", t("config_unreadable.title")),
+    textElement("p", t("config_unreadable.why")),
+    textElement("p", t("config_unreadable.recover")),
+  );
+  box.append(notice);
+  return box;
+}
+
 function renderRoom(
   room: RoomView,
   state: StateView,
@@ -189,6 +221,22 @@ function renderRoom(
 ): HTMLElement {
   const article = el("article", { class: "room" });
   article.append(textElement("h3", room.name));
+  if (!room.managed) {
+    article.append(
+      textElement("p", t("room.not_managed"), { class: "mark not-managed" }),
+      textElement("p", t("room.not_managed_hint")),
+    );
+  }
+  const scheduleName = room.scheduleName ?? room.scheduleId;
+  article.append(
+    textElement(
+      "p",
+      scheduleName === undefined
+        ? t("room.no_schedule")
+        : t("room.schedule", { name: scheduleName }),
+      { class: "schedule" },
+    ),
+  );
   const facts = el("dl", {});
   facts.append(
     labelled(t("rooms.temperature"), formatTemperature(room.currentTemperature, language)),
@@ -243,6 +291,112 @@ function renderReported(entry: UnassignedValveView, valve: ValveView, t: Transla
   return holder;
 }
 
+export function renderPending(state: StateView, t: Translate): HTMLElement {
+  const section = el("section", { class: "pending" });
+  if (state.pending.length === 0) return section;
+  section.append(textElement("h2", t("pending.title")), textElement("p", t("pending.hint")));
+  const list = el("ul", {});
+  for (const pending of state.pending) {
+    const item = el(
+      "li",
+      { class: "pending-valve" },
+      textElement(
+        "strong",
+        t("pending.item", { name: pending.name, room: roomName(state, pending.roomId) }),
+      ),
+      textElement("p", codeText(t, "pending.reason", pending.reason)),
+    );
+    if (pending.unreadable.length > 0) {
+      const settings = pending.unreadable.map((setting) => codeText(t, "setting", setting));
+      item.append(textElement("p", t("pending.unreadable", { settings: settings.join(", ") })));
+    }
+    if (pending.reason === "originals_unreadable") {
+      item.append(
+        button(t("pending.accept"), "accept-originals", { "data-valve-id": pending.valveId }),
+      );
+    }
+    list.append(item);
+  }
+  section.append(list);
+  return section;
+}
+
+export function renderUnused(state: StateView, t: Translate): HTMLElement {
+  const section = el("section", { class: "unused" });
+  if (state.unusedEntries.length === 0) return section;
+  section.append(textElement("h2", t("unused.title")), textElement("p", t("unused.hint")));
+  const list = el("ul", {});
+  for (const areaId of state.unusedEntries) list.append(textElement("li", areaId));
+  section.append(list);
+  return section;
+}
+
+/** Newest first: the server sends them oldest first. */
+export function renderHaChanges(state: StateView, language: Language, t: Translate): HTMLElement {
+  const section = el("section", { class: "ha-changes" });
+  if (state.haChanges.length === 0) return section;
+  section.append(textElement("h2", t("ha_changes.title")), textElement("p", t("ha_changes.hint")));
+  const formatter = new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" });
+  const list = el("ul", {});
+  for (const change of [...state.haChanges].reverse()) {
+    const time = formatter.format(new Date(change.at));
+    const item = el(
+      "li",
+      { class: "ha-change" },
+      textElement("strong", t("ha_changes.revision", { revision: change.revision, time })),
+    );
+    const lines = el("ul", {});
+    for (const entry of change.items) {
+      const area = entry.areaId === undefined ? "" : roomName(state, entry.areaId);
+      lines.append(
+        textElement(
+          "li",
+          t(`ha_changes.item.${entry.kind}`, {
+            area,
+            entity: entry.entityId ?? "",
+            schedule: entry.scheduleId ?? "",
+          }),
+        ),
+      );
+    }
+    item.append(lines);
+    list.append(item);
+  }
+  section.append(list);
+  return section;
+}
+
+export function renderUpgrade(state: StateView, t: Translate): HTMLElement {
+  const section = el("section", { class: "upgrade" });
+  const report = state.upgrade;
+  if (report === undefined) return section;
+  section.append(
+    textElement("h2", t("upgrade.title")),
+    textElement("p", t("upgrade.intro", { version: report.fromVersion })),
+  );
+  if (report.droppedRooms.length === 0) {
+    section.append(textElement("p", t("upgrade.none_dropped")));
+  } else {
+    const list = el("ul", {});
+    for (const room of report.droppedRooms) {
+      list.append(
+        textElement(
+          "li",
+          t("upgrade.room", {
+            name: room.name,
+            roomId: room.roomId,
+            valves: room.valveIds.length === 0 ? t("upgrade.no_valves") : room.valveIds.join(", "),
+            reason: codeText(t, "upgrade.dropped", room.reason),
+          }),
+        ),
+      );
+    }
+    section.append(list);
+  }
+  section.append(button(t("upgrade.dismiss"), "dismiss-upgrade"));
+  return section;
+}
+
 export function renderOtherValves(state: StateView, t: Translate): HTMLElement {
   const section = el("section", { class: "others" });
   section.append(textElement("h2", t("others.title")));
@@ -257,6 +411,11 @@ export function renderOtherValves(state: StateView, t: Translate): HTMLElement {
   for (const valve of others) {
     const row = renderValveRow(valve, t);
     const entry = entries.get(valve.valveId);
+    if (entry?.reason !== undefined) {
+      row.append(
+        textElement("p", codeText(t, "unassigned.reason", entry.reason), { class: "reason" }),
+      );
+    }
     if (entry !== undefined) row.append(renderReported(entry, valve, t));
     list.append(row);
   }
@@ -271,16 +430,30 @@ const PROBLEM_CODE_PARAMS: Readonly<Record<string, string>> = {
   transport: "link",
   mode: "mode",
   store: "store",
+  op: "label_op",
 };
 
-function problemText(problem: ProblemView, t: Translate): string {
+/** The `reason` of these problems has its own texts; any other reason is a link's. */
+const PROBLEM_REASON_PREFIX: Readonly<Record<string, string>> = {
+  sensor_label_unused: "problem.sensor_label_unused",
+  valve_pending: "pending.reason",
+  rooms_frozen: "frozen_reason",
+};
+
+function problemText(problem: ProblemView, state: StateView, t: Translate): string {
   const key = `problem.${problem.kind}`;
   const params: Record<string, string> = { name: problem.name };
   if (problem.kind === "link_down") params.name = codeText(t, "link", problem.subject.id);
   for (const [name, value] of Object.entries(problem.data)) {
-    const prefix = PROBLEM_CODE_PARAMS[name];
+    const prefix =
+      name === "reason"
+        ? (PROBLEM_REASON_PREFIX[problem.kind] ?? "reason")
+        : PROBLEM_CODE_PARAMS[name];
     params[name] = prefix === undefined ? value : codeText(t, prefix, value);
   }
+  if (problem.data.roomId !== undefined) params.room = roomName(state, problem.data.roomId);
+  if (problem.data.entities !== undefined)
+    params.entities = problem.data.entities.split(",").join(", ");
   return isTextKey(key) ? t(key, params) : problem.kind;
 }
 
@@ -297,7 +470,7 @@ export function renderProblems(state: StateView, t: Translate, offerEmpty = fals
           "li",
           { class: `problem ${problem.severity}` },
           textElement("strong", `${t(`severity.${problem.severity}`)}: `),
-          problemText(problem, t),
+          problemText(problem, state, t),
         ),
       );
     }
@@ -338,6 +511,21 @@ function renderWrite(write: WriteView, valves: readonly ValveView[], t: Translat
   return item;
 }
 
+function renderPlanPending(pending: readonly PendingView[], t: Translate): HTMLElement {
+  const list = el("ul", {});
+  for (const entry of pending) {
+    list.append(
+      el(
+        "li",
+        {},
+        textElement("strong", entry.name),
+        textElement("span", ` — ${codeText(t, "pending.reason", entry.reason)}`),
+      ),
+    );
+  }
+  return list;
+}
+
 export function renderPlan(
   plan: PlanView,
   t: Translate,
@@ -375,6 +563,11 @@ export function renderPlan(
       list.append(item);
     }
     section.append(list);
+  }
+
+  if (plan.pending.length > 0) {
+    section.append(textElement("h4", t("plan.pending")));
+    section.append(renderPlanPending(plan.pending, t));
   }
 
   section.append(textElement("h4", t("plan.writes")));

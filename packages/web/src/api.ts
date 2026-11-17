@@ -25,6 +25,10 @@ export type ApiClient = Readonly<{
   restore(valveId: string): Promise<Result<void>>;
   forget(valveId: string): Promise<Result<void>>;
   importOriginals(acceptEmpty: boolean): Promise<Result<void>>;
+  /** Joins a valve whose originals cannot be read, taking them as unknown. */
+  acceptOriginals(valveId: string): Promise<Result<void>>;
+  /** Hides the report of the conversion from an older configuration. */
+  dismissUpgrade(): Promise<Result<void>>;
 }>;
 
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -91,5 +95,8 @@ export function createClient(base: string, fetchFn: typeof fetch): ApiClient {
     restore: (valveId) => call<undefined>("POST", valvePath(valveId, "restore"), {}),
     forget: (valveId) => call<undefined>("POST", valvePath(valveId, "forget"), {}),
     importOriginals: (acceptEmpty) => call<undefined>("POST", "originals/import", { acceptEmpty }),
+    acceptOriginals: (valveId) =>
+      call<undefined>("POST", valvePath(valveId, "accept-originals"), {}),
+    dismissUpgrade: () => call<undefined>("POST", "upgrade/dismiss", {}),
   };
 }

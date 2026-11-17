@@ -118,6 +118,19 @@ describe("api", () => {
       });
     });
 
+    describe("acceptOriginals / dismissUpgrade", () => {
+      it("send POST to <base>valves/<id>/accept-originals and <base>upgrade/dismiss with {}", async () => {
+        const { fetchFn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
+        const client = createClient("/api/", fetchFn);
+        await client.acceptOriginals("z2m:a");
+        await client.dismissUpgrade();
+        expect(calls.map((c) => [c.url, c.init?.method, c.init?.body])).toEqual([
+          ["/api/valves/z2m%3Aa/accept-originals", "POST", "{}"],
+          ["/api/upgrade/dismiss", "POST", "{}"],
+        ]);
+      });
+    });
+
     describe("With an answer 204", () => {
       it("returns ok with no value", async () => {
         const { fetchFn } = fakeFetch(() => new Response(null, { status: 204 }));

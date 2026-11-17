@@ -59,6 +59,9 @@ dd {
 .valve,
 .plan,
 .error,
+.banner,
+.pending-valve,
+.ha-change,
 .originals {
   border: 1px solid currentcolor;
   border-radius: 0.4rem;

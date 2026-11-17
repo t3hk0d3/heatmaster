@@ -16,13 +16,19 @@ import type { ConnectionStatus } from "./events.ts";
 import { LANGUAGE_KEY, isLanguage, pickLanguage, translator } from "./i18n.ts";
 import type { Language } from "./i18n.ts";
 import {
+  renderConfigUnreadable,
   renderEditorControls,
   renderError,
+  renderHaChanges,
   renderHeader,
+  renderHouse,
   renderOtherValves,
+  renderPending,
   renderPlan,
   renderProblems,
   renderRooms,
+  renderUnused,
+  renderUpgrade,
 } from "./render.ts";
 
 export type AppDeps = Readonly<{
@@ -81,7 +87,12 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
 
   const headerBox = element(document, "div", "header-box");
   const noticeBox = element(document, "div", "notice-box");
+  const houseBox = element(document, "div", "house-box");
   const roomsBox = element(document, "div", "rooms-box");
+  const pendingBox = element(document, "div", "pending-box");
+  const unusedBox = element(document, "div", "unused-box");
+  const haChangesBox = element(document, "div", "ha-changes-box");
+  const upgradeBox = element(document, "div", "upgrade-box");
   const othersBox = element(document, "div", "others-box");
   const problemsBox = element(document, "div", "problems-box");
   const editorSection = element(document, "section", "editor");
@@ -94,7 +105,18 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
   const editorErrorBox = element(document, "div", "editor-error-box");
   editorSection.append(editorTitle, textarea, controlsBox, planBox, editorErrorBox);
   const main = document.createElement("main");
-  main.append(noticeBox, roomsBox, othersBox, problemsBox, editorSection);
+  main.append(
+    noticeBox,
+    houseBox,
+    upgradeBox,
+    roomsBox,
+    pendingBox,
+    unusedBox,
+    haChangesBox,
+    othersBox,
+    problemsBox,
+    editorSection,
+  );
   root.replaceChildren(headerBox, main);
 
   function render(): void {
@@ -107,11 +129,21 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
       ...(actionError === undefined ? [] : [renderError(actionError, t)]),
     );
     if (state === undefined) {
+      houseBox.replaceChildren();
       roomsBox.replaceChildren();
+      pendingBox.replaceChildren();
+      unusedBox.replaceChildren();
+      haChangesBox.replaceChildren();
+      upgradeBox.replaceChildren();
       othersBox.replaceChildren();
       problemsBox.replaceChildren();
     } else {
+      houseBox.replaceChildren(renderConfigUnreadable(state, t), renderHouse(state, t));
+      upgradeBox.replaceChildren(renderUpgrade(state, t));
       roomsBox.replaceChildren(renderRooms(state, language, t));
+      pendingBox.replaceChildren(renderPending(state, t));
+      unusedBox.replaceChildren(renderUnused(state, t));
+      haChangesBox.replaceChildren(renderHaChanges(state, language, t));
       othersBox.replaceChildren(renderOtherValves(state, t));
       problemsBox.replaceChildren(renderProblems(state, t, offerEmpty));
     }
@@ -209,6 +241,18 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     if (!halted()) render();
   }
 
+  async function acceptOriginals(valveId: string): Promise<void> {
+    const name = state?.pending.find((entry) => entry.valveId === valveId)?.name ?? valveId;
+    if (!deps.confirm(translator(language)("pending.accept_question", { name }))) return;
+    report(await run(() => client.acceptOriginals(valveId)));
+    if (!halted()) render();
+  }
+
+  async function dismissUpgrade(): Promise<void> {
+    report(await run(() => client.dismissUpgrade()));
+    if (!halted()) render();
+  }
+
   async function importOriginals(acceptEmpty: boolean): Promise<void> {
     if (acceptEmpty && !deps.confirm(translator(language)("originals.import_empty_question"))) {
       return;
@@ -260,6 +304,12 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
       case "restore":
       case "forget":
         void valveAction(action, valveId);
+        break;
+      case "accept-originals":
+        void acceptOriginals(valveId);
+        break;
+      case "dismiss-upgrade":
+        void dismissUpgrade();
         break;
       case "import":
         void importOriginals(false);
