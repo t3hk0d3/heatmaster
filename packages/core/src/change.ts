@@ -154,9 +154,12 @@ export function planChange(
       current: String(revision),
     });
   }
-  // A fresh install's config (revision 0) was never applied: it does not count as running.
+  // A config without a schedule runs nothing: a fresh install's, whatever raised its revision (a
+  // released hold, the sensor import), does not count as running.
   const runningWithoutZone =
-    old !== undefined && old.revision > 0 && old.config.settings.timezone === undefined;
+    old !== undefined &&
+    old.config.schedules.length > 0 &&
+    old.config.settings.timezone === undefined;
   if (!options.haLinked && config.settings.timezone === undefined && !runningWithoutZone) {
     throw new ChangeRefused("timezone_missing");
   }

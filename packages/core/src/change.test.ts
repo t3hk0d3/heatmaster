@@ -651,6 +651,26 @@ describe("change", () => {
       });
     });
 
+    describe("With no timezone in the document, haLinked false, and a fresh install raised to revision 1 without a schedule", () => {
+      const raised = (stored: StoredConfig): World => ({
+        ...first(devicesOf({ [V1]: observedView() })),
+        configState: "ok",
+        stored,
+      });
+      const raw = doc({ living: {} }, { timezone: undefined });
+
+      it("throws ChangeRefused timezone_missing after the hold was released", () => {
+        const world = raised(withHold(FRESH_STORED, false));
+        expect(world.stored?.revision).toBe(1);
+        expect(codeOf(() => plan(world, raw, { haLinked: false }))).toBe("timezone_missing");
+      });
+
+      it("throws ChangeRefused timezone_missing after the sensor import raised it", () => {
+        const world = raised({ ...FRESH_STORED, revision: 1, importedAreas: ["living"] });
+        expect(codeOf(() => plan(world, raw, { haLinked: false }))).toBe("timezone_missing");
+      });
+    });
+
     describe("With no timezone in the document and haLinked true", () => {
       it("returns a plan", () => {
         const world = first(devicesOf({ [V1]: observedView() }));
