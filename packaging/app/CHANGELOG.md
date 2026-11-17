@@ -11,7 +11,8 @@
   belong to an administrator.
 - A valve that cannot join waits as pending and never holds up other valves; unknown originals are accepted only by
   pressing "Accept unknown originals". While Home Assistant is down, rooms are frozen on the last known areas.
-- A one-time import takes each room's sensors from `room_temperature_sensor`.
+- Each room, once, takes its sensors from `room_temperature_sensor` when it first exists, also a room that joins
+  later. A valve that both Home Assistant and Zigbee2MQTT lost can be forgotten from the page.
 - Rollback is now: label the areas `heatmaster_ignore`.
 
 ## 0.1.1

@@ -179,8 +179,8 @@ runs.
 **Config to Home Assistant.** Heatmaster creates one label per schedule (it creates the name
 `heatmaster_schedule_<id>`, then renames it to "Heatmaster: <name>"), puts the room's schedule label
 on each room's area (a room on the default schedule wears the default's label too, so your
-automations see every room's schedule), and puts `heatmaster_temp_sensor` on every sensor a room
-lists, and takes it off sensors no room lists. It adopts an existing label with the right id, and
+automations see every room's schedule), and puts `heatmaster_temp_sensor` on every sensor any
+`rooms` entry lists (unused entries too), and takes it off sensors no entry lists. It adopts an existing label with the right id, and
 removes the labels of schedules that no longer exist.
 
 **Home Assistant to config.** A label edit made while Heatmaster runs becomes a config revision,
@@ -220,6 +220,14 @@ Known limits:
   is overwritten.
 - **Home Assistant stops answering just after a write.** A user edit to one of that write's
   targets may be reverted until the first settle after Home Assistant answers again.
+- **Two Home Assistant stalls within a few seconds.** If Home Assistant stops answering twice in a
+  row, once at the end of a label write and once for a reload just after it, a late echo of
+  Heatmaster's own write can be read as your edit: a room's schedule assignment may go back to the
+  older config. It shows as a "changed in Home Assistant" revision, which you can undo by applying
+  the config again.
+- **A label edit just before a mirror.** A label edit made in the 5 seconds before Heatmaster
+  writes the labels (after an apply, at a reconnect, after a room change, or right after another
+  write) is not taken: the labels are set back to the config.
 - **A sensor a room already lists.** A `heatmaster_temp_sensor` label on a sensor that a room
   already lists is ignored, so it cannot move the sensor into another room. To move a sensor
   between rooms, edit the config.
@@ -308,7 +316,13 @@ come from Home Assistant, not from the config.)
 ## When a file cannot be read
 
 An unreadable config freezes every valve; apply a config with the overwrite switch, and the old
-file is kept beside the new one. An unreadable ledger: "Import saved originals" takes the newest
+file is kept beside the new one.
+
+**While the config cannot be saved** (a full or read-only disk), every tick that must save a room
+change (a valve joins or leaves a room, a release is ordered or ends) stops after the failed save:
+no valve write and no temperature push goes out in that tick, for any room, and a problem says the
+config could not be saved. Valves keep their last set point and fall back to their own sensor once
+the pushed temperature is stale. Free the disk and the next tick goes on. An unreadable ledger: "Import saved originals" takes the newest
 readable copy from the public folder. After a reinstall the same button brings back the originals
 of valves that were not released; until it is pressed no valve can join. Originals that are not
 wanted are forgotten afterwards, valve by valve.
