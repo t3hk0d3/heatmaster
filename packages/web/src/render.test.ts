@@ -275,9 +275,34 @@ describe("render", () => {
         });
         const out = text(renderRooms(state, "en", t));
         expect(out).toContain(en["room.not_managed"]);
-        expect(out).toContain(en["room.not_managed_hint"]);
-        expect(en["room.not_managed_hint"]).toContain("writes nothing");
+        expect(out).toContain(en["room.not_managed_hint.no_config"]);
+        expect(en["room.not_managed_hint.no_config"]).toContain("writes nothing");
         expect(out).toContain(en["room.no_schedule"]);
+      });
+    });
+    describe("With a room that is not managed, by its cause", () => {
+      it.each([
+        ["no Home Assistant link", { house: "unlinked" }, "room.not_managed_hint.unlinked"],
+        ["an unreadable config", { configState: "unreadable" }, "room.not_managed_hint.no_config"],
+        [
+          "a saved config with no schedule (a fresh install)",
+          { revision: 0 },
+          "room.not_managed_hint.no_schedule",
+        ],
+      ] as const)("with %s, the hint names that cause", (_, over, key) => {
+        const state = stateView({ ...over, rooms: [roomView({ managed: false })] });
+        const out = text(renderRooms(state, "en", t));
+        expect(out).toContain(en[key]);
+        expect(out).not.toContain(en["room.not_managed_hint"]);
+      });
+    });
+    describe("With no rooms while the house is not live", () => {
+      it("says rooms are not known without Home Assistant, not that no area holds a valve", () => {
+        for (const house of ["frozen", "unlinked"] as const) {
+          const out = text(renderRooms(stateView({ house }), "en", t));
+          expect(out).toContain(en["rooms.unknown"]);
+          expect(out).not.toContain(en["rooms.none"]);
+        }
       });
     });
     describe("With no rooms", () => {
@@ -404,7 +429,10 @@ describe("render", () => {
         const older = Date.UTC(2026, 10, 1, 8, 0);
         const newer = Date.UTC(2026, 10, 2, 9, 30);
         const state = stateView({
-          rooms: [roomView({ roomId: "hall", name: "Hall" })],
+          rooms: [
+            roomView({ roomId: "hall", name: "Hall" }),
+            roomView({ roomId: "den", name: "Den", scheduleId: "night", scheduleName: "Nights" }),
+          ],
           haChanges: [
             {
               revision: 4,
@@ -427,7 +455,7 @@ describe("render", () => {
         expect(entries).toHaveLength(2);
         expect(entries[0]).toContain("Revision 5");
         expect(entries[0]).toContain(stamp(newer));
-        expect(entries[0]).toContain("Schedule of Hall: night");
+        expect(entries[0]).toContain("Schedule of Hall: Nights");
         expect(entries[1]).toContain("Revision 4");
         expect(entries[1]).toContain(stamp(older));
         expect(entries[1]).toContain("Sensor sensor.t1 added to Hall");
@@ -502,6 +530,14 @@ describe("render", () => {
   });
 
   describe("renderOtherValves", () => {
+    describe("With a valve in no room while the house is not live", () => {
+      it("does not tell the user to put it into an area", () => {
+        const state = stateView({ house: "frozen", valves: [valveView({ valveId: ID })] });
+        const out = text(renderOtherValves(state, t));
+        expect(out).toContain(en["others.hint_without_ha"]);
+        expect(out).not.toContain(en["others.hint"]);
+      });
+    });
     describe("With a supported valve in no room", () => {
       it("shows its name and its id", () => {
         const state = stateView({ valves: [valveView({ valveId: ID, name: "Spare" })] });
@@ -709,7 +745,7 @@ describe("render", () => {
         const out = text(renderProblems(state, t));
         expect(out).toContain(en["frozen_reason.link_down"]);
         expect(out).toContain(en["label_op.createLabel"]);
-        expect(out).toContain("unauthorized");
+        expect(out).toContain(en["label_error.unauthorized"]);
       });
     });
     describe("With ledgerReadable false", () => {

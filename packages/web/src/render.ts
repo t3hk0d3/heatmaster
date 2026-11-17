@@ -189,6 +189,26 @@ function renderValveRow(valve: ValveView, t: Translate): HTMLElement {
   return row;
 }
 
+/** Why a room is not managed, as far as the page can tell. */
+function notManagedHint(
+  room: RoomView,
+  state: StateView,
+):
+  | "room.not_managed_hint"
+  | "room.not_managed_hint.unlinked"
+  | "room.not_managed_hint.no_config"
+  | "room.not_managed_hint.no_schedule" {
+  if (state.house === "unlinked") return "room.not_managed_hint.unlinked";
+  if (state.configState !== "ok") return "room.not_managed_hint.no_config";
+  if (room.scheduleId === undefined) return "room.not_managed_hint.no_schedule";
+  return "room.not_managed_hint";
+}
+
+/** A schedule's name as a room card shows it, else its id. */
+function scheduleName(state: StateView, scheduleId: string): string {
+  return state.rooms.find((room) => room.scheduleId === scheduleId)?.scheduleName ?? scheduleId;
+}
+
 function roomName(state: StateView, roomId: string): string {
   return state.rooms.find((room) => room.roomId === roomId)?.name ?? roomId;
 }
@@ -231,7 +251,7 @@ function renderRoom(
   if (!room.managed) {
     article.append(
       textElement("p", t("room.not_managed"), { class: "mark not-managed" }),
-      textElement("p", t("room.not_managed_hint")),
+      textElement("p", t(notManagedHint(room, state))),
     );
   }
   const scheduleName = room.scheduleName ?? room.scheduleId;
@@ -272,7 +292,9 @@ function renderRoom(
 export function renderRooms(state: StateView, language: Language, t: Translate): HTMLElement {
   const section = el("section", { class: "rooms" });
   section.append(textElement("h2", t("rooms.title")));
-  if (state.rooms.length === 0) section.append(textElement("p", t("rooms.none")));
+  if (state.rooms.length === 0) {
+    section.append(textElement("p", t(state.house === "live" ? "rooms.none" : "rooms.unknown")));
+  }
   for (const room of state.rooms) section.append(renderRoom(room, state, language, t));
   return section;
 }
@@ -361,7 +383,7 @@ export function renderHaChanges(state: StateView, language: Language, t: Transla
           t(`ha_changes.item.${entry.kind}`, {
             area,
             entity: entry.entityId ?? "",
-            schedule: entry.scheduleId ?? "",
+            schedule: entry.scheduleId === undefined ? "" : scheduleName(state, entry.scheduleId),
           }),
         ),
       );
@@ -410,7 +432,9 @@ export function renderOtherValves(state: StateView, t: Translate): HTMLElement {
     section.append(textElement("p", t("others.none")));
     return section;
   }
-  section.append(textElement("p", t("others.hint")));
+  section.append(
+    textElement("p", t(state.house === "live" ? "others.hint" : "others.hint_without_ha")),
+  );
   const entries = new Map(state.unassigned.map((entry) => [entry.valveId, entry]));
   const list = el("ul", { class: "valves" });
   for (const valve of others) {
@@ -436,6 +460,7 @@ const PROBLEM_CODE_PARAMS: Readonly<Record<string, string>> = {
   mode: "mode",
   store: "store",
   op: "label_op",
+  error: "label_error",
 };
 
 /** The `reason` of these problems has its own texts; any other reason is a link's. */

@@ -122,11 +122,18 @@ export const en = {
 
   "rooms.title": "Rooms",
   "rooms.none": "No Home Assistant area holds a valve yet, so there are no rooms.",
+  "rooms.unknown": "Rooms come from Home Assistant's areas, so they are not known without it.",
   "room.schedule": "Schedule: {name}",
   "room.no_schedule": "No schedule",
   "room.not_managed": "Not managed",
   "room.not_managed_hint":
     "Heatmaster writes nothing to the valves of this room. It starts once the configuration is saved and Home Assistant is linked.",
+  "room.not_managed_hint.unlinked":
+    "Heatmaster writes nothing to the valves of this room. It starts once Home Assistant is linked (HA_URL and HA_TOKEN).",
+  "room.not_managed_hint.no_config":
+    "Heatmaster writes nothing to the valves of this room. It starts once a configuration is applied.",
+  "room.not_managed_hint.no_schedule":
+    "Heatmaster writes nothing to the valves of this room. It starts once the configuration has a schedule.",
   "rooms.temperature": "Temperature",
   "rooms.target": "Target",
   "rooms.sync": "Sync",
@@ -153,6 +160,7 @@ export const en = {
   "others.none": "No valves outside rooms.",
   "others.hint":
     "These valves are in no room. Put a valve's device into an area in Home Assistant to give it a room.",
+  "others.hint_without_ha": "These valves are in no room.",
   "others.not_reported": "The valve has not reported yet.",
   "others.reported": "Reported values",
 
@@ -341,6 +349,10 @@ export const en = {
     "The Home Assistant label {name} looks like a Heatmaster schedule label but is not one, so Heatmaster leaves it alone",
   "problem.ha_label_failed":
     "Heatmaster could not change labels in Home Assistant ({op}, {name}): {error}",
+  "label_error.unauthorized":
+    "the token's user is not an administrator of Home Assistant, and only an administrator may change labels",
+  "label_error.timeout": "Home Assistant did not answer in time",
+  "label_error.link_down": "the connection to Home Assistant dropped",
   "label_op.createLabel": "create a label",
   "label_op.renameLabel": "rename a label",
   "label_op.deleteLabel": "delete a label",

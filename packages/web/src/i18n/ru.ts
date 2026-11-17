@@ -43,11 +43,18 @@ export const ru: Dictionary = {
 
   "rooms.title": "Комнаты",
   "rooms.none": "Пока ни в одной зоне Home Assistant нет клапана, поэтому комнат нет.",
+  "rooms.unknown": "Комнаты берутся из зон Home Assistant, поэтому без него они неизвестны.",
   "room.schedule": "Расписание: {name}",
   "room.no_schedule": "Расписания нет",
   "room.not_managed": "Не управляется",
   "room.not_managed_hint":
     "Heatmaster ничего не записывает в клапаны этой комнаты. Он начнёт, когда конфигурация будет сохранена, а связь с Home Assistant — настроена.",
+  "room.not_managed_hint.unlinked":
+    "Heatmaster ничего не записывает в клапаны этой комнаты. Он начнёт, когда будет настроена связь с Home Assistant (HA_URL и HA_TOKEN).",
+  "room.not_managed_hint.no_config":
+    "Heatmaster ничего не записывает в клапаны этой комнаты. Он начнёт, когда будет применена конфигурация.",
+  "room.not_managed_hint.no_schedule":
+    "Heatmaster ничего не записывает в клапаны этой комнаты. Он начнёт, когда в конфигурации появится расписание.",
   "rooms.temperature": "Температура",
   "rooms.target": "Цель",
   "rooms.sync": "Синхронизация",
@@ -74,6 +81,7 @@ export const ru: Dictionary = {
   "others.none": "Нет клапанов вне комнат.",
   "others.hint":
     "Эти клапаны не входят ни в одну комнату. Чтобы клапан получил комнату, отнесите его устройство к зоне в Home Assistant.",
+  "others.hint_without_ha": "Эти клапаны не входят ни в одну комнату.",
   "others.not_reported": "Клапан ещё ничего не сообщил.",
   "others.reported": "Сообщённые значения",
 
@@ -264,6 +272,10 @@ export const ru: Dictionary = {
     "Метка Home Assistant {name} похожа на метку расписания Heatmaster, но ею не является, поэтому Heatmaster её не трогает",
   "problem.ha_label_failed":
     "Heatmaster не смог изменить метки в Home Assistant ({op}, {name}): {error}",
+  "label_error.unauthorized":
+    "пользователь токена не администратор Home Assistant, а менять метки может только администратор",
+  "label_error.timeout": "Home Assistant не ответил вовремя",
+  "label_error.link_down": "связь с Home Assistant прервалась",
   "label_op.createLabel": "создание метки",
   "label_op.renameLabel": "переименование метки",
   "label_op.deleteLabel": "удаление метки",
