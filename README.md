@@ -72,7 +72,7 @@ the supported valves whose Home Assistant device is in that area. Its id is the 
   (Zigbee2MQTT's Home Assistant discovery is off, or the device was deleted). A valve that Home
   Assistant has no device for stays in its previous room and shows a problem; it is never
   released for that.
-- **A valve that cannot join yet waits as pending** and is tried again every tick. The page lists
+- **A valve that cannot join yet waits as pending** and is tried again every tick (30 seconds). The page lists
   it with the reason (not yet reported, cannot be reached, the saved originals cannot be read).
   One pending valve never holds up another valve or room.
 - **While Home Assistant is down,** or not yet loaded after a start, rooms are frozen on the last
@@ -150,12 +150,13 @@ their names.
 1. The page shows the rooms Home Assistant gives (and the valves in no room), and whether each
    valve has reported yet.
 2. Write the config: the schedules and a `default_schedule`. A new config holds writes unless it
-   says otherwise (`hold_writes`). The first start of a fresh install holds writes too, so nothing
-   is written before you have seen every room.
+   says otherwise (`hold_writes`). The first start of a fresh install holds writes too, so no valve
+   is written before you have seen every room. Labels are still mirrored and the one-time sensor
+   import still runs while writes are held, because they are not valve writes.
 3. Preview: check the valves that join, their captured originals and the planned writes. The
    captured originals are what Zigbee2MQTT's cache held at that moment; a preview asks each
    joining valve to report, so preview once more before applying if a value looks wrong.
-4. Apply. Nothing is written yet; Heatmaster only asks the valves to report.
+4. Apply. No valve is written yet; Heatmaster only asks the valves to report.
 5. Check the rooms, the problems and the diagnostics.
 6. Press "Release writes".
 
@@ -185,12 +186,16 @@ removes the labels of schedules that no longer exist.
 listed on the page as "changed in Home Assistant", newest first (the last 20 are kept):
 
 - Moving a schedule label onto an area, or changing which one it wears, changes the room's
-  schedule. With two schedule labels on one area the newest wins and the other is removed.
+  schedule. Taking the schedule label off an area, with none left, puts the room back on
+  `default_schedule`. With two schedule labels on one area the newest wins and the other is removed.
 - Adding `heatmaster_temp_sensor` to a sensor puts it in the room of its own area, else its
   device's area, with weight 1. Removing the label takes the sensor out of every room that lists
   it. If the area is not a room, or the sensor fails the checks (not a temperature sensor, belongs
   to a valve, unknown to Home Assistant, the room has 16 sensors already), the label stays and a
   problem names the sensor; no room changes.
+
+A label edit that would need a config entry the config cannot hold (more than 64 entries, or an
+area id that is not 1 to 64 lowercase letters, digits and underscores) is ignored, with no problem.
 
 Heatmaster's own label writes never come back as revisions.
 
@@ -232,7 +237,8 @@ Version 0.2 reads a stored config of version 1 or 2 and converts it to version 3
 - Room ids become area ids. A room whose old id differed from its area's gets new Home Assistant
   entity ids (`<platform>.heatmaster_<area id>_<kind>`); the old ones stay in Home Assistant until
   deleted there.
-- **The first start after a conversion is held**, like a fresh install, because it may adopt valves
+- **The first start after a conversion is held** (no valve is written; labels are still mirrored and
+  the sensor import still runs), like a fresh install, because it may adopt valves
   you left out on purpose. Look at the rooms, then press "Release writes" once.
 - A valve managed under the old config that ends in no room is released: its original sensor
   source and active group are written back.
@@ -255,7 +261,7 @@ Nothing else needs to change: the sensors keep their `heatmaster_temp_sensor` la
 ## Pending valves
 
 A valve that is in a room but fails a join check is listed under "Valves waiting to join a room"
-with its reason, and is tried again every few seconds. Most reasons clear by themselves.
+with its reason, and is tried again every tick (30 seconds). Most reasons clear by themselves.
 
 The exception is unknown originals: some of the valve's current settings cannot be read, so they
 cannot be saved and given back later. Heatmaster never accepts that by itself. Press "Accept
