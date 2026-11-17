@@ -1,53 +1,120 @@
 import { validateConfig } from "@heatmaster/core";
 import type { Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
 
-/** A small valid config document. */
+const WEEK = [
+  {
+    days: "weekdays",
+    temperature: { "00:00": "eco", "06:30": "comfort", "22:00": 18 },
+  },
+  { days: "weekend", temperature: { "00:00": "eco" } },
+];
+
+const SETTINGS = {
+  external_write_interval_min: 10,
+  sensor_stale_min: 30,
+  hold_writes: false,
+  timezone: "Europe/Amsterdam",
+  language: "en",
+};
+
+const PRESETS = { comfort: 21, eco: 18, frost: 8, boost: 24 };
+
+/** A small valid version 3 config document: two schedules, two room entries. */
 export function rawConfig(): Record<string, unknown> {
   return {
-    version: 2,
-    settings: {
-      external_write_interval_min: 10,
-      sensor_stale_min: 30,
-      hold_writes: false,
-      timezone: "Europe/Amsterdam",
-      language: "en",
-    },
-    presets: { comfort: 21, eco: 18, frost: 8, boost: 24 },
+    version: 3,
+    settings: SETTINGS,
+    presets: PRESETS,
     schedules: [
-      {
-        id: "default",
-        name: "Default week",
-        week: [
-          {
-            days: "weekdays",
-            temperature: { "00:00": "eco", "06:30": "comfort", "22:00": 18 },
-          },
-          { days: "weekend", temperature: { "00:00": "eco" } },
-        ],
-      },
+      { id: "default", name: "Default week", week: WEEK },
+      { id: "away", name: "Away", week: WEEK },
     ],
-    rooms: [
-      {
-        id: "living",
-        name: "Living room",
-        area_id: "living_room",
-        schedule_id: "default",
-        valves: [{ id: "z2m:0x00124b0012345678" }],
+    default_schedule: "default",
+    rooms: {
+      living_room: {
         sensors: [{ ref: "ha:sensor.living_temperature", weight: 2 }],
         presets: { comfort: 22 },
       },
-    ],
+      office: { schedule: "away" },
+    },
   };
 }
 
 export const SAMPLE_VALVE = "z2m:0x00124b0012345678";
 export const SAMPLE_RELEASED_VALVE = "z2m:0x00124b00aaaaaaaa";
 
+/** A full version 3 stored config: a membership, an HA change and an upgrade report. */
 export function sampleStored(): StoredConfig {
   return {
     config: validateConfig(rawConfig()),
     revision: 3,
     releasing: new Map([[SAMPLE_RELEASED_VALVE, 1_700_000_000_000]]),
+    membership: {
+      rooms: new Map([
+        ["living_room", { name: "Living room", valveIds: [SAMPLE_VALVE] }],
+        ["office", { name: "Office", valveIds: ["z2m:0x00124b0000000009"] }],
+      ]),
+      ignored: ["garage"],
+    },
+    sensorImport: "done",
+    haChanges: [
+      {
+        revision: 2,
+        at: 1_700_000_050_000,
+        items: [
+          {
+            kind: "schedule",
+            areaId: "office",
+            entityId: undefined,
+            scheduleId: "away",
+          },
+          {
+            kind: "sensor_added",
+            areaId: "living_room",
+            entityId: "sensor.living_temperature",
+            scheduleId: undefined,
+          },
+        ],
+      },
+    ],
+    upgrade: {
+      fromVersion: 2,
+      droppedRooms: [
+        { roomId: "attic", name: "Attic", valveIds: ["z2m:0x00124b0000000007"], reason: "no_area" },
+      ],
+    },
+  };
+}
+
+/**
+ * What the version 1 and version 2 house fixtures become on load: their one room is the area
+ * `living_room`, writes are held, the sensor import is pending, and the upgrade report is empty.
+ */
+export function convertedStored(): StoredConfig {
+  const config = validateConfig({
+    version: 3,
+    settings: { ...SETTINGS, hold_writes: true },
+    presets: PRESETS,
+    schedules: [{ id: "default", name: "Default week", week: WEEK }],
+    default_schedule: "default",
+    rooms: {
+      living_room: {
+        sensors: [{ ref: "ha:sensor.living_temperature", weight: 2 }],
+        presets: { comfort: 22 },
+      },
+    },
+  });
+  return {
+    config,
+    revision: 3,
+    releasing: new Map([[SAMPLE_RELEASED_VALVE, 1_700_000_000_000]]),
+    membership: {
+      rooms: new Map([["living_room", { name: "Living room", valveIds: [SAMPLE_VALVE] }]]),
+      ignored: [],
+    },
+    sensorImport: "pending",
+    haChanges: [],
+    upgrade: { fromVersion: 2, droppedRooms: [] },
   };
 }
 

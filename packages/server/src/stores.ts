@@ -12,13 +12,18 @@ import {
   storedFromRaw,
   storedToRaw,
   upgradeRawV1,
+  upgradeStoredV2,
 } from "@heatmaster/core";
 import type { ConfigState, Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
 import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
 
-/** Version 2 writes a schedule's week as blocks of days; version 1 wrote `default_week`. */
-export const CONFIG_FILE_VERSION = 2;
+/**
+ * Version 3 holds rooms from Home Assistant: an entry per area, the saved membership, the HA
+ * changes and the upgrade report. Version 2 wrote a schedule's week as blocks of days and listed
+ * rooms with their valves; version 1 wrote `default_week`.
+ */
+export const CONFIG_FILE_VERSION = 3;
 export const LEDGER_FILE_VERSION = 1;
 export const PACING_FILE_VERSION = 1;
 export const COPY_FILE_VERSION = 1;
@@ -28,7 +33,14 @@ export const COPY_GENERATIONS = 5;
 export type StoreDirs = Readonly<{ dataDir: string; publicDir: string }>;
 
 export type ConfigStore = Readonly<{
-  load(): Promise<Readonly<{ state: ConfigState; stored: StoredConfig | undefined }>>;
+  /** `convertedFrom` is the file version of a readable file older than the current one. */
+  load(): Promise<
+    Readonly<{
+      state: ConfigState;
+      stored: StoredConfig | undefined;
+      convertedFrom: number | undefined;
+    }>
+  >;
   save(stored: StoredConfig, overwriteUnreadable?: boolean): Promise<void>;
   remove(): Promise<void>;
 }>;
@@ -80,12 +92,19 @@ function migrateFile(file: File, current: number): File {
 }
 
 export function migrateConfigFile(file: File): File {
-  const migrated = migrateFile(file, CONFIG_FILE_VERSION);
-  if (migrated.version !== 1) return migrated;
-  // Version 1 holds a version 1 config document under `data.config`.
-  const data = migrated.data;
-  if (!isFile(data)) return { ...migrated, version: 2 };
-  return { ...migrated, version: 2, data: { ...data, config: upgradeRawV1(data.config) } };
+  let migrated = migrateFile(file, CONFIG_FILE_VERSION);
+  if (migrated.version === 1) {
+    // Version 1 holds a version 1 config document under `data.config`.
+    const data = migrated.data;
+    migrated = isFile(data)
+      ? { ...migrated, version: 2, data: { ...data, config: upgradeRawV1(data.config) } }
+      : { ...migrated, version: 2 };
+  }
+  if (migrated.version === 2) {
+    // Version 3 turns the rooms into entries by area and adds the saved membership.
+    migrated = { ...migrated, version: 3, data: upgradeStoredV2(migrated.data) };
+  }
+  return migrated;
 }
 
 export function migrateLedgerFile(file: File): File {
@@ -229,19 +248,24 @@ export function createConfigStore(dataDir: string, clock: Clock): ConfigStore {
       const read = await readJson(file);
       if (read.kind === "missing") {
         state = "empty";
-        return { state: "empty", stored: undefined };
+        return { state: "empty", stored: undefined, convertedFrom: undefined };
       }
       if (read.kind === "ok") {
         try {
           const stored = storedFromRaw(migrateConfigFile(read.file).data);
           state = "ok";
-          return { state: "ok", stored };
+          const version = read.file.version as number;
+          return {
+            state: "ok",
+            stored,
+            convertedFrom: version < CONFIG_FILE_VERSION ? version : undefined,
+          };
         } catch {
           // fall through: unreadable
         }
       }
       state = "unreadable";
-      return { state: "unreadable", stored: undefined };
+      return { state: "unreadable", stored: undefined, convertedFrom: undefined };
     },
 
     async save(stored, overwriteUnreadable = false) {

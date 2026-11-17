@@ -1,0 +1,127 @@
+{
+  "version": 3,
+  "data": {
+    "revision": 3,
+    "releasing": {
+      "z2m:0x00124b00aaaaaaaa": "2023-11-14T22:13:20.000Z"
+    },
+    "config": {
+      "version": 3,
+      "settings": {
+        "external_write_interval_min": 10,
+        "sensor_stale_min": 30,
+        "hold_writes": false,
+        "timezone": "Europe/Amsterdam",
+        "language": "en"
+      },
+      "presets": {
+        "comfort": 21,
+        "eco": 18,
+        "frost": 8,
+        "boost": 24
+      },
+      "schedules": [
+        {
+          "id": "default",
+          "name": "Default week",
+          "week": [
+            {
+              "days": "weekdays",
+              "temperature": {
+                "00:00": "eco",
+                "06:30": "comfort",
+                "22:00": 18
+              }
+            },
+            {
+              "days": "weekend",
+              "temperature": {
+                "00:00": "eco"
+              }
+            }
+          ]
+        },
+        {
+          "id": "away",
+          "name": "Away",
+          "week": [
+            {
+              "days": "weekdays",
+              "temperature": {
+                "00:00": "eco",
+                "06:30": "comfort",
+                "22:00": 18
+              }
+            },
+            {
+              "days": "weekend",
+              "temperature": {
+                "00:00": "eco"
+              }
+            }
+          ]
+        }
+      ],
+      "default_schedule": "default",
+      "rooms": {
+        "living_room": {
+          "sensors": [
+            {
+              "ref": "ha:sensor.living_temperature",
+              "weight": 2
+            }
+          ],
+          "presets": {
+            "comfort": 22
+          }
+        },
+        "office": {
+          "schedule": "away"
+        }
+      }
+    },
+    "membership": {
+      "rooms": {
+        "living_room": {
+          "name": "Living room",
+          "valves": ["z2m:0x00124b0012345678"]
+        },
+        "office": {
+          "name": "Office",
+          "valves": ["z2m:0x00124b0000000009"]
+        }
+      },
+      "ignored": ["garage"]
+    },
+    "sensor_import": "done",
+    "ha_changes": [
+      {
+        "revision": 2,
+        "at": "2023-11-14T22:14:10.000Z",
+        "items": [
+          {
+            "kind": "schedule",
+            "area_id": "office",
+            "schedule_id": "away"
+          },
+          {
+            "kind": "sensor_added",
+            "area_id": "living_room",
+            "entity_id": "sensor.living_temperature"
+          }
+        ]
+      }
+    ],
+    "upgrade": {
+      "from_version": 2,
+      "dropped_rooms": [
+        {
+          "room_id": "attic",
+          "name": "Attic",
+          "valves": ["z2m:0x00124b0000000007"],
+          "reason": "no_area"
+        }
+      ]
+    }
+  }
+}
