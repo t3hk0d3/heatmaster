@@ -1,6 +1,7 @@
 import { preview } from "./control.ts";
 import type { Effect, PlannedWrite, World } from "./control.ts";
 import { roomsOf } from "./house.ts";
+import type { HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import type { Pending } from "./join.ts";
 import { FRESH_STORED, memberships, withoutRecord } from "./ledger.ts";
@@ -191,7 +192,19 @@ export function restoreValve(world: World, valveId: string): readonly Effect[] {
   return [{ kind: "saveConfig", stored: { ...stored, releasing } }];
 }
 
-/** Drops an orphan's or a releasing valve's record without restoring its originals. */
+/**
+ * A managed valve that Home Assistant no longer has (the live house keeps it in its previous room,
+ * listed in `notInHa`) and that no transport lists (`listed` false): nothing can reach it, so it
+ * may be forgotten.
+ */
+export function strandedValve(house: HouseInput, valveId: string, listed: boolean): boolean {
+  return house.kind === "live" && house.notInHa.includes(valveId) && !listed;
+}
+
+/**
+ * Drops an orphan's, a releasing valve's or a stranded valve's record without restoring its
+ * originals.
+ */
 export function forgetValve(world: World, valveId: string): readonly Effect[] {
   const stored = readable(world);
   const ledger = world.ledger;
@@ -204,10 +217,12 @@ export function forgetValve(world: World, valveId: string): readonly Effect[] {
   }
   if (!ledger.records.has(valveId)) throw new ChangeRefused("valve_unknown", { valveId });
   const kind = membershipsIn(world, ledger).get(valveId);
-  if (kind === "managed") throw new ChangeRefused("valve_managed", { valveId });
+  const stranded =
+    kind === "managed" && strandedValve(world.house, valveId, world.devices.has(valveId));
+  if (kind === "managed" && !stranded) throw new ChangeRefused("valve_managed", { valveId });
   // The rest is frozen: the config is unreadable or missing while the ledger has records, or the
   // house is not live (no Home Assistant link, or rooms frozen).
-  if (stored === undefined || (kind !== "orphan" && kind !== "releasing")) {
+  if (stored === undefined || (kind !== "orphan" && kind !== "releasing" && !stranded)) {
     throw new ChangeRefused("config_unreadable", { valveId });
   }
   const next = withoutRecord(ledger, valveId, world.now.epochMilliseconds, true);

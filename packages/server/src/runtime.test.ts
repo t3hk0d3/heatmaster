@@ -3459,6 +3459,34 @@ describe("runtime", () => {
       });
     });
 
+    describe("For a managed valve that Home Assistant and Zigbee2MQTT no longer have", () => {
+      // A and B were in living; A's device is gone from Home Assistant and from Zigbee2MQTT.
+      const strandedRig = (): Promise<Rig> =>
+        boot({ seed: managedSeed([A, B]), devices: [trvzb(B)], house: { living: [B] } });
+
+      it("the snapshot lists it as stranded, still managed", async () => {
+        const rig = await strandedRig();
+        expect(rig.rt.snapshot().memberships[A]).toBe("managed");
+        expect(rig.rt.snapshot().stranded).toEqual([A]);
+      });
+
+      it("forgetValve drops its record and it leaves the room", async () => {
+        const rig = await strandedRig();
+        await rig.rt.forgetValve(A);
+        await rig.rt.settled();
+        expect(rig.stores.calls.slice(0, 2)).toEqual(["ledger.save", "copy.write"]);
+        const snapshot = rig.rt.snapshot();
+        expect(snapshot.memberships[A]).toBeUndefined();
+        expect(snapshot.stranded).toEqual([]);
+        expect(snapshot.rooms.find((room) => room.roomId === "living")?.valveIds).toEqual([B]);
+      });
+
+      it("forgetValve of the listed valve beside it is refused with valve_managed", async () => {
+        const rig = await strandedRig();
+        expect(codeOf(await rejectionOf(rig.rt.forgetValve(B)))).toBe("valve_managed");
+      });
+    });
+
     describe("When the core refuses", () => {
       it("the ChangeRefused reaches the caller and nothing is saved", async () => {
         const rig = await boot({ seed: managedSeed([A]) });

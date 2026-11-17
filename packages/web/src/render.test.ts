@@ -82,6 +82,15 @@ describe("render", () => {
         expect(valveActions(valveView({ membership: "releasing" }))).toEqual(["refresh", "forget"]);
       });
     });
+    describe("For a stranded managed valve", () => {
+      it("returns forget", () => {
+        expect(
+          valveActions(
+            valveView({ supported: false, roomId: "r", membership: "managed", stranded: true }),
+          ),
+        ).toEqual(["forget"]);
+      });
+    });
     describe("For an unsupported valve that is in a room", () => {
       it("returns nothing", () => {
         expect(
@@ -199,6 +208,25 @@ describe("render", () => {
       });
       it("the valve has a refresh button carrying its id", () => {
         expect(button(renderRooms(full(), "en", t), "refresh")?.dataset.valveId).toBe(ID);
+      });
+    });
+    describe("With a stranded valve in the room", () => {
+      it("the valve says it is gone and has a forget button carrying its id", () => {
+        const state = stateView({
+          rooms: [room],
+          valves: [
+            valveView({
+              valveId: ID,
+              supported: false,
+              roomId: "living",
+              membership: "managed",
+              stranded: true,
+            }),
+          ],
+        });
+        const out = renderRooms(state, "en", t);
+        expect(text(out)).toContain(en["valve.stranded"]);
+        expect(button(out, "forget")?.dataset.valveId).toBe(ID);
       });
     });
     describe("With an unknown temperature", () => {

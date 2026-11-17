@@ -71,7 +71,8 @@ the supported valves whose Home Assistant device is in that area. Its id is the 
   device has no area, its area carries `heatmaster_ignore`, or Home Assistant has no device for it
   (Zigbee2MQTT's Home Assistant discovery is off, or the device was deleted). A valve that Home
   Assistant has no device for stays in its previous room and shows a problem; it is never
-  released for that.
+  released for that. When Zigbee2MQTT does not list it either (the valve was removed), the page
+  offers **Forget** for it: its record is dropped and it leaves the room.
 - **A valve that cannot join yet waits as pending** and is tried again every tick (30 seconds). The page lists
   it with the reason (not yet reported, cannot be reached, the saved originals cannot be read).
   One pending valve never holds up another valve or room.

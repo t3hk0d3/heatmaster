@@ -38,6 +38,7 @@ import {
   sameMembership,
   sensorId,
   storedToRaw,
+  strandedValve,
   tick,
   transportOf,
   validateConfig,
@@ -197,6 +198,8 @@ export type Snapshot = Readonly<{
   upgrade: UpgradeReport | undefined;
   problems: readonly Problem[];
   memberships: Readonly<Record<string, Membership>>;
+  /** Managed valves that Home Assistant no longer has and no transport lists (`strandedValve`). */
+  stranded: readonly string[];
   devices: readonly DeviceSnapshot[];
   unassigned: readonly UnassignedValve[];
   /** The valves that wait to join, as the last tick found them. */
@@ -588,6 +591,11 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
 
   function isFollowed(deviceId: string): boolean {
     return followed.get(transportOf(deviceId))?.has(deviceId) === true;
+  }
+
+  /** As `buildWorld` sees a device: followed and listed by its transport. */
+  function followedAndListed(deviceId: string): boolean {
+    return isFollowed(deviceId) && listed(deviceId) !== undefined;
   }
 
   /** Spec by valve id, for every followed device with a profile. */
@@ -1466,6 +1474,10 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     for (const [id, kind] of sorted(kinds, ([id]) => id)) membershipRecord[id] = kind;
 
     const house = houseInput();
+    const stranded = [...kinds]
+      .filter(([id, kind]) => kind === "managed" && strandedValve(house, id, followedAndListed(id)))
+      .map(([id]) => id)
+      .sort();
     const membership = house.kind === "unlinked" ? stored?.membership : house.membership;
     const config = readable?.config ?? EMPTY_CONFIG;
     const resolved = resolveRooms(config, membership);
@@ -1578,6 +1590,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       upgrade: readable?.upgrade,
       problems,
       memberships: membershipRecord,
+      stranded,
       devices,
       unassigned,
       pending: lastTick?.pending ?? [],

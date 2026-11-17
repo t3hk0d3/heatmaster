@@ -67,6 +67,8 @@ export const ru: Dictionary = {
   "valve.forget_question":
     "Забыть клапан {name}? Его сохранённые исходные настройки будут удалены без возможности восстановления.",
   "valve.not_supported": "Не поддерживается",
+  "valve.stranded":
+    "Этого клапана больше нет ни в Home Assistant, ни в Zigbee2MQTT. Если его убрали, забудьте его.",
 
   "others.title": "Другие клапаны",
   "others.none": "Нет клапанов вне комнат.",

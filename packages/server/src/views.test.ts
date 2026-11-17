@@ -97,6 +97,7 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
     upgrade: undefined,
     problems: [],
     memberships: {},
+    stranded: [],
     devices: [],
     unassigned: [],
     pending: [],
@@ -223,6 +224,21 @@ describe("views", () => {
         expect(valve?.membership).toBe("orphan");
         expect(Object.hasOwn(valve ?? {}, "liveness")).toBe(false);
         expect(Object.hasOwn(valve ?? {}, "sync")).toBe(false);
+      });
+    });
+
+    describe("With a stranded valve", () => {
+      it("it has stranded true, and a valve that is not stranded has no stranded key", () => {
+        const view = viewOf({
+          rooms: [room("living", { valveIds: [A, B] })],
+          memberships: { [A]: "managed", [B]: "managed" },
+          stranded: [A],
+          devices: [device(B, { membership: "managed" })],
+        });
+        expect(view.valves.find((v) => v.valveId === A)?.stranded).toBe(true);
+        expect(Object.hasOwn(view.valves.find((v) => v.valveId === B) ?? {}, "stranded")).toBe(
+          false,
+        );
       });
     });
 

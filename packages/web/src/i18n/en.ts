@@ -145,6 +145,8 @@ export const en = {
   "valve.forget_question":
     "Forget valve {name}? Its saved original settings are deleted and cannot be brought back.",
   "valve.not_supported": "Not supported",
+  "valve.stranded":
+    "Neither Home Assistant nor Zigbee2MQTT has this valve any more. If it was removed, forget it.",
 
   "others.title": "Other valves",
   "others.none": "No valves outside rooms.",

@@ -257,6 +257,7 @@ export {
   forgetValve,
   planChange,
   restoreValve,
+  strandedValve,
   withHold,
 } from "./change.ts";
 export type {

@@ -42,6 +42,10 @@ export type RoomView = Readonly<{
   valveIds: readonly string[];
 }>;
 
+/**
+ * `stranded`: a managed valve that Home Assistant no longer has and no transport lists; it may be
+ * forgotten.
+ */
 export type ValveView = Readonly<{
   valveId: string;
   name: string;
@@ -49,6 +53,7 @@ export type ValveView = Readonly<{
   supported: boolean;
   roomId?: string;
   membership?: Membership;
+  stranded?: boolean;
   liveness?: Liveness;
   mode?: ValveMode;
   setpoint?: number;

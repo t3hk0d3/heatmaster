@@ -131,6 +131,7 @@ export function stateView(snapshot: Snapshot): StateView {
     for (const valve of room.status?.valves ?? []) statusOf.set(valve.valveId, valve);
   }
 
+  const stranded = new Set(snapshot.stranded);
   const valveIds = new Set<string>(Object.keys(snapshot.memberships));
   for (const device of snapshot.devices) if (device.supported) valveIds.add(device.deviceId);
   const valves = [...valveIds].sort().map((valveId) => {
@@ -145,6 +146,7 @@ export function stateView(snapshot: Snapshot): StateView {
       membership: Object.hasOwn(snapshot.memberships, valveId)
         ? snapshot.memberships[valveId]
         : undefined,
+      stranded: stranded.has(valveId) ? true : undefined,
       liveness: status?.liveness,
       mode: status?.mode,
       setpoint: status?.setpoint,

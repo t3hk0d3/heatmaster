@@ -49,6 +49,7 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
     upgrade: undefined,
     problems: [],
     memberships: {},
+    stranded: [],
     devices: [],
     unassigned: [],
     pending: [],

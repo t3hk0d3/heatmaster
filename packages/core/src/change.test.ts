@@ -16,6 +16,7 @@ import {
   forgetValve,
   planChange,
   restoreValve,
+  strandedValve,
   withHold,
 } from "./change.ts";
 import type { ChangeOptions, ChangePlan, ChangeRefusedCode, SensorInfo } from "./change.ts";
@@ -84,6 +85,12 @@ function record(valveId: string, model: Model = "trvzb"): ValveRecord {
     adoptedAt: NOW_MS - 24 * HOUR_MS,
     originals: makeOriginals(model),
   };
+}
+
+/** The world with its live house listing `valveIds` in notInHa. */
+function notInHa(world: World, valveIds: readonly string[]): World {
+  if (world.house.kind !== "live") throw new Error("the house is not live");
+  return { ...world, house: { ...world.house, notInHa: valveIds } };
 }
 
 function ledgerOf(...records: readonly ValveRecord[]): Ledger {
@@ -875,6 +882,52 @@ describe("change", () => {
       it("throws ChangeRefused valve_managed", () => {
         const world = current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) });
         expect(codeOf(() => forgetValve(world, V1))).toBe("valve_managed");
+      });
+    });
+
+    describe("For a managed valve in notInHa that no transport lists", () => {
+      const strandedWorld = (devices: ReadonlyMap<string, DeviceView> = new Map()): World => {
+        const world = current({
+          rooms: [room("living", [V1, V2])],
+          ledger: ledgerOf(record(V1), record(V2)),
+          devices,
+        });
+        return notInHa(world, [V1]);
+      };
+
+      it("saveLedger without its record, then writeOriginalsCopy", () => {
+        const effects = forgetValve(strandedWorld(), V1);
+        expect(kinds(effects)).toEqual(["saveLedger", "writeOriginalsCopy"]);
+        const ledger = savedLedger(effects);
+        expect(ledger.records.has(V1)).toBe(false);
+        expect(ledger.records.has(V2)).toBe(true);
+        expect(effects[1]).toEqual({ kind: "writeOriginalsCopy", ledger });
+      });
+
+      it("strandedValve is true for it", () => {
+        const world = strandedWorld();
+        expect(strandedValve(world.house, V1, false)).toBe(true);
+      });
+    });
+
+    describe("For a managed valve in notInHa that a transport still lists", () => {
+      it("throws ChangeRefused valve_managed", () => {
+        const world = current({
+          rooms: [room("living", [V1])],
+          ledger: ledgerOf(record(V1)),
+          devices: new Map([[V1, observedView()]]),
+        });
+        const listed = notInHa(world, [V1]);
+        expect(codeOf(() => forgetValve(listed, V1))).toBe("valve_managed");
+        expect(strandedValve(listed.house, V1, true)).toBe(false);
+      });
+    });
+
+    describe("For a managed valve no transport lists that Home Assistant has", () => {
+      it("throws ChangeRefused valve_managed", () => {
+        const world = current({ rooms: [room("living", [V1])], ledger: ledgerOf(record(V1)) });
+        expect(codeOf(() => forgetValve(world, V1))).toBe("valve_managed");
+        expect(strandedValve(world.house, V1, false)).toBe(false);
       });
     });
 

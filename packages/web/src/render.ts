@@ -81,7 +81,13 @@ export function valveActions(valve: ValveView): readonly ("refresh" | "restore" 
   const actions: ("refresh" | "restore" | "forget")[] = [];
   if (valve.supported) actions.push("refresh");
   if (valve.membership === "orphan") actions.push("restore");
-  if (valve.membership === "orphan" || valve.membership === "releasing") actions.push("forget");
+  if (
+    valve.membership === "orphan" ||
+    valve.membership === "releasing" ||
+    valve.stranded === true
+  ) {
+    actions.push("forget");
+  }
   return actions;
 }
 
@@ -178,6 +184,7 @@ function renderValveRow(valve: ValveView, t: Translate): HTMLElement {
     row.append(textElement("span", t("valve.battery", { percent: valve.battery })));
   }
   if (!valve.supported) row.append(textElement("span", t("valve.not_supported")));
+  if (valve.stranded === true) row.append(textElement("p", t("valve.stranded")));
   row.append(valveButtons(valve, t));
   return row;
 }
