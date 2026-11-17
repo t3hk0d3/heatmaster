@@ -542,6 +542,38 @@ describe("main (runtime)", () => {
           JSON.parse(JSON.stringify(stateView(running.runtime.snapshot()))),
         );
       });
+
+      it("POST /api/upgrade/dismiss and POST /api/valves/:id/accept-originals reach the runtime", async () => {
+        const broker = await startRawBroker();
+        live.push(() => broker.stop());
+        const port = await freePort();
+        const dirs = { dataDir: temporaryFolder(), publicDir: temporaryFolder() };
+        const running = await start(
+          {
+            ...optionsFor(port),
+            ...dirs,
+            mqtt: {
+              url: broker.url,
+              username: undefined,
+              password: undefined,
+              clientId: undefined,
+            },
+          },
+          createManualClock(T),
+          false,
+        );
+        live.push(() => running.stop());
+        const post = (route: string): Promise<Response> =>
+          fetch(`http://127.0.0.1:${String(port)}${route}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}",
+          });
+        expect((await post("/api/upgrade/dismiss")).status).toBe(204);
+        const refused = await post("/api/valves/z2m:0xa1/accept-originals");
+        expect(refused.status).toBe(409);
+        expect(((await refused.json()) as { code: string }).code).toBe("valve_not_pending");
+      });
     });
 
     describe("With no broker at the address", () => {
@@ -807,8 +839,13 @@ describe("main (runtime)", () => {
           copyFiles();
           await vi.waitFor(() => {
             expect(sets()).toEqual([{ external_temperature_input: 19.6 }]);
-            expect(gets()).toBe(2);
           }, WAIT);
+          // The apply's direct ask counts for the valve's spacing: the tick right after it does
+          // not ask again, a later one does.
+          expect(gets()).toBe(1);
+          await advanceUntil(() => {
+            expect(gets()).toBe(2);
+          });
           expect(received().map((r) => r.kind)).toEqual(["get", "set", "get"]);
         });
 
@@ -818,7 +855,8 @@ describe("main (runtime)", () => {
           await advanceUntil(() => {
             expect(daySets()).toHaveLength(1);
           });
-          expect(world.clock.nowMs() - T).toBeLessThanOrEqual(31 * 1000);
+          // The ask was the 30 s tick's (see above), so the days are the next tick's.
+          expect(world.clock.nowMs() - T).toBeLessThanOrEqual(61 * 1000);
           expect(received().map((r) => r.kind)).toEqual(["get", "set", "get", "set"]);
           // The last held answer is the echo of the days.
           await answerLater(() => {

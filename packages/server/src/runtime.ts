@@ -9,9 +9,11 @@ import {
   EMPTY_CONFIG,
   EMPTY_MEMORY,
   EMPTY_READINGS,
+  FRESH_STORED,
   REFILL_MS,
   SETTING_KEYS,
   VALVE_SILENT_AFTER_MS,
+  acceptUnknownOriginals,
   applyEvent,
   configToRaw,
   describeValue,
@@ -37,6 +39,7 @@ import {
   transportOf,
   validateConfig,
   withHold,
+  withoutUpgradeReport,
 } from "@heatmaster/core";
 import type {
   AreaMembership,
@@ -60,6 +63,7 @@ import type {
   Memory,
   Membership,
   MembershipView,
+  Pending,
   Problem,
   Room,
   RoomStatus,
@@ -189,6 +193,8 @@ export type Snapshot = Readonly<{
   memberships: Readonly<Record<string, Membership>>;
   devices: readonly DeviceSnapshot[];
   unassigned: readonly UnassignedValve[];
+  /** The valves that wait to join, as the last tick found them. */
+  pending: readonly Pending[];
   sensors: readonly SensorSnapshot[];
   links: Readonly<Record<string, boolean>>;
   transportFaults: Readonly<Record<string, string>>;
@@ -207,6 +213,10 @@ export type HeatmasterRuntime = Readonly<{
   restoreValve(valveId: string): Promise<void>;
   forgetValve(valveId: string): Promise<void>;
   importOriginals(acceptEmpty: boolean): Promise<void>;
+  /** Joins a valve pending with `originals_unreadable`, its unknown originals null; then a tick. */
+  acceptOriginals(valveId: string): Promise<void>;
+  /** Saves the stored config without its upgrade report; the revision is unchanged. */
+  dismissUpgrade(): Promise<void>;
   setHold(on: boolean): Promise<void>;
   diagnostics(): Readonly<Record<string, unknown>>;
   settled(): Promise<void>;
@@ -374,6 +384,7 @@ type Queued = Readonly<{ key: string; event: RawEvent; at: number }>;
 type TickRecord = Readonly<{
   rooms: ReadonlyMap<string, RoomStatus>;
   problems: readonly Problem[];
+  pending: readonly Pending[];
   timeZone: string;
   tickedAt: number;
 }>;
@@ -1140,6 +1151,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     lastTick = {
       rooms: result.rooms,
       problems: result.problems,
+      pending: result.pending,
       timeZone: world.now.timeZoneId,
       tickedAt: nowMs,
     };
@@ -1185,20 +1197,23 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       recent.length >= DIRECT_ASK_WINDOW_LIMIT
     ) {
       directAsks.set(valveId, recent);
-      log.warn("a direct ask was refused by its limit", { valveId });
       throw new HeatmasterError("ask_limited", { valveId });
     }
     const payload = profile.binding.encodeRefresh();
     if (payload === undefined) return;
     directAsks.set(valveId, [...recent, nowMs]);
     // Stamped before the send, so a tick that runs while the read is awaited already waits; a
-    // failed read only delays the core by the spacing.
-    applyCore({ kind: "asked_directly", valveId, at: nowMs }, nowMs);
+    // failed read only delays the core by the spacing. A valve with no memory yet starts one with
+    // the bucket the tick would start it with.
+    const bucketFullAt = buckets.stamps.get(valveId) ?? buckets.fallback;
+    applyCore({ kind: "asked_directly", valveId, at: nowMs, bucketFullAt }, nowMs);
     await found.transport.read(valveId, payload);
     // And again once it went out, so the spacing is measured from the end of a slow send.
-    applyCore({ kind: "asked_directly", valveId, at: clock.nowMs() }, clock.nowMs());
+    const sentAt = clock.nowMs();
+    applyCore({ kind: "asked_directly", valveId, at: sentAt, bucketFullAt }, sentAt);
   }
 
+  /** Asks each valve directly; a refusal (its limit, an unusable transport) is logged at info. */
   async function askQuietly(valveIds: readonly string[]): Promise<void> {
     for (const valveId of valveIds) {
       try {
@@ -1381,6 +1396,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       memberships: membershipRecord,
       devices,
       unassigned,
+      pending: lastTick?.pending ?? [],
       sensors,
       links: linkStates(),
       transportFaults: faults(),
@@ -1512,6 +1528,12 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
             stored.releasing.size > 0));
       ledger = await deps.ledgerStore.load(expected);
       copyRecords = await deps.ledgerStore.copyRecords();
+      // A fresh install (R5): no config file, no ledger record, none in the copy. It starts with
+      // writes held, saved before the first tick.
+      if (configState === "empty" && ledger?.records.size === 0 && copyRecords === 0) {
+        log.info("a fresh install: the empty config is saved with writes held");
+        await execute([{ kind: "saveConfig", stored: FRESH_STORED }], false);
+      }
       // Before the first tick: what a valve may still be sent comes from the last run.
       const pacing = await deps.pacingStore.load();
       const startedAt = clock.nowMs();
@@ -1623,7 +1645,14 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
 
     async refreshValve(valveId) {
       requireStarted();
-      await directAsk(valveId);
+      try {
+        await directAsk(valveId);
+      } catch (error) {
+        if (codeOf(error) === "ask_limited") {
+          log.warn("a direct ask was refused by its limit", { valveId });
+        }
+        throw error;
+      }
     },
 
     restoreValve(valveId) {
@@ -1652,6 +1681,29 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         copyRecords = await deps.ledgerStore.copyRecords();
         refollow();
         await runTick();
+      });
+    },
+
+    acceptOriginals(valveId) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const effects = acceptUnknownOriginals(buildWorld(clock.nowMs()), valveId);
+        await carryOut(effects, false);
+      });
+    },
+
+    dismissUpgrade() {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const current = readableStored();
+        if (current === undefined) return;
+        const next = withoutUpgradeReport(current);
+        if (next === current) return;
+        const outcome = await execute([{ kind: "saveConfig", stored: next }], false);
+        notify();
+        raise(outcome);
       });
     },
 

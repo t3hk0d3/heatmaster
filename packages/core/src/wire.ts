@@ -123,6 +123,8 @@ export type StateView = Readonly<{
   unusedEntries: readonly string[];
   valves: readonly ValveView[];
   unassigned: readonly UnassignedValveView[];
+  /** The valves that wait to join their room, as the last tick found them. */
+  pending: readonly PendingView[];
   problems: readonly ProblemView[];
   haChanges: readonly HaChangeView[];
   upgrade?: UpgradeView;

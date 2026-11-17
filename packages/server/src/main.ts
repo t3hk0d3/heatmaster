@@ -45,6 +45,8 @@ function lateRuntime(current: () => HeatmasterRuntime): ApiRuntime {
     restoreValve: (valveId) => current().restoreValve(valveId),
     forgetValve: (valveId) => current().forgetValve(valveId),
     importOriginals: (acceptEmpty) => current().importOriginals(acceptEmpty),
+    acceptOriginals: (valveId) => current().acceptOriginals(valveId),
+    dismissUpgrade: () => current().dismissUpgrade(),
     setHold: (on) => current().setHold(on),
     diagnostics: () => current().diagnostics(),
   };

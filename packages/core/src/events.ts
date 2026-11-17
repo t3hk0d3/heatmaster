@@ -8,6 +8,7 @@ import {
 } from "./memory.ts";
 import type { GroupMemory, Memory, ValveMemory } from "./memory.ts";
 import { stopped } from "./feed.ts";
+import { importBucket } from "./pacing.ts";
 import {
   VALVE_SILENT_AFTER_MS,
   countsAsHeard,
@@ -31,8 +32,12 @@ export type Event =
   | Readonly<{ kind: "resync_requested"; valveIds: ReadonlySet<string> }>
   | Readonly<{ kind: "push_failed"; valveId: string }>
   | Readonly<{ kind: "sent"; valveId: string; what: "refresh" | "publish"; at: number }>
-  /** A read a user triggered went out: it counts for the valve's spacing, not for tokens or asks. */
-  | Readonly<{ kind: "asked_directly"; valveId: string; at: number }>;
+  /**
+   * A read a user triggered went out: it counts for the valve's spacing, not for tokens or asks.
+   * A valve with no memory yet starts one with `bucketFullAt` (see `importBucket`), the bucket the
+   * tick would start it with, so that the stamp is kept.
+   */
+  | Readonly<{ kind: "asked_directly"; valveId: string; at: number; bucketFullAt: number }>;
 
 export type Inbox = Readonly<{
   states: ReadonlyMap<string, DeviceState>;
@@ -143,8 +148,17 @@ function sent(inbox: Inbox, event: Extract<Event, { kind: "sent" }>): Inbox {
   return { ...inbox, memory: withValve(inbox.memory, event.valveId, { ...vm, groups }) };
 }
 
-function askedDirectly(inbox: Inbox, event: Extract<Event, { kind: "asked_directly" }>): Inbox {
-  const vm = inbox.memory.valves.get(event.valveId);
+function askedDirectly(
+  inbox: Inbox,
+  event: Extract<Event, { kind: "asked_directly" }>,
+  specs: Specs,
+): Inbox {
+  const spec = specs.get(event.valveId);
+  const vm =
+    inbox.memory.valves.get(event.valveId) ??
+    (spec === undefined
+      ? undefined
+      : importBucket(newValveMemory(spec, event.at), event.bucketFullAt, event.at));
   if (vm === undefined) return inbox;
   const lastWriteAt = Math.max(vm.lastWriteAt ?? event.at, event.at);
   return { ...inbox, memory: withValve(inbox.memory, event.valveId, { ...vm, lastWriteAt }) };
@@ -171,6 +185,6 @@ export function applyEvent(inbox: Inbox, event: Event, specs: Specs, nowMs: numb
     case "sent":
       return sent(inbox, event);
     case "asked_directly":
-      return askedDirectly(inbox, event);
+      return askedDirectly(inbox, event, specs);
   }
 }

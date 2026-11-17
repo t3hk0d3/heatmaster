@@ -632,6 +632,18 @@ describe("change", () => {
       });
     });
 
+    describe("With no timezone in the document, a fresh install's stored config and haLinked false", () => {
+      it("throws ChangeRefused timezone_missing (the fresh install's empty config does not run)", () => {
+        const world: World = {
+          ...first(devicesOf({ [V1]: observedView() })),
+          configState: "ok",
+          stored: FRESH_STORED,
+        };
+        const raw = doc({ living: {} }, { timezone: undefined });
+        expect(codeOf(() => plan(world, raw, { haLinked: false }))).toBe("timezone_missing");
+      });
+    });
+
     describe("With no timezone in the document and haLinked true", () => {
       it("returns a plan", () => {
         const world = first(devicesOf({ [V1]: observedView() }));

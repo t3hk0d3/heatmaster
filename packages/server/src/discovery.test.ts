@@ -63,6 +63,7 @@ function view(extra: Partial<StateView> = {}): StateView {
     unusedEntries: [],
     valves: [],
     unassigned: [],
+    pending: [],
     problems: [],
     haChanges: [],
     ...extra,

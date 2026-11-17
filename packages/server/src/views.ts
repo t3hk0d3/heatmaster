@@ -8,6 +8,7 @@ import type {
   HaChangeView,
   JoiningView,
   OriginalView,
+  Pending,
   PendingView,
   PlanView,
   ProblemView,
@@ -106,6 +107,16 @@ function upgradeView(report: UpgradeReport): UpgradeView {
   };
 }
 
+function pendingView(waiting: Pending, devices: ReadonlyMap<string, DeviceSnapshot>): PendingView {
+  return {
+    valveId: waiting.valveId,
+    name: devices.get(waiting.valveId)?.name ?? waiting.valveId,
+    roomId: waiting.roomId,
+    reason: waiting.reason,
+    unreadable: waiting.unreadable,
+  };
+}
+
 export function stateView(snapshot: Snapshot): StateView {
   const devices = new Map(snapshot.devices.map((device) => [device.deviceId, device]));
   const roomOf = new Map<string, string>();
@@ -172,6 +183,7 @@ export function stateView(snapshot: Snapshot): StateView {
     unusedEntries: snapshot.unusedEntries,
     valves,
     unassigned,
+    pending: snapshot.pending.map((waiting) => pendingView(waiting, devices)),
     problems,
     haChanges: snapshot.haChanges.map(haChangeView),
     upgrade: snapshot.upgrade === undefined ? undefined : upgradeView(snapshot.upgrade),
@@ -227,13 +239,7 @@ export function planView(plan: ChangePlan, applied: boolean, snapshot: Snapshot)
     revision: plan.stored.revision,
     held: plan.stored.config.settings.holdWrites,
     joining,
-    pending: plan.pending.map((waiting): PendingView => ({
-      valveId: waiting.valveId,
-      name: nameOf(waiting.valveId),
-      roomId: waiting.roomId,
-      reason: waiting.reason,
-      unreadable: waiting.unreadable,
-    })),
+    pending: plan.pending.map((waiting) => pendingView(waiting, devices)),
     writes,
   };
 }

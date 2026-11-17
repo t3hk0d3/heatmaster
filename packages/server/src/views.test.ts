@@ -99,6 +99,7 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
     memberships: {},
     devices: [],
     unassigned: [],
+    pending: [],
     sensors: [],
     links: { z2m: true },
     transportFaults: {},
@@ -342,6 +343,39 @@ describe("views", () => {
     describe("Without an upgrade report", () => {
       it("upgrade is left out", () => {
         expect(Object.hasOwn(viewOf({}), "upgrade")).toBe(false);
+      });
+    });
+
+    describe("With a pending valve", () => {
+      it("pending lists it with its name, room and reason", () => {
+        const view = viewOf({
+          devices: [device(A)],
+          pending: [
+            { valveId: A, roomId: "office", reason: "valve_not_observed", unreadable: [] },
+            {
+              valveId: "z2m:0xff",
+              roomId: "attic",
+              reason: "originals_unreadable",
+              unreadable: ["sensor_source"],
+            },
+          ],
+        });
+        expect(view.pending).toEqual([
+          {
+            valveId: A,
+            name: "valve 0xa1",
+            roomId: "office",
+            reason: "valve_not_observed",
+            unreadable: [],
+          },
+          {
+            valveId: "z2m:0xff",
+            name: "z2m:0xff",
+            roomId: "attic",
+            reason: "originals_unreadable",
+            unreadable: ["sensor_source"],
+          },
+        ]);
       });
     });
 

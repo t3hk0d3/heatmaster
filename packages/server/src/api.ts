@@ -46,6 +46,8 @@ export type ApiRuntime = Pick<
   | "restoreValve"
   | "forgetValve"
   | "importOriginals"
+  | "acceptOriginals"
+  | "dismissUpgrade"
   | "setHold"
   | "diagnostics"
 >;
@@ -408,6 +410,7 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
       refresh: (id: string) => runtime.refreshValve(id),
       restore: (id: string) => runtime.restoreValve(id),
       forget: (id: string) => runtime.forgetValve(id),
+      "accept-originals": (id: string) => runtime.acceptOriginals(id),
     };
     for (const [action, run] of Object.entries(valveActions)) {
       routes.post<{ Params: { id: string } }>(
@@ -425,6 +428,15 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
       { schema: { body: SCHEMAS.importOriginals } },
       async (request, reply) => {
         await runtime.importOriginals(request.body.acceptEmpty ?? false);
+        return noContent(reply);
+      },
+    );
+
+    routes.post(
+      "/api/upgrade/dismiss",
+      { schema: { body: NO_FIELDS } },
+      async (_request, reply) => {
+        await runtime.dismissUpgrade();
         return noContent(reply);
       },
     );

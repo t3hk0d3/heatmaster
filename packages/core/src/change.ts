@@ -156,7 +156,9 @@ export function planChange(
       current: String(revision),
     });
   }
-  const runningWithoutZone = old !== undefined && old.config.settings.timezone === undefined;
+  // A fresh install's config (revision 0) was never applied: it does not count as running.
+  const runningWithoutZone =
+    old !== undefined && old.revision > 0 && old.config.settings.timezone === undefined;
   if (!options.haLinked && config.settings.timezone === undefined && !runningWithoutZone) {
     throw new ChangeRefused("timezone_missing");
   }

@@ -24,6 +24,7 @@ export function stateView(over: Partial<StateView> = {}): StateView {
     unusedEntries: [],
     valves: [],
     unassigned: [],
+    pending: [],
     problems: [],
     haChanges: [],
     ...over,

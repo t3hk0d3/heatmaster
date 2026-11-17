@@ -51,6 +51,7 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
     memberships: {},
     devices: [],
     unassigned: [],
+    pending: [],
     sensors: [],
     links: { z2m: true },
     transportFaults: {},
@@ -90,6 +91,8 @@ type Stub = Readonly<{
   forgetValve: ReturnType<typeof vi.fn<ApiRuntime["forgetValve"]>>;
   importOriginals: ReturnType<typeof vi.fn<ApiRuntime["importOriginals"]>>;
   setHold: ReturnType<typeof vi.fn<ApiRuntime["setHold"]>>;
+  acceptOriginals: ReturnType<typeof vi.fn<ApiRuntime["acceptOriginals"]>>;
+  dismissUpgrade: ReturnType<typeof vi.fn<ApiRuntime["dismissUpgrade"]>>;
   diagnostics: ReturnType<typeof vi.fn<ApiRuntime["diagnostics"]>>;
 }>;
 
@@ -113,6 +116,8 @@ function stub(): Stub {
   const forgetValve = vi.fn<ApiRuntime["forgetValve"]>(() => Promise.resolve());
   const importOriginals = vi.fn<ApiRuntime["importOriginals"]>(() => Promise.resolve());
   const setHold = vi.fn<ApiRuntime["setHold"]>(() => Promise.resolve());
+  const acceptOriginals = vi.fn<ApiRuntime["acceptOriginals"]>(() => Promise.resolve());
+  const dismissUpgrade = vi.fn<ApiRuntime["dismissUpgrade"]>(() => Promise.resolve());
   const diagnostics = vi.fn<ApiRuntime["diagnostics"]>(() => ({ devices: { a: 1 } }));
   const all = {
     snapshot,
@@ -126,6 +131,8 @@ function stub(): Stub {
     forgetValve,
     importOriginals,
     setHold,
+    acceptOriginals,
+    dismissUpgrade,
     diagnostics,
   };
   return {
@@ -978,6 +985,43 @@ describe("api", () => {
     });
   });
 
+  describe("POST /api/valves/:id/accept-originals", () => {
+    describe("For a valve pending with originals_unreadable", () => {
+      it("answers 204", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, `/api/valves/${VALVE}/accept-originals`, {});
+        expect(response.statusCode).toBe(204);
+        expect(runtime.acceptOriginals.mock.calls).toEqual([[VALVE]]);
+      });
+    });
+
+    describe("For any other valve", () => {
+      it("answers 409 with code valve_not_pending", async () => {
+        const { app, stub: runtime } = await rig();
+        runtime.acceptOriginals.mockRejectedValue(
+          new ChangeRefused("valve_not_pending", { valveId: VALVE }),
+        );
+        const response = await post(app, `/api/valves/${VALVE}/accept-originals`, {});
+        expect(response.statusCode).toBe(409);
+        expect(errorOf(response)).toMatchObject({
+          code: "valve_not_pending",
+          data: { valveId: VALVE },
+        });
+      });
+    });
+  });
+
+  describe("POST /api/upgrade/dismiss", () => {
+    describe("Always", () => {
+      it("answers 204", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/upgrade/dismiss", {});
+        expect(response.statusCode).toBe(204);
+        expect(runtime.dismissUpgrade).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   describe("POST /api/originals/import", () => {
     describe("With {}", () => {
       it("importOriginals(false) is called", async () => {
@@ -1182,6 +1226,8 @@ describe("api", () => {
         ["POST", `/api/valves/${VALVE}/restore`, {}, "restoreValve"],
         ["POST", `/api/valves/${VALVE}/forget`, {}, "forgetValve"],
         ["POST", "/api/originals/import", {}, "importOriginals"],
+        ["POST", `/api/valves/${VALVE}/accept-originals`, {}, "acceptOriginals"],
+        ["POST", "/api/upgrade/dismiss", {}, "dismissUpgrade"],
         ["GET", "/api/diagnostics", undefined, "diagnostics"],
         ["GET", "/api/health", undefined, ""],
       ];

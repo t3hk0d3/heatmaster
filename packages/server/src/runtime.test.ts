@@ -559,6 +559,18 @@ async function boot(
   return rig;
 }
 
+/**
+ * A fresh install, booted. Its start saved the empty config (writes held) and its first tick the
+ * membership; those store calls are dropped, so the test sees only its own.
+ */
+async function bootFresh(options: Parameters<typeof boot>[0] = {}): Promise<Rig> {
+  const rig = await boot(options);
+  rig.stores.calls.length = 0;
+  rig.stores.sendsAtCall.length = 0;
+  rig.stores.overwrite.length = 0;
+  return rig;
+}
+
 /** Valves in one room, with ledger records, hold off. */
 function managedSeed(valves: readonly string[], sensors: readonly string[] = []): Seed {
   return {
@@ -1290,6 +1302,200 @@ describe("runtime", () => {
     });
   });
 
+  describe("automatic join", () => {
+    const recordsOf = (rig: Rig): string[] =>
+      Object.keys(
+        (readJson(path.join(rig.dataDir, "ledger.json")).data as { records: object }).records,
+      ).sort();
+    const publishes = (rig: Rig, valveId: string): ReturnType<StubTransport["sent"]> =>
+      sends(rig, valveId).filter((s) => s.kind === "publish");
+    const scheduleWritten = (rig: Rig, valveId: string): boolean =>
+      publishes(rig, valveId).some((s) =>
+        Object.hasOwn(s.payload as object, "weekly_schedule_monday"),
+      );
+    /** Home Assistant's registries change to `house`; the settle has not passed yet. */
+    const moveTo = (rig: Rig, house: House): void => {
+      rig.ha?.setSnapshot(haSnapshot(house));
+      rig.ha?.emit({ kind: "registries_changed" });
+    };
+
+    describe("With writes released and a new area holding an observable valve", () => {
+      async function joined(): Promise<Rig> {
+        const rig = await boot({ devices: [trvzb(A), trvzb(B)], seed: managedSeed([A]) });
+        rig.say(B, "b-1");
+        await rig.advance(1000);
+        moveTo(rig, { living: [A], office: [B] });
+        return rig;
+      }
+
+      it("after the settle the valve's record is saved", async () => {
+        const rig = await joined();
+        await rig.advance(HA_SETTLE_MS - 1);
+        expect(recordsOf(rig)).toEqual([A]);
+        await rig.advance(1);
+        expect(recordsOf(rig)).toEqual([A, B]);
+        expect(rig.rt.snapshot().memberships[B]).toBe("managed");
+      });
+
+      it("its schedule is written with no apply", async () => {
+        const rig = await joined();
+        await rig.advance(HA_SETTLE_MS);
+        await hear(rig, [B]);
+        await rig.advance(2 * MINUTE);
+        expect(scheduleWritten(rig, B)).toBe(true);
+        expect(rig.rt.snapshot().revision).toBe(1);
+      });
+    });
+
+    describe("With writes held after a schedule was applied on a fresh install", () => {
+      it("the records are saved and nothing is written to a valve until writes are released", async () => {
+        const rig = await boot({ devices: [trvzb(A), trvzb(B)], house: { living: [A, B] } });
+        rig.say(A, "a-1");
+        rig.say(B, "b-1");
+        await rig.rt.apply(raw({ hold: true }), APPLY);
+        expect(recordsOf(rig)).toEqual([A, B]);
+        await hear(rig, [A, B]);
+        await rig.advance(10 * MINUTE);
+        expect(publishes(rig, A)).toEqual([]);
+        expect(publishes(rig, B)).toEqual([]);
+        await rig.rt.setHold(false);
+        await rig.advance(2 * MINUTE);
+        expect(scheduleWritten(rig, A)).toBe(true);
+        expect(scheduleWritten(rig, B)).toBe(true);
+      });
+    });
+
+    describe("With a joining valve that never reports", () => {
+      async function waiting(): Promise<Rig> {
+        return boot({
+          devices: [trvzb(A), trvzb(B)],
+          house: { living: [A, B] },
+          seed: { config: raw(), ledger: [record(A)] },
+        });
+      }
+      const readsOf = (rig: Rig): number => sends(rig, B).filter((s) => s.kind === "read").length;
+
+      it("it is pending and asked to report, paced", async () => {
+        const rig = await waiting();
+        expect(rig.rt.snapshot().memberships[B]).toBe("pending");
+        expect(rig.rt.snapshot().pending).toEqual([
+          { valveId: B, roomId: "living", reason: "valve_not_observed", unreadable: [] },
+        ]);
+        expect(readsOf(rig)).toBe(1);
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(readsOf(rig)).toBe(1);
+        await rig.advance(30 * MINUTE);
+        // Sixty ticks have run since; the asks are paced, not one per tick.
+        expect(readsOf(rig)).toBeGreaterThanOrEqual(2);
+        expect(readsOf(rig)).toBeLessThan(10);
+        expect(rig.rt.snapshot().memberships[B]).toBe("pending");
+      });
+
+      it("the other valve of its room is managed", async () => {
+        const rig = await waiting();
+        expect(rig.rt.snapshot().memberships[A]).toBe("managed");
+        await hear(rig, [A]);
+        await rig.advance(2 * MINUTE);
+        expect(scheduleWritten(rig, A)).toBe(true);
+      });
+    });
+
+    describe("With Home Assistant loaded before Zigbee2MQTT lists a new valve in a room", () => {
+      it("once Zigbee2MQTT lists it, it joins", async () => {
+        const rig = await boot({ seed: managedSeed([A]), house: { living: [A, B] } });
+        expect(rig.rt.snapshot().memberships[B]).toBeUndefined();
+        rig.z2m.setDevices([trvzb(A), trvzb(B)]);
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        rig.say(B, "b-1");
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        expect(recordsOf(rig)).toEqual([A, B]);
+        expect(rig.rt.snapshot().memberships[B]).toBe("managed");
+      });
+    });
+
+    describe("With a valve whose device is taken out of its area", () => {
+      it("after the settle it is releasing and its originals are written", async () => {
+        const rig = await boot({
+          seed: { config: raw(), ledger: [record(A, "external")] },
+          house: { living: [A] },
+        });
+        await inSync(rig, [A]);
+        const before = publishes(rig, A).length;
+        rig.ha?.setSnapshot({ ...haSnapshot({ living: [] }), valveAreas: new Map([[A, null]]) });
+        rig.ha?.emit({ kind: "registries_changed" });
+        await rig.advance(HA_SETTLE_MS);
+        expect(rig.rt.snapshot().memberships[A]).toBe("releasing");
+        rig.say(A, "a-9");
+        await rig.advance(2 * MINUTE);
+        expect(
+          publishes(rig, A)
+            .slice(before)
+            .map((s) => s.payload),
+        ).toContainEqual(TRVZB_BINDING.encode({ sensor_source: "external" }));
+      });
+    });
+
+    describe("With a membership change", () => {
+      it("the saved config holds the new membership and its revision is unchanged", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        moveTo(rig, { office: [A] });
+        await rig.advance(HA_SETTLE_MS);
+        const file = readJson(path.join(rig.dataDir, "config.json"));
+        expect(file).toMatchObject({
+          data: { revision: 1, membership: { rooms: { office: { valves: [A] } } } },
+        });
+        expect(
+          Object.keys((file.data as { membership: { rooms: object } }).membership.rooms),
+        ).toEqual(["office"]);
+        expect(rig.rt.snapshot().revision).toBe(1);
+      });
+    });
+
+    describe("With a device moved while the link is down", () => {
+      async function movedWhileDown(): Promise<Rig> {
+        const rig = await boot({
+          devices: [trvzb(A), trvzb(B)],
+          seed: { config: raw(), ledger: [record(A)] },
+          house: { living: [A] },
+        });
+        rig.say(B, "b-1");
+        rig.ha?.setReady(true);
+        rig.ha?.setState("down");
+        rig.ha?.emit({ kind: "link_down" });
+        // A leaves its area for none, B is put in the room.
+        rig.ha?.setSnapshot({
+          ...haSnapshot({ living: [B] }),
+          valveAreas: new Map([
+            [A, null],
+            [B, "living"],
+          ]),
+        });
+        rig.ha?.emit({ kind: "registries_changed" });
+        await rig.advance(HA_SETTLE_MS + TICK_INTERVAL_MS);
+        return rig;
+      }
+
+      it("nothing joins or releases while it is down", async () => {
+        const rig = await movedWhileDown();
+        expect(recordsOf(rig)).toEqual([A]);
+        expect(rig.rt.snapshot().memberships).toEqual({ [A]: "managed" });
+        const file = readJson(path.join(rig.dataDir, "config.json")) as {
+          data: { releasing?: Record<string, unknown> };
+        };
+        expect(file.data.releasing?.[A]).toBeUndefined();
+      });
+
+      it("after link_up the move is acted on", async () => {
+        const rig = await movedWhileDown();
+        rig.ha?.setState("up");
+        rig.ha?.emit({ kind: "link_up" });
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        expect(recordsOf(rig)).toEqual([A, B]);
+        expect(rig.rt.snapshot().memberships).toEqual({ [A]: "releasing", [B]: "managed" });
+      });
+    });
+  });
+
   describe("start", () => {
     describe("With a config file of version 2", () => {
       const seed: Seed = { configFile: readFileSync(V2_FIXTURE, "utf8") };
@@ -1326,6 +1532,46 @@ describe("runtime", () => {
       });
     });
 
+    describe("With no config file, no ledger and an empty readable copy", () => {
+      it("FRESH_STORED is saved and configState is ok", async () => {
+        // Without a Home Assistant link the first tick saves no membership after it.
+        const rig = await boot({ ha: null });
+        expect(rig.stores.calls).toEqual(["config.save"]);
+        expect(readJson(path.join(rig.dataDir, "config.json"))).toEqual(
+          JSON.parse(JSON.stringify({ version: 3, data: storedToRaw(FRESH_STORED) })),
+        );
+        expect(rig.rt.snapshot().configState).toBe("ok");
+        expect(rig.rt.snapshot().revision).toBe(0);
+      });
+
+      it("writes are held", async () => {
+        const rig = await boot();
+        expect(rig.rt.snapshot().held).toBe(true);
+      });
+
+      it("snapshot has revision 0, no rooms and no problems", async () => {
+        const rig = await boot({ house: {} });
+        const snapshot = rig.rt.snapshot();
+        expect(snapshot.revision).toBe(0);
+        expect(snapshot.rooms).toEqual([]);
+        expect(snapshot.problems).toEqual([]);
+      });
+
+      it("one tick has run after the save: tickedAt is set", async () => {
+        const rig = await boot();
+        expect(rig.rt.snapshot().tickedAt).toBe(T);
+      });
+    });
+
+    describe("With no config file and a ledger with a record", () => {
+      it("nothing is saved and the recorded valve is frozen", async () => {
+        const rig = await boot({ seed: { ledger: [record(A)] } });
+        expect(rig.stores.calls).toEqual([]);
+        expect(rig.rt.snapshot().configState).toBe("empty");
+        expect(rig.rt.snapshot().memberships).toEqual({ [A]: "frozen" });
+      });
+    });
+
     describe("With a config file of version 3", () => {
       it("nothing is saved at start", async () => {
         const rig = await boot({ seed: managedSeed([A]) });
@@ -1346,22 +1592,6 @@ describe("runtime", () => {
       it("the ledger does not count as expected", async () => {
         const rig = await boot({ seed: { config: raw(), membership: {} } });
         expect(rig.stores.expected).toEqual([false]);
-      });
-    });
-
-    describe("With no stored files", () => {
-      it("snapshot has configState empty, revision 0, no rooms and no problems", async () => {
-        const rig = await boot({ house: {} });
-        const snapshot = rig.rt.snapshot();
-        expect(snapshot.configState).toBe("empty");
-        expect(snapshot.revision).toBe(0);
-        expect(snapshot.rooms).toEqual([]);
-        expect(snapshot.problems).toEqual([]);
-      });
-
-      it("one tick has run: tickedAt is set", async () => {
-        const rig = await boot();
-        expect(rig.rt.snapshot().tickedAt).toBe(T);
       });
     });
 
@@ -2456,7 +2686,7 @@ describe("runtime", () => {
       async function applied(): Promise<
         Rig & { plan: Awaited<ReturnType<HeatmasterRuntime["apply"]>> }
       > {
-        const rig = await boot();
+        const rig = await bootFresh();
         rig.say(A, "a-1");
         const plan = await rig.rt.apply(raw(), APPLY);
         return Object.assign(rig, { plan });
@@ -2464,13 +2694,8 @@ describe("runtime", () => {
 
       it("the config file is written, then the tick after it saves the valve's record and its copy", async () => {
         const rig = await applied();
-        // That tick then saves the membership Home Assistant reports.
-        expect(rig.stores.calls).toEqual([
-          "config.save",
-          "ledger.save",
-          "copy.write",
-          "config.save",
-        ]);
+        // The membership Home Assistant reports was saved at the start, and the change keeps it.
+        expect(rig.stores.calls).toEqual(["config.save", "ledger.save", "copy.write"]);
         const ledger = readJson(path.join(rig.dataDir, "ledger.json"));
         expect(Object.keys((ledger.data as { records: object }).records)).toEqual([A]);
       });
@@ -2533,6 +2758,11 @@ describe("runtime", () => {
         await rig.advance(1000);
         rig.say(A, "a-2");
         await rig.advance(EVENT_DEBOUNCE_MS);
+        // The tick right after the apply kept the direct ask's spacing, so the valve was asked
+        // once more before its first write.
+        await rig.advance(1000);
+        rig.say(A, "a-3");
+        await rig.advance(TICK_INTERVAL_MS);
         const publish = sends(rig, A).find((s) => s.kind === "publish");
         expect(Object.keys(publish?.payload as object)).toContain("weekly_schedule_monday");
       });
@@ -2541,7 +2771,7 @@ describe("runtime", () => {
     describe("With an invalid document", () => {
       it("rejects with ConfigError, nothing is saved, and no sensor was looked up", async () => {
         const ha = createStubHaLink();
-        const rig = await boot({ ha });
+        const rig = await bootFresh({ ha });
         rig.say(A, "a-1");
         const bad = { ...raw({ rooms: [{ sensors: [ROOM_SENSOR] }] }), default_schedule: "nope" };
         const error = await rejectionOf(rig.rt.apply(bad, APPLY));
@@ -2571,8 +2801,18 @@ describe("runtime", () => {
         ]);
       });
 
-      it("an apply sends that read before the config is saved", async () => {
+      it("the tick right after an apply sends no second read: the direct ask counts for the valve's spacing", async () => {
         const rig = await boot();
+        await rig.rt.apply(raw(), APPLY);
+        const reads = (): number => sends(rig, A).filter((s) => s.kind === "read").length;
+        expect(reads()).toBe(1);
+        expect(rig.memory(A)?.lastWriteAt).toBe(T);
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(reads()).toBe(2);
+      });
+
+      it("an apply sends that read before the config is saved", async () => {
+        const rig = await bootFresh();
         await rig.rt.apply(raw(), APPLY);
         expect(rig.stores.calls[0]).toBe("config.save");
         expect(rig.stores.sendsAtCall[0]).toBe(1);
@@ -2773,6 +3013,25 @@ describe("runtime", () => {
       });
     });
 
+    describe("With overwriteUnreadable over an unreadable config and a recorded valve in no room", () => {
+      it("the next tick releases it", async () => {
+        const rig = await boot({
+          devices: [trvzb(A), trvzb(B)],
+          house: { living: [A] },
+          seed: { config: "unreadable", ledger: [record(A), record(B, "external")] },
+        });
+        rig.say(A, "a-1");
+        rig.say(B, "b-1");
+        const plan = await rig.rt.apply(raw(), { ...APPLY, overwriteUnreadable: true });
+        expect(plan.writes.map((w) => w.valveId)).toContain(B);
+        expect(rig.rt.snapshot().memberships).toEqual({ [A]: "managed", [B]: "releasing" });
+        const file = readJson(path.join(rig.dataDir, "config.json")) as {
+          data: { releasing: Record<string, unknown> };
+        };
+        expect(Object.keys(file.data.releasing)).toEqual([B]);
+      });
+    });
+
     describe("With an out-of-date expectedRevision", () => {
       it("rejects with ChangeRefused revision_conflict and nothing is saved", async () => {
         const rig = await boot({ seed: { ...managedSeed([A]), revision: 3 } });
@@ -2808,7 +3067,7 @@ describe("runtime", () => {
 
     describe("With a config that has no timezone, and no Home Assistant link configured", () => {
       it("rejects with ChangeRefused timezone_missing and nothing is saved", async () => {
-        const rig = await boot({ ha: null });
+        const rig = await bootFresh({ ha: null });
         rig.say(A, "a-1");
         const error = await rejectionOf(rig.rt.apply(raw({ timezone: null }), APPLY));
         expect(codeOf(error)).toBe("timezone_missing");
@@ -2829,14 +3088,17 @@ describe("runtime", () => {
       });
 
       it("no file is written, snapshot is unchanged and no listener is called", async () => {
-        const rig = await boot();
+        const rig = await bootFresh();
         rig.say(A, "a-1");
+        const { readdirSync } = await import("node:fs");
+        const files = readdirSync(rig.dataDir);
+        const config = readFileSync(path.join(rig.dataDir, "config.json"), "utf8");
         const before = rig.rt.snapshot();
         const heard = rig.snapshots.length;
         await rig.rt.preview(raw(), APPLY);
         expect(rig.stores.calls).toEqual([]);
-        const { readdirSync } = await import("node:fs");
-        expect(readdirSync(rig.dataDir)).toEqual([]);
+        expect(readdirSync(rig.dataDir)).toEqual(files);
+        expect(readFileSync(path.join(rig.dataDir, "config.json"), "utf8")).toBe(config);
         expect(rig.rt.snapshot()).toEqual(before);
         expect(rig.snapshots.length).toBe(heard);
       });
@@ -2853,7 +3115,7 @@ describe("runtime", () => {
 
     describe("With apply called 30 s after that preview", () => {
       it("the apply sends no second direct ask", async () => {
-        const rig = await boot();
+        const rig = await bootFresh();
         rig.say(A, "a-1");
         await rig.rt.preview(raw(), APPLY);
         await rig.advance(30 * 1000);
@@ -2868,6 +3130,35 @@ describe("runtime", () => {
         const plan = await rig.rt.preview(raw(), APPLY);
         expect(plan.pending.map((p) => [p.valveId, p.reason])).toEqual([[A, "valve_not_observed"]]);
         expect(rig.z2m.sent().map((s) => [s.kind, s.deviceId])).toEqual([["read", A]]);
+      });
+    });
+    describe("With a valve pending with valve_not_observed", () => {
+      it("the valve is asked to report", async () => {
+        // B waits in a room the change does not touch; the change only edits the schedule.
+        const rig = await boot({
+          devices: [trvzb(A), trvzb(B)],
+          house: { living: [A, B] },
+          seed: { config: raw(), ledger: [record(A)] },
+        });
+        await rig.advance(DIRECT_ASK_SPACING_MS);
+        const before = sends(rig, B).filter((s) => s.kind === "read").length;
+        const plan = await rig.rt.preview(raw({ temperature: 21 }), APPLY);
+        expect(plan.pending.map((p) => [p.valveId, p.reason])).toEqual([[B, "valve_not_observed"]]);
+        expect(sends(rig, B).filter((s) => s.kind === "read")).toHaveLength(before + 1);
+      });
+    });
+
+    describe("With a pending valve whose direct ask its limit refuses", () => {
+      it("the refusal is logged below warn level", async () => {
+        const rig = await boot();
+        await rig.rt.preview(raw(), APPLY);
+        await rig.rt.preview(raw(), APPLY);
+        expect(rig.logged.filter((line) => line.level !== "info")).toEqual([]);
+        expect(rig.logged).toContainEqual({
+          level: "info",
+          message: "a direct ask was not sent",
+          data: { valveId: A, error: expect.stringContaining("ask_limited") as unknown },
+        });
       });
     });
   });
@@ -3230,6 +3521,73 @@ describe("runtime", () => {
     });
   });
 
+  describe("acceptOriginals", () => {
+    /** B is in the room with A and has reported without its sensor source. */
+    async function unreadable(): Promise<Rig> {
+      const rig = await boot({
+        devices: [trvzb(A), trvzb(B)],
+        house: { living: [A, B] },
+        seed: { config: raw(), ledger: [record(A)] },
+      });
+      rig.say(B, "b-1", { system_mode: "auto", last_seen: "b-1" });
+      await rig.advance(EVENT_DEBOUNCE_MS);
+      return rig;
+    }
+
+    describe("For a valve pending with originals_unreadable", () => {
+      it("its record is saved with null originals and it is managed at the next tick", async () => {
+        const rig = await unreadable();
+        expect(rig.rt.snapshot().pending).toEqual([
+          {
+            valveId: B,
+            roomId: "living",
+            reason: "originals_unreadable",
+            unreadable: ["sensor_source"],
+          },
+        ]);
+        await rig.rt.acceptOriginals(B);
+        const ledger = readJson(path.join(rig.dataDir, "ledger.json")) as {
+          data: { records: Record<string, { originals: Record<string, unknown> }> };
+        };
+        expect(ledger.data.records[B]?.originals).toEqual({ sensor_source: null });
+        expect(rig.stores.calls.slice(-2)).toEqual(["ledger.save", "copy.write"]);
+        expect(rig.rt.snapshot().memberships[B]).toBe("managed");
+        expect(rig.rt.snapshot().pending).toEqual([]);
+      });
+    });
+
+    describe("For any other valve", () => {
+      it("rejects with valve_not_pending", async () => {
+        const rig = await unreadable();
+        for (const valveId of [A, C]) {
+          const error = await rejectionOf(rig.rt.acceptOriginals(valveId));
+          expect(error).toBeInstanceOf(ChangeRefused);
+          expect(codeOf(error)).toBe("valve_not_pending");
+        }
+        expect(rig.stores.calls).not.toContain("ledger.save");
+      });
+    });
+  });
+
+  describe("dismissUpgrade", () => {
+    describe("With an upgrade report", () => {
+      it("the report is gone from the snapshot and from the file, and the revision is unchanged", async () => {
+        const rig = await boot({ seed: { configFile: readFileSync(V2_FIXTURE, "utf8") } });
+        expect(rig.rt.snapshot().upgrade).toBeDefined();
+        const revision = rig.rt.snapshot().revision;
+        await rig.rt.dismissUpgrade();
+        expect(rig.rt.snapshot().upgrade).toBeUndefined();
+        expect(rig.snapshots.at(-1)?.upgrade).toBeUndefined();
+        const file = readJson(path.join(rig.dataDir, "config.json")) as {
+          data: Record<string, unknown>;
+        };
+        expect(Object.hasOwn(file.data, "upgrade")).toBe(false);
+        expect(file.data.revision).toBe(revision);
+        expect(rig.rt.snapshot().revision).toBe(revision);
+      });
+    });
+  });
+
   describe("setHold", () => {
     describe("With hold off and on true", () => {
       it("the stored config has hold on, the revision is one higher and nothing else in the config changed", async () => {
@@ -3310,9 +3668,12 @@ describe("runtime", () => {
       });
     });
 
+    // A ledger record: not a fresh install, so no config is saved at the start.
+    const noConfig: Seed = { ledger: [record(A)] };
+
     describe("With no config and on true", () => {
       it("resolves and nothing is saved", async () => {
-        const rig = await boot();
+        const rig = await boot({ seed: noConfig });
         await expect(rig.rt.setHold(true)).resolves.toBeUndefined();
         expect(rig.stores.calls).toEqual([]);
       });
@@ -3320,7 +3681,7 @@ describe("runtime", () => {
 
     describe("With no config and on false", () => {
       it("rejects with HeatmasterError config_missing", async () => {
-        const rig = await boot();
+        const rig = await boot({ seed: noConfig });
         expect(codeOf(await rejectionOf(rig.rt.setHold(false)))).toBe("config_missing");
       });
     });

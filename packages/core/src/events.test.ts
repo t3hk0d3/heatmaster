@@ -4,7 +4,7 @@ import type { Event, Inbox } from "./events.ts";
 import { VALVE_SILENT_AFTER_MS, newState } from "./observation.ts";
 import type { Decoded, DeviceState } from "./observation.ts";
 import { EMPTY_MEMORY, newValveMemory } from "./memory.ts";
-import { SPACING_MS, mayAsk, maySpend } from "./pacing.ts";
+import { REFILL_MS, SPACING_MS, importBucket, mayAsk, maySpend } from "./pacing.ts";
 import type { GroupMemory, Mark, Memory, ValveMemory } from "./memory.ts";
 import { EMPTY_READINGS } from "./settings.ts";
 import type { Group, GroupSpec, ValveSpec } from "./settings.ts";
@@ -586,7 +586,11 @@ describe("events", () => {
       const t = T0 + 10 * SECOND_MS;
       const before = { ...unmarked(), tokens: 4, tokensAt: t, asks: [t - 10 * 60 * SECOND_MS] };
       const base = inboxOf([[Z1, live(T0)]], [[Z1, before]]);
-      const out = apply(base, { kind: "asked_directly", valveId: Z1, at: t }, T0 + 1);
+      const out = apply(
+        base,
+        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt: T0 },
+        T0 + 1,
+      );
       it("no refresh or setpoint write is allowed before t + SPACING_MS", () => {
         const after = valve(out, Z1);
         expect(mayAsk(after, t + SPACING_MS - 1)).toBe(false);
@@ -611,7 +615,7 @@ describe("events", () => {
       const later = { ...unmarked(), lastWriteAt: t + 5 * SECOND_MS };
       const out = apply(
         inboxOf([[Z1, live(T0)]], [[Z1, later]]),
-        { kind: "asked_directly", valveId: Z1, at: t },
+        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt: T0 },
         T0 + 1,
       );
       it("lastWriteAt is not lowered", () => {
@@ -620,9 +624,31 @@ describe("events", () => {
     });
 
     describe("With a direct ask to a valve that has no ValveMemory", () => {
+      const t = T0 + 10 * SECOND_MS;
+      const bucketFullAt = t + 3 * REFILL_MS;
       const base = inboxOf([[Z1, live(T0)]]);
+      const out = apply(base, { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt }, T0);
+      it("its memory starts at t with the bucket the event gives, lastWriteAt t", () => {
+        const fresh = importBucket(newValveMemory(SPEC, t), bucketFullAt, t);
+        expect(valve(out, Z1)).toEqual({ ...fresh, lastWriteAt: t });
+      });
+      it("no refresh or setpoint write is allowed before t + SPACING_MS", () => {
+        const after = valve(out, Z1);
+        expect(mayAsk(after, t + SPACING_MS - 1)).toBe(false);
+        expect(maySpend(after, t + SPACING_MS - 1)).toBe(false);
+        expect(mayAsk(after, t + SPACING_MS)).toBe(true);
+      });
+      it("states are unchanged", () => {
+        expect(out.states).toEqual(base.states);
+      });
+    });
+
+    describe("With a direct ask to a valve that has no ValveMemory and no spec", () => {
+      const base = inboxOf([[SENSOR, live(T0)]]);
       it("the inbox is unchanged", () => {
-        expect(apply(base, { kind: "asked_directly", valveId: Z1, at: T0 }, T0)).toEqual(base);
+        expect(
+          apply(base, { kind: "asked_directly", valveId: SENSOR, at: T0, bucketFullAt: T0 }, T0),
+        ).toEqual(base);
       });
     });
 
