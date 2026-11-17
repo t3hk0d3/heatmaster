@@ -246,20 +246,48 @@ describe("labels", () => {
     });
 
     describe("With the label heatmaster_schedule_old_2 while heatmaster_schedule_old exists and schedule old no longer exists", () => {
-      const plan = mirrorLabels(
+      const snapshot = makeSnapshot({
+        areas: { garage: { labels: [OLD_LABEL, OLD_CLASH] } },
+        labels: labelsWith({ [OLD_LABEL]: "Heatmaster: Old", [OLD_CLASH]: "Heatmaster: Old" }),
+      });
+      const plan = mirrorLabels(configOf(), NO_MEMBERSHIP, snapshot);
+      const again = mirrorLabels(
         configOf(),
         NO_MEMBERSHIP,
-        makeSnapshot({
-          labels: labelsWith({ [OLD_LABEL]: "Heatmaster: Old", [OLD_CLASH]: "Heatmaster: Old" }),
-        }),
+        applyLabelOps(snapshot, plan.ops, new Map()),
       );
       it("deleteLabel names heatmaster_schedule_old and not heatmaster_schedule_old_2", () => {
         expect(plan.ops.filter((op) => op.kind === "deleteLabel")).toEqual([
           { kind: "deleteLabel", labelId: OLD_LABEL },
         ]);
+        expect(naming(plan.ops, OLD_CLASH)).toEqual([]);
       });
       it("foreign lists heatmaster_schedule_old_2", () => {
         expect(plan.foreign).toEqual([OLD_CLASH]);
+      });
+      it("once those ops are applied, mirroring again gives no op and foreign still lists heatmaster_schedule_old_2", () => {
+        expect(again.ops).toEqual([]);
+        expect(again.foreign).toEqual([OLD_CLASH]);
+      });
+    });
+
+    describe("With the label heatmaster_schedule_lone_3, no label heatmaster_schedule_lone and no schedule lone", () => {
+      const lone = "heatmaster_schedule_lone_3";
+      const plan = mirrorLabels(
+        configOf(),
+        makeMembership({ living: ["z2m:a"] }),
+        makeSnapshot({
+          areas: { living: { labels: [lone] } },
+          entities: { "sensor.lone": { labels: [lone, SENSOR_LABEL] } },
+          labels: labelsWith({ [lone]: "Heatmaster: Lone" }),
+        }),
+      );
+      it("no op names heatmaster_schedule_lone_3", () => {
+        expect(plan.ops).not.toEqual([]);
+        expect(naming(plan.ops, lone)).toEqual([]);
+      });
+      it("foreign lists it", () => {
+        expect(plan.foreign).toEqual([lone]);
       });
     });
 
@@ -523,8 +551,8 @@ const EXTRA_AREAS = ["spare", "garage"];
 /**
  * Any valid config, rooms out of its entry areas and two more, and a snapshot in which each
  * schedule's label may be missing, misnamed or right and may have a `_2` clash label; a stale
- * owned label, the sensor label and user labels may exist; areas and sensor entities wear any of
- * these. A clash of a stale label is left out (see the report: it is owned once its base is gone).
+ * owned label, its numbered labels `_2` and `_0`, a numbered label of no label, the sensor label
+ * and user labels may exist; areas and sensor entities wear any of these.
  */
 function arbScene(): fc.Arbitrary<Scene> {
   return arbConfig.chain((config) => {
@@ -534,6 +562,9 @@ function arbScene(): fc.Arbitrary<Scene> {
       ...scheduleLabels,
       ...scheduleLabels.map((id) => `${id}_2`),
       STALE_LABEL,
+      `${STALE_LABEL}_2`,
+      `${STALE_LABEL}_0`,
+      "heatmaster_schedule_lone_3",
       SENSOR_LABEL,
       ...USER_LABELS,
     ];

@@ -68,6 +68,8 @@ export type RawConfig = Readonly<{
 
 const ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const HA_ENTITY_PATTERN = /^sensor\.[a-z0-9_]+$/;
+/** An id ending in `-<digits>` or `_<digits>` after something else. */
+const NUMBERED_ID_PATTERN = /^.+[-_][0-9]+$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const CONTROL_PATTERN = /\p{Cc}/u;
 
@@ -582,7 +584,14 @@ function parseSchedules(
       ids.add(id);
       // Home Assistant slugs a label's name into its id, so "-" and "_" give one label.
       const labelId = scheduleLabelId(id);
-      if (labelIds.has(labelId)) {
+      if (NUMBERED_ID_PATTERN.test(id)) {
+        // Home Assistant numbers a label whose id is taken (`_2`): such ids are always foreign.
+        report(
+          at(itemPath, "id"),
+          "schedule_id_reserved",
+          "a schedule id may not end in a dash or underscore followed by digits",
+        );
+      } else if (labelIds.has(labelId)) {
         report(
           at(itemPath, "id"),
           "label_id_duplicate",

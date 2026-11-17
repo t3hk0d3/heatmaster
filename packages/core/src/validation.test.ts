@@ -1037,6 +1037,39 @@ describe("validation", () => {
       });
     });
 
+    describe('With the schedule ids "day-2" and "eve_12"', () => {
+      it("schedule_id_reserved at each one's id", () => {
+        const raw = {
+          version: 3,
+          schedules: [
+            { id: "night", name: "Night", week: ECO_WEEK },
+            { id: "day-2", name: "Day", week: ECO_WEEK },
+            { id: "eve_12", name: "Evening", week: ECO_WEEK },
+          ],
+          default_schedule: "night",
+        };
+        expect(issuesOf(raw)).toEqual([
+          expect.objectContaining({ code: "schedule_id_reserved", path: "schedules[1].id" }),
+          expect.objectContaining({ code: "schedule_id_reserved", path: "schedules[2].id" }),
+        ]);
+      });
+    });
+
+    describe('With the schedule ids "2", "day2" and "2-day"', () => {
+      it("no issue", () => {
+        const raw = {
+          version: 3,
+          schedules: [
+            { id: "2", name: "Two", week: ECO_WEEK },
+            { id: "day2", name: "Day", week: ECO_WEEK },
+            { id: "2-day", name: "Other", week: ECO_WEEK },
+          ],
+          default_schedule: "2",
+        };
+        expect(validateConfig(raw).schedules.map((s) => s.id)).toEqual(["2", "day2", "2-day"]);
+      });
+    });
+
     describe("With 65 entries", () => {
       it("too_many at rooms", () => {
         const rooms = Object.fromEntries(

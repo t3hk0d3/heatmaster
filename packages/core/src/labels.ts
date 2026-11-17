@@ -27,9 +27,9 @@ export type LabelOp =
     }>;
 
 /**
- * The label writes that make Home Assistant match the config, in order. `foreign` lists the clash
- * labels (`<schedule label>_<n>`), which no op names; `unlabellable` lists the configured sensor
- * entities Home Assistant has no registry entry for.
+ * The label writes that make Home Assistant match the config, in order. `foreign` lists the
+ * numbered labels (`heatmaster_schedule_<x>_<digits>`, as from a clash), which no op names;
+ * `unlabellable` lists the configured sensor entities Home Assistant has no registry entry for.
  */
 export type LabelPlan = Readonly<{
   ops: readonly LabelOp[];
@@ -38,7 +38,16 @@ export type LabelPlan = Readonly<{
 }>;
 
 const SENSOR_PREFIX = "ha:";
-const NUMBERED = /^(.+)_([0-9]+)$/;
+/** A schedule-prefixed label id ending in `_<digits>`: Home Assistant's numbering of a taken id. */
+const NUMBERED = new RegExp(`^(${SCHEDULE_LABEL_PREFIX}.+)_[0-9]+$`);
+
+/**
+ * The label a numbered label (`heatmaster_schedule_<x>_<digits>`) was numbered after, or undefined
+ * when the label is not numbered. Numbered labels are always foreign: no op ever names one.
+ */
+function numberedBase(labelId: string): string | undefined {
+  return NUMBERED.exec(labelId)?.[1];
+}
 
 /**
  * Plans the label writes that mirror the config onto Home Assistant: schedule labels created,
@@ -52,39 +61,30 @@ export function mirrorLabels(
   scope: "all" | "schedules" = "all",
 ): LabelPlan {
   const scheduleLabels = new Map(config.schedules.map((s) => [scheduleLabelId(s.id), s]));
-  const clashBases = new Set(scheduleLabels.keys());
-  for (const id of snapshot.labels.keys()) {
-    if (id.startsWith(SCHEDULE_LABEL_PREFIX)) clashBases.add(id);
-  }
-  /** The base label a clash label clashes with, or undefined when the label is no clash. */
-  const clashBase = (labelId: string): string | undefined => {
-    if (scheduleLabels.has(labelId)) return undefined;
-    const match = NUMBERED.exec(labelId);
-    const base = match?.[1];
-    if (base === undefined || Number(match?.[2]) < 2 || !clashBases.has(base)) return undefined;
-    return base;
-  };
   const owned = (labelId: string): boolean =>
-    labelId.startsWith(SCHEDULE_LABEL_PREFIX) && clashBase(labelId) === undefined;
+    labelId.startsWith(SCHEDULE_LABEL_PREFIX) && numberedBase(labelId) === undefined;
 
   const foreign: string[] = [];
   const clashed = new Set<string>();
   for (const id of snapshot.labels.keys()) {
-    const base = clashBase(id);
+    const base = numberedBase(id);
     if (base === undefined) continue;
     foreign.push(id);
     clashed.add(base);
   }
-  /** A schedule label that is missing and will not be created because a clash label exists. */
+  /**
+   * A schedule label Heatmaster will not write: a numbered one (validation refuses the schedule
+   * ids that give one), or a missing one that a numbered label was numbered after.
+   */
   const blocked = (labelId: string): boolean =>
-    !snapshot.labels.has(labelId) && clashed.has(labelId);
+    !owned(labelId) || (!snapshot.labels.has(labelId) && clashed.has(labelId));
 
   const labelOps: LabelOp[] = [];
   for (const [labelId, schedule] of scheduleLabels) {
     const name = scheduleLabelName(schedule.name);
     const current = snapshot.labels.get(labelId);
+    if (blocked(labelId)) continue;
     if (current === undefined) {
-      if (blocked(labelId)) continue;
       labelOps.push({ kind: "createLabel", name: labelId });
       labelOps.push({ kind: "renameLabel", labelId, name });
     } else if (current !== name) {
