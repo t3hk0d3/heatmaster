@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsWebSocket } from "ws";
-import { startFakeHa, type FakeHa } from "../test/fake-ha.ts";
+import type { LabelOp } from "@heatmaster/core";
+import { LABEL_WRITES, startFakeHa, type FakeHa } from "../test/fake-ha.ts";
 import { createManualClock, type ManualClock } from "../test/manual-clock.ts";
 import {
+  HA_LABEL_TIMEOUT_MS,
   HA_POLL_MS,
   HA_RETRY_MS,
   buildHaLink,
   createHaLink,
   type HaEvent,
   type HaLink,
+  type LabelWriteResult,
 } from "./ha-link.ts";
 
 // Below vitest's own 5 s test timeout, so a failed wait shows as an assertion, not a time-out.
@@ -1301,6 +1304,340 @@ describe("ha-link", () => {
     });
   });
 
+  describe("writeLabels", () => {
+    const DAY = "heatmaster_schedule_day";
+    const NIGHT = "heatmaster_schedule_night";
+    const EVE = "heatmaster_schedule_eve";
+    const SENSOR_LABEL = "heatmaster_temp_sensor";
+    const create = (name: string): LabelOp => ({ kind: "createLabel", name });
+    const rename = (labelId: string, name: string): LabelOp => ({
+      kind: "renameLabel",
+      labelId,
+      name,
+    });
+    const remove = (labelId: string): LabelOp => ({ kind: "deleteLabel", labelId });
+    const labelArea = (areaId: string, add: string[], removed: string[] = []): LabelOp => ({
+      kind: "labelArea",
+      areaId,
+      add,
+      remove: removed,
+    });
+    const labelEntity = (entityId: string, add: string[], removed: string[] = []): LabelOp => ({
+      kind: "labelEntity",
+      entityId,
+      add,
+      remove: removed,
+    });
+
+    /** Areas office (day, kids) and kitchen, the labels day, night and kids, sensor.a (kids). */
+    const labelled = (ha: FakeHa): void => {
+      seed(ha);
+      ha.setLabel({ label_id: DAY, name: "Heatmaster: Day" });
+      ha.setLabel({ label_id: NIGHT, name: "Heatmaster: Night" });
+      ha.setLabel({ label_id: "kids", name: "Kids" });
+      ha.setArea({ area_id: "office", name: "Office", labels: [DAY, "kids"] });
+      ha.setArea({ area_id: "kitchen", name: "Kitchen", labels: [] });
+      ha.setEntity({ entity_id: "sensor.a", labels: ["kids"] });
+    };
+
+    /** The label writes Home Assistant received while `ops` were written, and the result. */
+    async function written(
+      w: World,
+      ops: readonly LabelOp[],
+    ): Promise<{ result: LabelWriteResult; writes: readonly Readonly<Record<string, unknown>>[] }> {
+      const from = w.ha.writes().length;
+      const result = await w.link.writeLabels(ops);
+      return { result, writes: w.ha.writes().slice(from) };
+    }
+
+    describe('With createLabel "heatmaster_schedule_day"', () => {
+      const bare = (ha: FakeHa): void => {
+        seed(ha);
+      };
+
+      it("config/label_registry/create is sent with that name", async () => {
+        const w = await world({ seed: bare });
+        const { writes } = await written(w, [create(DAY)]);
+        expect(writes).toEqual([{ type: "config/label_registry/create", name: DAY }]);
+      });
+
+      it("created maps the name to heatmaster_schedule_day", async () => {
+        const w = await world({ seed: bare });
+        const { result } = await written(w, [create(DAY)]);
+        expect(result.created).toEqual(new Map([[DAY, DAY]]));
+        expect(result.done).toEqual([create(DAY)]);
+      });
+    });
+
+    describe("With a create whose id Home Assistant suffixes", () => {
+      // The link's copy is stale: day already exists in Home Assistant, so the create gets day_2.
+      const ops = [create(DAY), rename(DAY, "Heatmaster: Day"), labelArea("kitchen", [DAY])];
+
+      it("created maps the name to heatmaster_schedule_day_2", async () => {
+        const w = await world({ seed: labelled });
+        const { result } = await written(w, ops);
+        expect(result.created).toEqual(new Map([[DAY, `${DAY}_2`]]));
+      });
+
+      it("the create is in failed with label_clash", async () => {
+        const w = await world({ seed: labelled });
+        const { result } = await written(w, ops);
+        expect(result.failed).toContainEqual({ op: create(DAY), error: "label_clash" });
+        expect(result.done).not.toContainEqual(create(DAY));
+      });
+
+      it("the follow-up rename and area label are not sent and are in failed with label_clash", async () => {
+        const w = await world({ seed: labelled });
+        const { result, writes } = await written(w, ops);
+        expect(writes).toEqual([{ type: "config/label_registry/create", name: DAY }]);
+        expect(result.failed).toEqual(ops.map((op) => ({ op, error: "label_clash" })));
+        expect(result.done).toEqual([]);
+        expect(w.ha.writes().some((sent) => JSON.stringify(sent).includes(`${DAY}_2`))).toBe(false);
+      });
+    });
+
+    describe("With renameLabel", () => {
+      it("config/label_registry/update is sent with label_id and name", async () => {
+        const w = await world({ seed: labelled });
+        const { writes, result } = await written(w, [rename(DAY, "Heatmaster: Workday")]);
+        expect(writes).toEqual([
+          { type: "config/label_registry/update", label_id: DAY, name: "Heatmaster: Workday" },
+        ]);
+        expect(result.done).toHaveLength(1);
+      });
+    });
+
+    describe("With deleteLabel", () => {
+      it("config/label_registry/delete is sent with label_id", async () => {
+        const w = await world({ seed: labelled });
+        const { writes, result } = await written(w, [remove(NIGHT)]);
+        expect(writes).toEqual([{ type: "config/label_registry/delete", label_id: NIGHT }]);
+        expect(result.done).toHaveLength(1);
+      });
+    });
+
+    describe("With labelArea adding night and removing day on an area that also wears kids", () => {
+      it("config/area_registry/update is sent with labels [heatmaster_schedule_night, kids]", async () => {
+        const w = await world({ seed: labelled });
+        const { writes } = await written(w, [labelArea("office", [NIGHT], [DAY])]);
+        expect(writes).toEqual([
+          { type: "config/area_registry/update", area_id: "office", labels: [NIGHT, "kids"] },
+        ]);
+      });
+    });
+
+    describe("With labelEntity adding heatmaster_temp_sensor", () => {
+      it("config/entity_registry/update is sent with the entity's labels plus heatmaster_temp_sensor", async () => {
+        const w = await world({ seed: labelled });
+        const { writes } = await written(w, [labelEntity("sensor.a", [SENSOR_LABEL])]);
+        expect(writes).toEqual([
+          {
+            type: "config/entity_registry/update",
+            entity_id: "sensor.a",
+            labels: [SENSOR_LABEL, "kids"],
+          },
+        ]);
+      });
+    });
+
+    describe('When the user added "guests" to the area after the op was planned', () => {
+      it("the area's labels sent still hold guests", async () => {
+        const w = await world({ seed: labelled });
+        // The link has not heard of guests yet when the write is asked for.
+        w.ha.setArea({ area_id: "office", name: "Office", labels: [DAY, "kids", "guests"] });
+        const { writes } = await written(w, [labelArea("office", [NIGHT], [DAY])]);
+        expect(writes).toEqual([
+          {
+            type: "config/area_registry/update",
+            area_id: "office",
+            labels: ["guests", NIGHT, "kids"],
+          },
+        ]);
+      });
+    });
+
+    describe("With labelArea on an area Home Assistant does not have", () => {
+      it("it is in failed with not_found and nothing is sent", async () => {
+        const w = await world({ seed: labelled });
+        const op = labelArea("attic", [NIGHT]);
+        const { result, writes } = await written(w, [op]);
+        expect(result.failed).toEqual([{ op, error: "not_found" }]);
+        expect(writes).toEqual([]);
+      });
+    });
+
+    describe("With a labelEntity op failing, among independent ops", () => {
+      it("it is in failed with Home Assistant's code and the other ops are done", async () => {
+        const w = await world({ seed: labelled });
+        const failing = labelEntity("sensor.a", [SENSOR_LABEL]);
+        const before = rename(DAY, "Heatmaster: Workday");
+        const after = labelArea("kitchen", [DAY]);
+        w.ha.failNext("config/entity_registry/update");
+        const { result } = await written(w, [before, failing, after]);
+        expect(result.failed).toEqual([{ op: failing, error: "unknown_error" }]);
+        expect(result.done).toEqual([before, after]);
+      });
+    });
+
+    describe("With a command that never answers", () => {
+      it("after HA_LABEL_TIMEOUT_MS that op is in failed with timeout", async () => {
+        const w = await world({ seed: labelled, probe: true });
+        const stalled = rename(DAY, "Heatmaster: Workday");
+        const next = labelArea("kitchen", [DAY]);
+        w.ha.stallNext();
+        let result: LabelWriteResult | undefined;
+        void w.link.writeLabels([stalled, next]).then((value) => {
+          result = value;
+        });
+        await until(() => {
+          expect(w.ha.writes()).toHaveLength(1);
+        });
+        w.clock.advance(HA_LABEL_TIMEOUT_MS - 1);
+        await w.sync();
+        expect(result).toBeUndefined();
+        w.clock.advance(1);
+        await until(() => {
+          expect(result).toBeDefined();
+        });
+        expect(result?.failed).toEqual([{ op: stalled, error: "timeout" }]);
+        expect(result?.done).toEqual([next]);
+      });
+    });
+
+    describe("With an unauthorized answer", () => {
+      it("every op is in failed with unauthorized", async () => {
+        const w = await world({ seed: labelled });
+        const ops = [
+          create(EVE),
+          rename(DAY, "Heatmaster: Workday"),
+          remove(NIGHT),
+          labelArea("kitchen", [DAY]),
+          labelEntity("sensor.a", [SENSOR_LABEL]),
+        ];
+        w.ha.answerUnauthorized(true);
+        const { result, writes } = await written(w, ops);
+        expect(result.failed).toEqual(ops.map((op) => ({ op, error: "unauthorized" })));
+        expect(result.done).toEqual([]);
+        expect(writes).toHaveLength(ops.length);
+      });
+    });
+
+    describe("While the link is down", () => {
+      it("every op fails with link_down and nothing is sent", async () => {
+        const w = await world({ seed: labelled });
+        w.ha.refuseConnections(true);
+        w.ha.dropConnections();
+        await until(() => {
+          expect(w.link.state()).toBe("down");
+        });
+        const before = w.ha.commands().length;
+        const ops = [rename(DAY, "Heatmaster: Workday"), labelArea("kitchen", [DAY])];
+        const result = await w.link.writeLabels(ops);
+        expect(result.failed).toEqual(ops.map((op) => ({ op, error: "link_down" })));
+        expect(result.done).toEqual([]);
+        expect(w.ha.commands()).toHaveLength(before);
+      });
+    });
+
+    describe("When the reload before the ops fails", () => {
+      it("every op fails with its code and nothing is sent", async () => {
+        const w = await world({ seed: labelled });
+        const ops = [rename(DAY, "Heatmaster: Workday"), labelArea("kitchen", [DAY])];
+        w.ha.failNext("config/area_registry/list");
+        const { result, writes } = await written(w, ops);
+        expect(result.failed).toEqual(ops.map((op) => ({ op, error: "unknown_error" })));
+        expect(writes).toEqual([]);
+      });
+    });
+
+    describe("When the reload after the ops fails", () => {
+      it("the registries are reloaded again and snapshot then shows the done op", async () => {
+        const w = await world({ seed: labelled });
+        w.ha.failNext("config/label_registry/list");
+        const result = await w.link.writeLabels([rename(DAY, "Heatmaster: Workday")]);
+        expect(result.done).toHaveLength(1);
+        await until(() => {
+          expect(w.link.snapshot()?.labels.get(DAY)).toBe("Heatmaster: Workday");
+        });
+      });
+    });
+
+    describe("After it resolves", () => {
+      it("snapshot shows every done op", async () => {
+        const w = await world({ seed: labelled });
+        const result = await w.link.writeLabels([
+          create(EVE),
+          rename(EVE, "Heatmaster: Eve"),
+          labelArea("kitchen", [EVE]),
+          labelArea("office", [NIGHT], [DAY]),
+          labelEntity("sensor.a", [SENSOR_LABEL]),
+          remove(DAY),
+        ]);
+        expect(result.failed).toEqual([]);
+        const snapshot = w.link.snapshot();
+        expect(snapshot?.labels.get(EVE)).toBe("Heatmaster: Eve");
+        expect(snapshot?.labels.has(DAY)).toBe(false);
+        expect(snapshot?.areas.get("kitchen")?.labels).toEqual([EVE]);
+        expect(snapshot?.areas.get("office")?.labels).toEqual([NIGHT, "kids"]);
+        expect(snapshot?.entities.get("sensor.a")?.labels).toEqual([SENSOR_LABEL, "kids"]);
+      });
+    });
+
+    describe("With a registry event arriving during the batch", () => {
+      const LISTS = [
+        "config/label_registry/list",
+        "config/area_registry/list",
+        "config/entity_registry/list",
+        "config/device_registry/list",
+      ];
+
+      /** The registry lists sent before, between and after the batch's label writes. */
+      async function phases(): Promise<Readonly<Record<"before" | "between" | "after", string[]>>> {
+        const w = await world({ seed: labelled, probe: true });
+        const from = w.ha.commands().length;
+        // Every write's echo is a registry event that arrives while the batch runs.
+        const result = await w.link.writeLabels([
+          create(EVE),
+          rename(EVE, "Heatmaster: Eve"),
+          labelArea("kitchen", [EVE]),
+          labelEntity("sensor.a", [SENSOR_LABEL]),
+          remove(NIGHT),
+        ]);
+        expect(result.failed).toEqual([]);
+        await w.sync();
+        const sent = w.ha.commands().slice(from);
+        const first = sent.findIndex((type) => LABEL_WRITES.includes(type));
+        const last = sent.findLastIndex((type) => LABEL_WRITES.includes(type));
+        const lists = (part: string[]): string[] =>
+          part.filter((type) => LISTS.includes(type)).sort();
+        return {
+          before: lists(sent.slice(0, first)),
+          between: lists(sent.slice(first, last + 1)),
+          after: lists(sent.slice(last + 1)),
+        };
+      }
+
+      it("the area and entity registries are reloaded once before the first op", async () => {
+        expect((await phases()).before).toEqual([
+          "config/area_registry/list",
+          "config/entity_registry/list",
+        ]);
+      });
+
+      it("no registry is reloaded between ops", async () => {
+        expect((await phases()).between).toEqual([]);
+      });
+
+      it("each of the label, area and entity registries is reloaded once after the ops", async () => {
+        expect((await phases()).after).toEqual([
+          "config/area_registry/list",
+          "config/entity_registry/list",
+          "config/label_registry/list",
+        ]);
+      });
+    });
+  });
+
   describe("commands", () => {
     describe("After a start, a reconnect, a poll and a registry update", () => {
       async function busy(): Promise<World> {
@@ -1353,6 +1690,62 @@ describe("ha-link", () => {
         for (const request of w.ha.requests()) {
           expect(DEVICE_PATHS).toContain(request);
         }
+      });
+    });
+
+    describe("After writes, a reconnect and registry updates", () => {
+      const READS = new Set([
+        "auth",
+        "supported_features",
+        "ping",
+        "unsubscribe_events",
+        "subscribe_events",
+        "get_config",
+        "get_states",
+        "config/entity_registry/list",
+        "config/device_registry/list",
+        "config/area_registry/list",
+        "config/label_registry/list",
+      ]);
+
+      async function written(): Promise<World> {
+        const w = await world({
+          seed: (ha) => {
+            seed(ha);
+            ha.setArea({ area_id: "office", name: "Office", labels: [] });
+            ha.setLabel({ label_id: "heatmaster_schedule_old", name: "Heatmaster: Old" });
+          },
+        });
+        const result = await w.link.writeLabels([
+          { kind: "createLabel", name: "heatmaster_schedule_day" },
+          { kind: "renameLabel", labelId: "heatmaster_schedule_day", name: "Heatmaster: Day" },
+          { kind: "labelArea", areaId: "office", add: ["heatmaster_schedule_day"], remove: [] },
+          { kind: "labelEntity", entityId: TEMP, add: ["heatmaster_temp_sensor"], remove: [] },
+          { kind: "deleteLabel", labelId: "heatmaster_schedule_old" },
+        ]);
+        expect(result.failed).toEqual([]);
+        w.ha.dropConnections();
+        await until(() => {
+          expect(w.kinds().filter((kind) => kind === "link_up")).toHaveLength(2);
+        });
+        w.ha.setArea({ area_id: "a", name: "A" });
+        w.ha.setLabel({ label_id: "l", name: "L" });
+        await until(() => {
+          expect(w.link.areaName("a")).toBe("A");
+          expect(w.link.snapshot()?.labels.get("l")).toBe("L");
+        });
+        return w;
+      }
+
+      it("the only writes sent were the five label commands", async () => {
+        const w = await written();
+        const writes = w.ha.commands().filter((type) => !READS.has(type));
+        expect([...new Set(writes)].sort()).toEqual([...LABEL_WRITES].sort());
+      });
+
+      it("call_service was never sent", async () => {
+        const w = await written();
+        expect(w.ha.commands()).not.toContain("call_service");
       });
     });
   });

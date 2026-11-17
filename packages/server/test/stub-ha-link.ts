@@ -86,6 +86,8 @@ export function createStubHaLink(): StubHaLink {
       snapshotReads += 1;
       return snapshot;
     },
+    // A fixed stand-in: every op done, nothing created under another id.
+    writeLabels: (ops) => Promise.resolve({ done: [...ops], failed: [], created: new Map() }),
     setState(next) {
       state = next;
     },

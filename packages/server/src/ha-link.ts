@@ -1,10 +1,11 @@
 /**
  * The optional Home Assistant link: the house's settings, the registries and the states of the room
- * sensors, over Home Assistant's websocket and, for liveness, its REST API. It never calls a
- * service and is never used for valves.
+ * sensors, over Home Assistant's websocket and, for liveness, its REST API. Its only writes are the
+ * five label commands of `writeLabels` (`LABEL_COMMANDS`). It never calls a service and is never
+ * used for valves.
  */
 
-import type { HaArea, HaEntity, HaSnapshot, SensorInfo } from "@heatmaster/core";
+import type { HaArea, HaEntity, HaSnapshot, LabelOp, SensorInfo } from "@heatmaster/core";
 import {
   createConnection,
   createLongLivedTokenAuth,
@@ -21,6 +22,8 @@ export const HA_POLL_MS = 2 * 60 * 1000;
 export const HA_RETRY_MS = 5 * 1000;
 export const Z2M_IDENTIFIER_PREFIX = "zigbee2mqtt_";
 const HA_REQUEST_TIMEOUT_MS = 10 * 1000;
+/** How long a label write, or a registry reload of the write queue, waits for its answer. */
+export const HA_LABEL_TIMEOUT_MS = 10 * 1000;
 
 export type HaLinkState = "connecting" | "up" | "down" | "auth_invalid";
 export type HaHouse = Readonly<{ timeZone: string; language: string }>;
@@ -34,6 +37,18 @@ export type HaEvent =
   | Readonly<{ kind: "link_down" }>
   | Readonly<{ kind: "changed" }>
   | Readonly<{ kind: "registries_changed" }>;
+
+/**
+ * What a `writeLabels` batch did. `error` is Home Assistant's error code (`unauthorized`,
+ * `invalid_info`, …), `link_down`, `timeout`, `not_found` (the link knows no such area or entity)
+ * or `label_clash` (a create was answered with another id). `created` maps each created name to
+ * the `label_id` Home Assistant answered.
+ */
+export type LabelWriteResult = Readonly<{
+  done: readonly LabelOp[];
+  failed: readonly Readonly<{ op: LabelOp; error: string }>[];
+  created: ReadonlyMap<string, string>;
+}>;
 
 export type HaLog = Readonly<{
   warn(message: string, data?: Readonly<Record<string, unknown>>): void;
@@ -53,6 +68,8 @@ export type HaLink = Readonly<{
   areaName(areaId: string): string | undefined;
   /** Areas, device areas and labels as loaded; undefined before `ready()`, the last value while down. */
   snapshot(): HaSnapshot | undefined;
+  /** Sends the ops to Home Assistant, in order; never rejects. */
+  writeLabels(ops: readonly LabelOp[]): Promise<LabelWriteResult>;
 }>;
 
 const consoleLog: HaLog = {
@@ -94,6 +111,65 @@ const EVENT_TYPES: readonly [string, RegistryKind | "state"][] = [
   ["label_registry_updated", "labels"],
   ["core_config_updated", "config"],
 ];
+
+/** The only writes the link ever sends, one per `LabelOp` kind. */
+const LABEL_COMMANDS: Readonly<Record<LabelOp["kind"], string>> = {
+  createLabel: "config/label_registry/create",
+  renameLabel: "config/label_registry/update",
+  deleteLabel: "config/label_registry/delete",
+  labelArea: "config/area_registry/update",
+  labelEntity: "config/entity_registry/update",
+};
+
+/** The registries a label batch reloads at its end; their events during the batch fold into it. */
+const BATCH_REGISTRIES: readonly RegistryKind[] = ["labels", "areas", "entities"];
+/** The registries a label batch reloads before its first op, for the labels R17 merges with. */
+const PRE_BATCH_REGISTRIES: readonly RegistryKind[] = ["areas", "entities"];
+
+const LINK_DOWN = "link_down";
+const TIMEOUT = "timeout";
+const LABEL_CLASH = "label_clash";
+const NOT_FOUND = "not_found";
+const UNKNOWN_ERROR = "unknown_error";
+/** What a timed command rejects with when it gives up. */
+const TIMED_OUT = new Error("no answer within HA_LABEL_TIMEOUT_MS");
+
+/** The code of a failed command: Home Assistant's own, `link_down` or `timeout`. */
+function errorCode(error: unknown): string {
+  if (error === TIMED_OUT) return TIMEOUT;
+  if (isConnectionLost(error)) return LINK_DOWN;
+  if (isRecord(error) && typeof error.code === "string") return error.code;
+  return UNKNOWN_ERROR;
+}
+
+/** The labels a target wears after the op: `remove` dropped, `add` added, sorted (R17). */
+function merged(
+  current: readonly string[],
+  add: readonly string[],
+  remove: readonly string[],
+): string[] {
+  return [...new Set([...current.filter((label) => !remove.includes(label)), ...add])].sort();
+}
+
+/** The labels an op relies on: a create earlier in its batch may have failed to give one. */
+function reliesOn(op: LabelOp): readonly string[] {
+  switch (op.kind) {
+    case "renameLabel":
+      return [op.labelId];
+    case "labelArea":
+    case "labelEntity":
+      return op.add;
+    default:
+      return [];
+  }
+}
+
+/** A websocket command as sent, without its id. */
+type Command = Readonly<{ type: string } & Record<string, unknown>>;
+
+type Job =
+  | Readonly<{ kind: "reload"; registry: RegistryKind }>
+  | Readonly<{ kind: "batch"; run: () => Promise<void> }>;
 
 const REGISTRY_COMMANDS: Readonly<Record<Exclude<RegistryKind, "config">, string>> = {
   entities: "config/entity_registry/list",
@@ -319,6 +395,11 @@ export function createHaLink(
   // one that was in flight when the connection dropped, so asking again would double it.
   const subscriptions = new Map<string, Promise<unknown>>();
   const pendingReloads = new Set<RegistryKind>();
+  // One queue holds registry reloads and label batches; one job runs at a time.
+  const jobs: Job[] = [];
+  let working = false;
+  // The registries whose events the running batch's final reload takes in.
+  const folded = new Set<RegistryKind>();
 
   function emit(event: HaEvent): void {
     if (!stopped) listener?.(event);
@@ -400,6 +481,11 @@ export function createHaLink(
 
   function isStopped(): boolean {
     return stopped;
+  }
+
+  /** The state read anew: an await may have changed it. */
+  function isUp(): boolean {
+    return state === "up";
   }
 
   function stale(id: number): boolean {
@@ -503,42 +589,55 @@ export function createHaLink(
     }
   }
 
-  async function fetchRegistry(conn: Connection, kind: RegistryKind): Promise<() => void> {
+  /** Settles as `pending` does within HA_LABEL_TIMEOUT_MS, or rejects with TIMED_OUT. */
+  function timed<T>(pending: Promise<T>): Promise<T> {
+    let cancel: () => void = () => undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      cancel = clock.after(HA_LABEL_TIMEOUT_MS, () => {
+        reject(TIMED_OUT);
+      });
+    });
+    return Promise.race([pending, timeout]).finally(() => {
+      cancel();
+    });
+  }
+
+  async function fetchRegistry(
+    conn: Connection,
+    kind: RegistryKind,
+    withTimeout = false,
+  ): Promise<() => void> {
+    const ask = (type: string): Promise<unknown> => {
+      const pending = conn.sendMessagePromise<unknown>({ type });
+      return withTimeout ? timed(pending) : pending;
+    };
     switch (kind) {
       case "config": {
-        const value = parseConfig(await conn.sendMessagePromise<unknown>({ type: "get_config" }));
+        const value = parseConfig(await ask("get_config"));
         return () => {
           house = value;
         };
       }
       case "entities": {
-        const value = parseEntities(
-          await conn.sendMessagePromise<unknown>({ type: REGISTRY_COMMANDS.entities }),
-        );
+        const value = parseEntities(await ask(REGISTRY_COMMANDS.entities));
         return () => {
           entities = value;
         };
       }
       case "devices": {
-        const value = parseDevices(
-          await conn.sendMessagePromise<unknown>({ type: REGISTRY_COMMANDS.devices }),
-        );
+        const value = parseDevices(await ask(REGISTRY_COMMANDS.devices));
         return () => {
           devices = value;
         };
       }
       case "areas": {
-        const value = parseAreas(
-          await conn.sendMessagePromise<unknown>({ type: REGISTRY_COMMANDS.areas }),
-        );
+        const value = parseAreas(await ask(REGISTRY_COMMANDS.areas));
         return () => {
           areas = value;
         };
       }
       case "labels": {
-        const value = parseLabels(
-          await conn.sendMessagePromise<unknown>({ type: REGISTRY_COMMANDS.labels }),
-        );
+        const value = parseLabels(await ask(REGISTRY_COMMANDS.labels));
         return () => {
           labels = value;
         };
@@ -546,15 +645,28 @@ export function createHaLink(
     }
   }
 
-  /** A reload after an event: a failure is logged and changes nothing. */
-  async function reload(conn: Connection, kind: RegistryKind, id: number): Promise<void> {
+  /**
+   * Reloads these registries, one after the other, each command timed out, and applies them
+   * together: at most one event is sent. `answered` hears each registry as its answer arrives. A
+   * failure is logged and changes nothing. Returns undefined, or the code of the failure.
+   */
+  async function reload(
+    conn: Connection,
+    kinds: readonly RegistryKind[],
+    id: number,
+    answered?: (kind: RegistryKind) => void,
+  ): Promise<string | undefined> {
     try {
-      const apply = await fetchRegistry(conn, kind);
-      if (stale(id) || state !== "up") return;
-      const before = snapshot(kind);
+      const applies: (() => void)[] = [];
+      for (const kind of kinds) {
+        applies.push(await fetchRegistry(conn, kind, true));
+        answered?.(kind);
+      }
+      if (stale(id) || state !== "up") return LINK_DOWN;
+      const before = kinds.map(snapshot);
       const keyBefore = snapshotSeen;
-      apply();
-      if (snapshot(kind) === before) return;
+      for (const apply of applies) apply();
+      if (kinds.every((kind, i) => snapshot(kind) === before[i])) return undefined;
       reindex();
       refresh();
       const held = buildSnapshot(entities, devices, areas, labels);
@@ -563,9 +675,143 @@ export function createHaLink(
       snapshotSeen = key;
       if (key === keyBefore) changed();
       else registriesChanged();
+      return undefined;
     } catch (error) {
-      if (!stale(id)) log.warn("a registry reload failed", { kind, error: String(error) });
+      if (stale(id)) return LINK_DOWN;
+      log.warn("a registry reload failed", { kind: kinds.join(","), error: String(error) });
+      return errorCode(error);
     }
+  }
+
+  // ---- the write queue -----------------------------------------------------------------------
+
+  function enqueue(job: Job): void {
+    const queued =
+      job.kind === "reload" &&
+      jobs.some((other) => other.kind === "reload" && other.registry === job.registry);
+    if (!queued) jobs.push(job);
+    void work();
+  }
+
+  async function work(): Promise<void> {
+    if (working) return;
+    working = true;
+    try {
+      for (let job = jobs.shift(); job !== undefined; job = jobs.shift()) {
+        if (job.kind === "batch") await job.run();
+        else if (connection !== undefined && state === "up") {
+          // A reload the link missed while it was not up comes with the next loading.
+          await reload(connection, [job.registry], loadId);
+        }
+      }
+    } finally {
+      working = false;
+    }
+  }
+
+  /** Takes queued reloads of these registries out: the running batch does them. */
+  function dropQueued(kinds: readonly RegistryKind[]): void {
+    for (let i = jobs.length - 1; i >= 0; i -= 1) {
+      const job = jobs[i];
+      if (job?.kind === "reload" && kinds.includes(job.registry)) jobs.splice(i, 1);
+    }
+  }
+
+  /** The message for one op, or the code it fails with unsent. */
+  function messageFor(op: LabelOp, sent: ReadonlyMap<string, readonly string[]>): Command | string {
+    const type = LABEL_COMMANDS[op.kind];
+    switch (op.kind) {
+      case "createLabel":
+        return { type, name: op.name };
+      case "renameLabel":
+        return { type, label_id: op.labelId, name: op.name };
+      case "deleteLabel":
+        return { type, label_id: op.labelId };
+      case "labelArea": {
+        const current = sent.get(`area:${op.areaId}`) ?? areas.get(op.areaId)?.labels;
+        if (current === undefined) return NOT_FOUND;
+        return { type, area_id: op.areaId, labels: merged(current, op.add, op.remove) };
+      }
+      case "labelEntity": {
+        const current = sent.get(`entity:${op.entityId}`) ?? entities.get(op.entityId)?.labels;
+        if (current === undefined) return NOT_FOUND;
+        return { type, entity_id: op.entityId, labels: merged(current, op.add, op.remove) };
+      }
+    }
+  }
+
+  /** One label batch; see `writeLabels`. */
+  async function runBatch(ops: readonly LabelOp[]): Promise<LabelWriteResult> {
+    const done: LabelOp[] = [];
+    const failed: { op: LabelOp; error: string }[] = [];
+    const created = new Map<string, string>();
+    const conn = connection;
+    const id = loadId;
+    if (conn === undefined || state !== "up") {
+      return { done, failed: ops.map((op) => ({ op, error: LINK_DOWN })), created };
+    }
+    for (const kind of BATCH_REGISTRIES) folded.add(kind);
+    dropQueued(BATCH_REGISTRIES);
+    try {
+      // A fresh copy of the labels R17 merges with. Known limit: a user edit that lands between
+      // this reload and the op is overwritten, because Home Assistant has no compare-and-set.
+      const unloaded = await reload(conn, PRE_BATCH_REGISTRIES, id);
+      // The labels each area and entity was last sent in this batch, keyed `area:`/`entity:`.
+      const sent = new Map<string, readonly string[]>();
+      // The labels whose create in this batch did not give them, with the create's error.
+      const missing = new Map<string, string>();
+      for (const op of ops) {
+        const blocked =
+          unloaded ??
+          (stale(id) || !isUp() ? LINK_DOWN : undefined) ??
+          reliesOn(op)
+            .map((label) => missing.get(label))
+            .find((error) => error !== undefined);
+        if (blocked !== undefined) {
+          failed.push({ op, error: blocked });
+          continue;
+        }
+        const message = messageFor(op, sent);
+        if (typeof message === "string") {
+          failed.push({ op, error: message });
+          continue;
+        }
+        let answer: unknown;
+        try {
+          answer = await timed(conn.sendMessagePromise<unknown>(message));
+        } catch (error) {
+          failed.push({ op, error: errorCode(error) });
+          if (op.kind === "createLabel") missing.set(op.name, errorCode(error));
+          continue;
+        }
+        if (op.kind === "createLabel") {
+          const labelId = isRecord(answer) ? text(answer.label_id) : undefined;
+          if (labelId !== undefined) created.set(op.name, labelId);
+          if (labelId !== op.name) {
+            // Another id (a `_2` of a taken one) is a numbered, foreign label: nothing may use it.
+            const error = labelId === undefined ? UNKNOWN_ERROR : LABEL_CLASH;
+            failed.push({ op, error });
+            missing.set(op.name, error);
+            continue;
+          }
+        }
+        if (op.kind === "labelArea" || op.kind === "labelEntity") {
+          const key = op.kind === "labelArea" ? `area:${op.areaId}` : `entity:${op.entityId}`;
+          sent.set(key, message.labels as readonly string[]);
+        }
+        done.push(op);
+      }
+      if (!stale(id)) {
+        const unreloaded = await reload(conn, BATCH_REGISTRIES, id, (kind) => folded.delete(kind));
+        // The events folded into a reload that failed still need theirs.
+        if (unreloaded !== undefined && !stale(id)) {
+          for (const kind of BATCH_REGISTRIES) enqueue({ kind: "reload", registry: kind });
+        }
+      }
+    } finally {
+      folded.clear();
+    }
+    return { done, failed, created };
   }
 
   function onRegistryEvent(kind: RegistryKind): void {
@@ -575,7 +821,8 @@ export function createHaLink(
       pendingReloads.add(kind);
       return;
     }
-    void reload(conn, kind, loadId);
+    if (folded.has(kind)) return;
+    enqueue({ kind: "reload", registry: kind });
   }
 
   async function subscribeAll(conn: Connection): Promise<void> {
@@ -639,7 +886,7 @@ export function createHaLink(
         void poll();
       });
       emit({ kind: "link_up" });
-      for (const kind of pendingReloads) void reload(conn, kind, id);
+      for (const kind of pendingReloads) enqueue({ kind: "reload", registry: kind });
       pendingReloads.clear();
     } catch (error) {
       if (stale(id)) return;
@@ -780,6 +1027,36 @@ export function createHaLink(
     },
     areaName: (areaId) => areas.get(areaId)?.name,
     snapshot: () => current,
+    /**
+     * Queues the ops as one batch behind the reloads and batches asked for before. The batch
+     * reloads the area and entity registries, sends one command per op with no reload between
+     * them, then reloads the label, area and entity registries once, so `snapshot()` shows every
+     * done op when it resolves. Label, area and entity events that arrive meanwhile fold into that
+     * last reload; device and config events queue their reload behind the batch. When the first
+     * reload fails, no op is sent and each fails with that reload's code. An op that relies on a
+     * label whose create in the batch failed, or was answered with another id (`label_clash`), is
+     * not sent and fails with the create's code.
+     */
+    writeLabels(ops) {
+      if (ops.length === 0) return Promise.resolve({ done: [], failed: [], created: new Map() });
+      return new Promise((resolve) => {
+        enqueue({
+          kind: "batch",
+          run: async () => {
+            try {
+              resolve(await runBatch(ops));
+            } catch (error) {
+              log.warn("a label batch failed", { error: String(error) });
+              resolve({
+                done: [],
+                failed: ops.map((op) => ({ op, error: UNKNOWN_ERROR })),
+                created: new Map(),
+              });
+            }
+          },
+        });
+      });
+    },
   };
 }
 

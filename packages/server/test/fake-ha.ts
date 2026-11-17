@@ -80,6 +80,15 @@ export type FakeHa = Readonly<{
   openSockets(): number;
   /** How many websocket connections passed the handshake so far. */
   accepted(): number;
+  /**
+   * Every label write received (the five `LABEL_WRITES` commands), in order, as sent without its
+   * `id`.
+   */
+  writes(): readonly Readonly<Record<string, unknown>>[];
+  /** While on, every label write fails with `unauthorized`, as for a user who is not an admin. */
+  answerUnauthorized(on: boolean): void;
+  /** The next label write is received and never answered. */
+  stallNext(): void;
   stop(): Promise<void>;
 }>;
 
@@ -100,6 +109,30 @@ interface Subscription {
 }
 
 const HA_VERSION = "2026.11.0";
+
+/** The registry writes Home Assistant answers here, as its websocket API does. */
+export const LABEL_WRITES: readonly string[] = [
+  "config/label_registry/create",
+  "config/label_registry/update",
+  "config/label_registry/delete",
+  "config/area_registry/update",
+  "config/entity_registry/update",
+];
+
+/** Home Assistant's `slugify` for the names used in tests: lower case, `_` between words. */
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/** Home Assistant's `normalize_name`: case folded, without spaces. */
+function normalizeName(name: string): string {
+  return name.toLowerCase().replaceAll(" ", "");
+}
+
+type Answer = Readonly<{ result: unknown }> | Readonly<{ code: string; message: string }>;
 const iso = (at: number): string => new Date(at).toISOString();
 
 export async function startFakeHa(options: Readonly<{ token?: string }> = {}): Promise<FakeHa> {
@@ -121,6 +154,9 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
   const sockets = new Set<WebSocket>();
   let refusing = false;
   let acceptedCount = 0;
+  const written: Readonly<Record<string, unknown>>[] = [];
+  let unauthorized = false;
+  let stalling = false;
 
   const server = http.createServer((request, response) => {
     const method = request.method ?? "GET";
@@ -186,9 +222,107 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
     }
   }
 
+  function labelTaken(name: string, except: string | undefined): boolean {
+    const wanted = normalizeName(name);
+    for (const label of labels.values()) {
+      if (label.label_id !== except && normalizeName(label.name) === wanted) return true;
+    }
+    return false;
+  }
+
+  /** Changes the registry and sends its `…_registry_updated` events, as Home Assistant does. */
+  function write(message: Readonly<Record<string, unknown>>): Answer {
+    const type = String(message.type);
+    const name = typeof message.name === "string" ? message.name : undefined;
+    const newLabels = Array.isArray(message.labels) ? (message.labels as string[]) : undefined;
+    switch (type) {
+      case "config/label_registry/create": {
+        if (name === undefined) return { code: "invalid_format", message: "name required" };
+        if (labelTaken(name, undefined)) {
+          return { code: "invalid_info", message: `The name ${name} is already in use` };
+        }
+        const base = slugify(name);
+        let labelId = base;
+        for (let tries = 2; labels.has(labelId); tries += 1) labelId = `${base}_${String(tries)}`;
+        const entry = { label_id: labelId, name };
+        labels.set(labelId, entry);
+        emit("label_registry_updated", { action: "create", label_id: labelId });
+        return { result: { ...entry } };
+      }
+      case "config/label_registry/update": {
+        const labelId = String(message.label_id);
+        const old = labels.get(labelId);
+        if (old === undefined) return { code: "unknown_error", message: "Unknown error" };
+        if (name === undefined || name === old.name) return { result: { ...old } };
+        if (labelTaken(name, labelId)) {
+          return { code: "invalid_info", message: `The name ${name} is already in use` };
+        }
+        const entry = { label_id: labelId, name };
+        labels.set(labelId, entry);
+        emit("label_registry_updated", { action: "update", label_id: labelId });
+        return { result: { ...entry } };
+      }
+      case "config/label_registry/delete": {
+        const labelId = String(message.label_id);
+        if (!labels.delete(labelId)) {
+          return { code: "invalid_info", message: "Label ID doesn't exist" };
+        }
+        emit("label_registry_updated", { action: "remove", label_id: labelId });
+        // Home Assistant's area and entity registries drop a removed label from their entries.
+        for (const area of areas.values()) {
+          if (!(area.labels ?? []).includes(labelId)) continue;
+          areas.set(area.area_id, {
+            ...area,
+            labels: (area.labels ?? []).filter((l) => l !== labelId),
+          });
+          emit("area_registry_updated", { action: "update", area_id: area.area_id });
+        }
+        for (const entity of entities.values()) {
+          if (!(entity.labels ?? []).includes(labelId)) continue;
+          entities.set(entity.entity_id, {
+            ...entity,
+            labels: (entity.labels ?? []).filter((l) => l !== labelId),
+          });
+          emit("entity_registry_updated", { action: "update", entity_id: entity.entity_id });
+        }
+        return { result: null };
+      }
+      case "config/area_registry/update": {
+        const areaId = String(message.area_id);
+        const old = areas.get(areaId);
+        if (old === undefined) return { code: "unknown_error", message: "Unknown error" };
+        const entry = newLabels === undefined ? old : { ...old, labels: [...newLabels] };
+        areas.set(areaId, entry);
+        emit("area_registry_updated", { action: "update", area_id: areaId });
+        return { result: { ...entry } };
+      }
+      default: {
+        const entityId = String(message.entity_id);
+        const old = entities.get(entityId);
+        if (old === undefined) return { code: "not_found", message: "Entity not found" };
+        const entry = newLabels === undefined ? old : { ...old, labels: [...newLabels] };
+        entities.set(entityId, entry);
+        emit("entity_registry_updated", { action: "update", entity_id: entityId });
+        return { result: { entity_entry: { ...entry } } };
+      }
+    }
+  }
+
   function answer(socket: WebSocket, message: Readonly<Record<string, unknown>>): void {
     const type = String(message.type);
     const id = Number(message.id);
+    if (LABEL_WRITES.includes(type)) {
+      if (stalling) {
+        stalling = false;
+        return;
+      }
+      const outcome: Answer = unauthorized
+        ? { code: "unauthorized", message: "Unauthorized" }
+        : write(message);
+      if ("result" in outcome) result(socket, id, outcome.result);
+      else send(socket, { id, type: "result", success: false, error: { ...outcome } });
+      return;
+    }
     if (type === "supported_features") {
       result(socket, id, null);
       return;
@@ -271,6 +405,9 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
           socket.close();
         }
         return;
+      }
+      if (LABEL_WRITES.includes(type)) {
+        written.push(Object.fromEntries(Object.entries(message).filter(([key]) => key !== "id")));
       }
       const handshake = type === "supported_features" || type.endsWith("_events");
       if (failures.delete(`close:${type}`)) {
@@ -376,6 +513,13 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
     },
     openSockets: () => sockets.size,
     accepted: () => acceptedCount,
+    writes: () => written,
+    answerUnauthorized(on) {
+      unauthorized = on;
+    },
+    stallNext() {
+      stalling = true;
+    },
     async stop() {
       for (const socket of sockets) socket.terminate();
       wss.close();
