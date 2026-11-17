@@ -1758,6 +1758,94 @@ describe("ha-link", () => {
       });
     });
 
+    describe("With a deleteLabel before a labelArea for an area that wears the deleted label", () => {
+      it("the area update does not send the deleted label back", async () => {
+        const w = await world({ seed: labelled });
+        const { result, writes } = await written(w, [remove(DAY), labelArea("office", [NIGHT])]);
+        expect(result.failed).toEqual([]);
+        expect(writes[1]).toEqual({
+          type: "config/area_registry/update",
+          area_id: "office",
+          labels: [NIGHT, "kids"],
+        });
+      });
+    });
+
+    describe("With the link dropping while an op of the batch is in flight", () => {
+      const ops = (): LabelOp[] => [
+        rename(DAY, "Heatmaster: Workday"),
+        labelArea("kitchen", [DAY]),
+        labelEntity("sensor.a", [SENSOR_LABEL]),
+      ];
+      async function dropped(): Promise<{
+        w: World;
+        result: LabelWriteResult;
+        writes: readonly Readonly<Record<string, unknown>>[];
+      }> {
+        const w = await world({ seed: labelled });
+        w.ha.failNext("close:config/area_registry/update");
+        const { result, writes } = await written(w, ops());
+        return { w, result, writes };
+      }
+
+      it("the op in flight fails with link_down and is unanswered", async () => {
+        const { result } = await dropped();
+        const [, inFlight] = ops();
+        expect(result.failed).toContainEqual({ op: inFlight, error: "link_down" });
+        expect(result.unanswered).toEqual([inFlight]);
+      });
+
+      it("the ops after it fail with link_down unsent", async () => {
+        const { result, writes } = await dropped();
+        const [, , after] = ops();
+        expect(result.failed).toContainEqual({ op: after, error: "link_down" });
+        expect(writes.map((write) => write.type)).toEqual([
+          "config/label_registry/update",
+          "config/area_registry/update",
+        ]);
+      });
+
+      it("no last reload is sent and settled is false", async () => {
+        const { w, result } = await dropped();
+        expect(result.settled).toBe(false);
+        const sent = w.ha.commands();
+        const last = sent.lastIndexOf("config/area_registry/update");
+        expect(sent.slice(last + 1)).not.toContain("config/label_registry/list");
+      });
+    });
+
+    describe("With a device registry event arriving during the batch", () => {
+      it("its reload is not folded into the batch: it runs after it and snapshot shows the move", async () => {
+        const w = await world({
+          seed: (ha) => {
+            labelled(ha);
+            ha.setDevice({
+              id: "dv",
+              identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+              area_id: "office",
+            });
+          },
+        });
+        w.ha.coalesceNext("config/label_registry/update", () => {
+          w.ha.setDevice({
+            id: "dv",
+            identifiers: [["mqtt", "zigbee2mqtt_0x00124b0000000001"]],
+            area_id: "kitchen",
+          });
+        });
+        const from = w.ha.commands().length;
+        const result = await w.link.writeLabels([rename(DAY, "Heatmaster: Workday")]);
+        expect(result.settled).toBe(true);
+        await until(() => {
+          expect(w.link.snapshot()?.valveAreas.get("z2m:0x00124b0000000001")).toBe("kitchen");
+        });
+        const sent = w.ha.commands().slice(from);
+        expect(sent.indexOf("config/device_registry/list")).toBeGreaterThan(
+          sent.lastIndexOf("config/label_registry/list"),
+        );
+      });
+    });
+
     describe("After it resolves", () => {
       it("snapshot shows every done op", async () => {
         const w = await world({ seed: labelled });

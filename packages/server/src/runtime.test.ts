@@ -1353,12 +1353,15 @@ describe("runtime", () => {
       });
     });
 
-    describe("With writes held after a schedule was applied on a fresh install", () => {
+    describe("With a schedule applied on a fresh install by a document that does not set hold_writes", () => {
       it("the records are saved and nothing is written to a valve until writes are released", async () => {
         const rig = await boot({ devices: [trvzb(A), trvzb(B)], house: { living: [A, B] } });
         rig.say(A, "a-1");
         rig.say(B, "b-1");
-        await rig.rt.apply(raw({ hold: true }), APPLY);
+        // The fresh install's hold, not the document, keeps the writes held.
+        const document = raw();
+        await rig.rt.apply({ ...document, settings: { timezone: ZONE } }, APPLY);
+        expect(rig.rt.snapshot().held).toBe(true);
         expect(recordsOf(rig)).toEqual([A, B]);
         await hear(rig, [A, B]);
         await rig.advance(10 * MINUTE);
@@ -1566,6 +1569,37 @@ describe("runtime", () => {
       it("one tick has run after the save: tickedAt is set", async () => {
         const rig = await boot();
         expect(rig.rt.snapshot().tickedAt).toBe(T);
+      });
+    });
+
+    describe("With no config file, no ledger and an empty copy, and the first save of the config failing", () => {
+      async function failedFresh(): Promise<Rig> {
+        const rig = await boot({ start: false });
+        rig.stores.fail.config = 1;
+        await rig.rt.start();
+        await rig.rt.settled();
+        rig.say(A, "a-1");
+        await rig.advance(TICK_INTERVAL_MS);
+        return rig;
+      }
+
+      it("store_write_failed shows, the config stays empty and nothing is written to a valve", async () => {
+        const rig = await failedFresh();
+        expect(rig.stores.calls[0]).toBe("config.fail");
+        const snapshot = rig.rt.snapshot();
+        expect(snapshot.configState).toBe("empty");
+        expect(snapshot.problems.map((problem) => problem.kind)).toContain("store_write_failed");
+        expect(sends(rig, A).filter((sent) => sent.kind === "publish")).toEqual([]);
+      });
+
+      it("a later apply saves revision 1, with writes held by the document's default", async () => {
+        const rig = await failedFresh();
+        const document = raw();
+        await rig.rt.apply({ ...document, settings: { timezone: ZONE } }, APPLY);
+        expect(readJson(path.join(rig.dataDir, "config.json"))).toMatchObject({
+          data: { revision: 1, config: { settings: { hold_writes: true } } },
+        });
+        expect(rig.rt.snapshot().held).toBe(true);
       });
     });
 
