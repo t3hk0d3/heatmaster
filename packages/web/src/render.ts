@@ -377,13 +377,11 @@ export function renderUpgrade(state: StateView, t: Translate): HTMLElement {
   const section = el("section", { class: "upgrade" });
   const report = state.upgrade;
   if (report === undefined) return section;
-  section.append(
-    textElement("h2", t("upgrade.title")),
-    textElement("p", t("upgrade.intro", { version: report.fromVersion })),
-  );
+  section.append(textElement("h2", t("upgrade.title")), textElement("p", t("upgrade.intro")));
   if (report.droppedRooms.length === 0) {
     section.append(textElement("p", t("upgrade.none_dropped")));
   } else {
+    section.append(textElement("p", t("upgrade.dropped_intro")));
     const list = el("ul", {});
     for (const room of report.droppedRooms) {
       list.append(

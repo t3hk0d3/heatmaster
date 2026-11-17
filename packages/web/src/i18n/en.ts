@@ -200,8 +200,9 @@ export const en = {
 
   "upgrade.title": "Configuration converted",
   "upgrade.intro":
-    "Your configuration was converted from version {version}. Rooms now come from Home Assistant areas, so these old rooms could not be kept:",
-  "upgrade.none_dropped": "Every room was kept.",
+    "Your configuration was converted to the new format. Rooms now come from Home Assistant areas.",
+  "upgrade.dropped_intro": "These old rooms could not be kept:",
+  "upgrade.none_dropped": "Every old room was kept.",
   "upgrade.room": "{name} ({roomId}), valves {valves}: {reason}",
   "upgrade.no_valves": "none",
   "upgrade.dropped.no_area": "it names no Home Assistant area",

@@ -31,6 +31,7 @@ import {
 
 const t = translator("en");
 const en = DICTIONARIES.en;
+const ru = DICTIONARIES.ru;
 const ID = "z2m:0x00124b0012345678";
 
 function text(element: HTMLElement): string {
@@ -453,7 +454,23 @@ describe("render", () => {
         expect(text(out)).toContain("Bath");
         expect(text(out)).toContain(ID);
         expect(text(out)).toContain(en["upgrade.dropped.no_area"]);
+        expect(text(out)).toContain(en["upgrade.dropped_intro"]);
         expect(button(out, "dismiss-upgrade")).not.toBeNull();
+      });
+    });
+    describe("With a report that dropped no room", () => {
+      const state = stateView({ upgrade: { fromVersion: 2, droppedRooms: [] } });
+      it("says every old room was kept, and nothing about rooms that could not be kept (en)", () => {
+        const out = text(renderUpgrade(state, t));
+        expect(out).toContain(en["upgrade.intro"]);
+        expect(out).toContain(en["upgrade.none_dropped"]);
+        expect(out).not.toContain(en["upgrade.dropped_intro"]);
+        expect(out).not.toContain("could not be kept");
+      });
+      it("says the same in Russian", () => {
+        const out = text(renderUpgrade(state, translator("ru")));
+        expect(out).toContain(ru["upgrade.none_dropped"]);
+        expect(out).not.toContain("сохранить не удалось");
       });
     });
     describe("Without a report", () => {

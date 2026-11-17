@@ -123,8 +123,9 @@ export const ru: Dictionary = {
 
   "upgrade.title": "Конфигурация преобразована",
   "upgrade.intro":
-    "Ваша конфигурация преобразована из версии {version}. Теперь комнаты берутся из зон Home Assistant, поэтому эти старые комнаты сохранить не удалось:",
-  "upgrade.none_dropped": "Все комнаты сохранены.",
+    "Конфигурация переведена в новый формат. Теперь комнаты берутся из зон Home Assistant.",
+  "upgrade.dropped_intro": "Эти старые комнаты сохранить не удалось:",
+  "upgrade.none_dropped": "Все прежние комнаты сохранены.",
   "upgrade.room": "{name} ({roomId}), клапаны: {valves}. Причина: {reason}",
   "upgrade.no_valves": "нет",
   "upgrade.dropped.no_area": "в ней не указана зона Home Assistant",
