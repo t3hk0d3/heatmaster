@@ -754,8 +754,18 @@ export function createHaLink(
     }
   }
 
-  /** The message for one op, or the code it fails with unsent. */
-  function messageFor(op: LabelOp, sent: ReadonlyMap<string, readonly string[]>): Command | string {
+  /**
+   * The message for one op, or the code it fails with unsent. An area's or entity's labels are
+   * those last sent for it in this batch, else the link's copy, without the labels this batch
+   * deleted (Home Assistant drops a deleted label from its wearers).
+   */
+  function messageFor(
+    op: LabelOp,
+    sent: ReadonlyMap<string, readonly string[]>,
+    deleted: ReadonlySet<string>,
+  ): Command | string {
+    const live = (labels: readonly string[]): readonly string[] =>
+      labels.filter((label) => !deleted.has(label));
     const type = LABEL_COMMANDS[op.kind];
     switch (op.kind) {
       case "createLabel":
@@ -767,12 +777,12 @@ export function createHaLink(
       case "labelArea": {
         const current = sent.get(`area:${op.areaId}`) ?? areas.get(op.areaId)?.labels;
         if (current === undefined) return NOT_FOUND;
-        return { type, area_id: op.areaId, labels: merged(current, op.add, op.remove) };
+        return { type, area_id: op.areaId, labels: merged(live(current), op.add, op.remove) };
       }
       case "labelEntity": {
         const current = sent.get(`entity:${op.entityId}`) ?? entities.get(op.entityId)?.labels;
         if (current === undefined) return NOT_FOUND;
-        return { type, entity_id: op.entityId, labels: merged(current, op.add, op.remove) };
+        return { type, entity_id: op.entityId, labels: merged(live(current), op.add, op.remove) };
       }
     }
   }
@@ -800,6 +810,9 @@ export function createHaLink(
       const sent = new Map<string, readonly string[]>();
       // The labels whose create in this batch did not give them, with the create's error.
       const missing = new Map<string, string>();
+      // The labels this batch deleted. `mirrorLabels` puts every delete last; this keeps a label op
+      // after one from sending the deleted label back all the same.
+      const deleted = new Set<string>();
       for (const op of ops) {
         const blocked =
           unloaded ??
@@ -811,7 +824,7 @@ export function createHaLink(
           failed.push({ op, error: blocked });
           continue;
         }
-        const message = messageFor(op, sent);
+        const message = messageFor(op, sent, deleted);
         if (typeof message === "string") {
           failed.push({ op, error: message });
           continue;
@@ -841,6 +854,7 @@ export function createHaLink(
           const key = op.kind === "labelArea" ? `area:${op.areaId}` : `entity:${op.entityId}`;
           sent.set(key, message.labels as readonly string[]);
         }
+        if (op.kind === "deleteLabel") deleted.add(op.labelId);
         done.push(op);
       }
       if (!stale(id)) {
