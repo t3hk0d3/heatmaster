@@ -560,6 +560,33 @@ describe("label-sync", () => {
       });
     });
 
+    describe("After a mirror whose op failed", () => {
+      it("problems holds no ha_label_failed any more", async () => {
+        const { ha, sync } = rig();
+        ha.failLabels(() => "link_down");
+        await sync.mirror(config(), MEMBERSHIP);
+        expect(sync.problems().map((problem) => problem.kind)).toContain("ha_label_failed");
+        sync.reset();
+        expect(sync.problems()).toEqual([]);
+      });
+    });
+
+    describe("While a mirror's writes ran, whose ops then failed", () => {
+      it("that mirror leaves no failure: problems is empty after it", async () => {
+        const { ha, sync } = rig();
+        ha.failLabels(() => "link_down");
+        const release = ha.holdLabels();
+        const mirrored = sync.mirror(config(), MEMBERSHIP);
+        await vi.waitFor(() => {
+          expect(ha.labelBatches()).toHaveLength(1);
+        });
+        sync.reset();
+        release();
+        await mirrored;
+        expect(sync.problems()).toEqual([]);
+      });
+    });
+
     describe("While a mirror's writes ran", () => {
       it("that mirror leaves no baseline: pull returns undefined after it", async () => {
         const { ha, sync } = rig();

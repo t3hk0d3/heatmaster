@@ -4659,6 +4659,29 @@ describe("runtime", () => {
         expect(failed).toBe(clean);
       });
 
+      it("while the link is down, ha_label_failed is not shown", async () => {
+        const rig = await failing(true);
+        expect(problemKinds(rig.rt.snapshot())).toContain("ha_label_failed");
+        // The link is down; its link_down event (which also resets the label sync) is still due.
+        rig.ha?.setState("down");
+        expect(rig.rt.snapshot().house).toBe("frozen");
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("ha_label_failed");
+      });
+
+      it("after the link_down event and the link coming back with labels writable, none is shown", async () => {
+        const rig = await failing(true);
+        rig.ha?.setState("down");
+        rig.ha?.emit({ kind: "link_down" });
+        rig.ha?.failLabels(undefined);
+        rig.ha?.setState("up");
+        rig.ha?.emit({ kind: "link_up" });
+        await rig.advance(EVENT_DEBOUNCE_MS);
+        await vi.waitFor(() => {
+          expect(rig.ha?.labelBatches().length).toBeGreaterThan(1);
+        });
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("ha_label_failed");
+      });
+
       it("a label problem that names an area carries the area's name in areaNames", async () => {
         const ha = createStubHaLink();
         ha.setAreaName("living", "Living room");

@@ -4,8 +4,11 @@
  * in Home Assistant since the last mirror or pull into a config edit. Heatmaster's own writes are
  * part of the baseline `pull` compares against, so their echoes are no edits.
  *
- * Known limit: a label edit made in the HA_SETTLE_MS before an apply is not pulled; the apply's
- * mirror sets the labels to the new config.
+ * Known limit: a label edit made in the HA_SETTLE_MS before any mirror starts (an apply's, the
+ * one at link_up, a settle's schedules mirror, a clash's follow-up, or one queued behind another)
+ * is not pulled: that mirror plans from the snapshot that holds the edit and sets the labels back
+ * to the config. An edit pulled by a settle while an apply's mirror waits behind an older one is
+ * applied on top of the apply.
  */
 
 import {
@@ -39,7 +42,10 @@ export type LabelSync = Readonly<{
   /** Whether the last pull saw a Heatmaster schedule label differ from the baseline, edit or not. */
   scheduleLabelsMoved(): boolean;
   problems(): readonly Problem[];
-  /** Forgets the baseline: `pull` returns undefined until the next mirror has run. */
+  /**
+   * Forgets the baseline (`pull` returns undefined until the next mirror has run) and the label
+   * write failures: they belong to a connection that is gone.
+   */
   reset(): void;
 }>;
 
@@ -203,12 +209,13 @@ export function createLabelSync(ha: HaLink, valveAddresses: () => ReadonlySet<st
     } finally {
       inflight = [];
     }
+    // A mirror that spans a reset leaves nothing: its failures belong to the dropped connection.
+    if (startedAt !== generation) return;
     failures =
       scope === "all"
         ? result.failed
         : [...failures.filter((failure) => sensorSide(failure.op)), ...result.failed];
     if (scope === "all") unlabellable = plan.unlabellable;
-    if (startedAt !== generation) return;
     // Own writes are part of the baseline: input bookkeeping, not a write decision. A pull while
     // they ran took the newer snapshot as its baseline; they go on top of that.
     const base = pulls === pullsAtStart ? snapshot : (baseline ?? snapshot);
@@ -279,6 +286,7 @@ export function createLabelSync(ha: HaLink, valveAddresses: () => ReadonlySet<st
       baseline = undefined;
       uncertain = [];
       moved = false;
+      failures = [];
     },
   };
 }

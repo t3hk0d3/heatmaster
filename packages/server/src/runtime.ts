@@ -1564,7 +1564,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         ? [problemPacingUnreadable()]
         : []),
       ...(tickError === undefined ? [] : [problemTickFailed()]),
-      ...(labelSync?.problems() ?? []),
+      // Label write problems belong to the live house: while the link is down or the config is
+      // unreadable no mirror runs that could clear them.
+      ...(house.kind === "live" && readable !== undefined ? (labelSync?.problems() ?? []) : []),
       ...haLabelProblems(house, readable),
     ];
     // After every problem is in: the label problems name areas.
