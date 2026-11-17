@@ -43,8 +43,8 @@ export type RoomView = Readonly<{
 }>;
 
 /**
- * `stranded`: a managed valve that Home Assistant no longer has and no transport lists; it may be
- * forgotten.
+ * `stranded`: a managed valve that Home Assistant no longer has and whose transport, healthy and
+ * with a device list, does not list it (`transportListed`); it may be forgotten.
  */
 export type ValveView = Readonly<{
   valveId: string;
