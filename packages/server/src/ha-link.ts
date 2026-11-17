@@ -1097,10 +1097,9 @@ export function createHaLink(
      * done op when it resolves. Label, area and entity events that arrive meanwhile fold into that
      * last reload, until its command for their registry is sent; later ones, and device and config
      * events, queue their reload behind the batch. A queued reload that fails is asked again
-     * HA_RETRY_MS later. When the first
-     * reload fails, no op is sent and each fails with that reload's code. An op that relies on a
-     * label whose create in the batch failed, or was answered with another id (`label_clash`), is
-     * not sent and fails with the create's code.
+     * HA_RETRY_MS later. When the first reload fails, no op is sent and each fails with that
+     * reload's code. An op that relies on a label whose create in the batch failed, or was
+     * answered with another id (`label_clash`), is not sent and fails with the create's code.
      */
     writeLabels(ops) {
       if (ops.length === 0) {

@@ -454,8 +454,7 @@ export function importSensors(
  * waiting for the next pull); `legacy_label_present` for each room whose entry has a sensor while
  * entities in its area still carry `room_temperature_sensor`; `entry_unavailable` for each area,
  * in area-id order, that cannot hold an entry while it wears a label one would take in;
- * `label_foreign` for each numbered
- * label, in registry order. `infos` is keyed by entity id.
+ * `label_foreign` for each numbered label, in registry order. `infos` is keyed by entity id.
  */
 export function labelProblems(
   config: Config,
