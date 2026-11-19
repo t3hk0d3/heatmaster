@@ -368,11 +368,14 @@ describe("thermostat", () => {
       });
       describe("With 23 while the room is overridden at 22", () => {
         it("an override at 23 with since now", () => {
+          // Only the target differs: same preset, and the room's default rule is the override's.
           const world = roomWorld({
-            presets: { boost: 23 },
-            thermostats: overridden(makeThermostat({ target: 22, preset: "comfort" })),
+            entry: { presets: { ...NO_PRESETS, comfort: 23 }, overrideEnd: "next_change" },
+            thermostats: overridden(
+              makeThermostat({ target: 22, preset: "comfort", rule: "next_change" }),
+            ),
           });
-          const effects = command(world, { kind: "set_preset", preset: "boost", end: undefined });
+          const effects = command(world, { kind: "set_preset", preset: "comfort", end: undefined });
           expect(savedRoom(effects)).toMatchObject({
             kind: "override",
             target: 23,
