@@ -2450,6 +2450,8 @@ describe("control", () => {
           scheduleId,
           sensors: [],
           presets: NO_PRESETS,
+          overrideEnd: undefined,
+          overrideDurationMs: undefined,
         });
         const config = {
           ...stored.config,

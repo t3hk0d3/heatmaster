@@ -1,8 +1,17 @@
 import { scheduleLabelId } from "./house.ts";
-import { ConfigError, DEFAULT_PRESETS, DEFAULT_SETTINGS, PRESET_NAMES, WEEKDAYS } from "./model.ts";
+import {
+  ConfigError,
+  DEFAULT_PRESETS,
+  DEFAULT_SETTINGS,
+  END_RULES,
+  OVERRIDE_DURATION_RANGE_MS,
+  PRESET_NAMES,
+  WEEKDAYS,
+} from "./model.ts";
 import type {
   Config,
   ConfigIssue,
+  EndRule,
   PresetName,
   Presets,
   RoomEntry,
@@ -34,6 +43,9 @@ export type RawSettings = Readonly<{
   hold_writes?: boolean;
   timezone?: string;
   language?: "en" | "ru";
+  override_end?: EndRule;
+  /** Whole minutes. */
+  override_duration_min?: number;
 }>;
 
 /** A day plan: "HH:MM" to a temperature or a preset name. */
@@ -54,6 +66,9 @@ export type RawRoomEntry = Readonly<{
   schedule?: string;
   sensors?: readonly RawSensor[];
   presets?: RawPresets;
+  override_end?: EndRule;
+  /** Whole minutes. */
+  override_duration_min?: number;
 }>;
 
 /** `rooms` is keyed by Home Assistant area id. */
@@ -341,6 +356,27 @@ function canonicalTimezone(zone: string): string | undefined {
   }
 }
 
+/** An end rule, or undefined when the key is missing (or reported). */
+function parseEndRule(report: Report, path: string, value: unknown): EndRule | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    typeInvalid(report, path, "a text");
+    return undefined;
+  }
+  const rule = END_RULES.find((candidate) => candidate === value);
+  if (rule === undefined) {
+    report(path, "override_end_unsupported", 'the end rule is "next_change", "timer" or "manual"');
+  }
+  return rule;
+}
+
+/** Whole minutes of an override duration, or undefined when the key is missing. */
+function parseOverrideMinutes(report: Report, path: string, value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const [min, max] = OVERRIDE_DURATION_RANGE_MS;
+  return parseWholeMinutes(report, path, value, min / MS_PER_MINUTE, max / MS_PER_MINUTE, 0);
+}
+
 function parseSettings(report: Report, path: string, value: unknown): Settings {
   const obj = asObject(report, path, value === undefined ? {} : value, [
     "external_write_interval_min",
@@ -348,6 +384,8 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
     "hold_writes",
     "timezone",
     "language",
+    "override_end",
+    "override_duration_min",
   ]);
   const interval = parseWholeMinutes(
     report,
@@ -386,12 +424,24 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
     report(at(path, "language"), "language_unsupported", 'the language is "en" or "ru"');
   } else if (lang !== undefined) typeInvalid(report, at(path, "language"), "a text");
 
+  const overrideEnd = parseEndRule(report, at(path, "override_end"), read(obj, "override_end"));
+  const overrideMinutes = parseOverrideMinutes(
+    report,
+    at(path, "override_duration_min"),
+    read(obj, "override_duration_min"),
+  );
+
   return {
     externalWriteIntervalMs: interval * MS_PER_MINUTE,
     sensorStaleAfterMs: stale * MS_PER_MINUTE,
     holdWrites,
     timezone,
     language,
+    overrideEnd: overrideEnd ?? DEFAULT_SETTINGS.overrideEnd,
+    overrideDurationMs:
+      overrideMinutes === undefined
+        ? DEFAULT_SETTINGS.overrideDurationMs
+        : overrideMinutes * MS_PER_MINUTE,
   };
 }
 
@@ -695,7 +745,13 @@ function parseEntry(
   scheduleIds: ReadonlySet<string>,
   schedulesComplete: boolean,
 ): RoomEntry {
-  const obj = asObject(report, path, value, ["schedule", "sensors", "presets"]);
+  const obj = asObject(report, path, value, [
+    "schedule",
+    "sensors",
+    "presets",
+    "override_end",
+    "override_duration_min",
+  ]);
   const rawSchedule = read(obj, "schedule");
   let scheduleId: string | undefined;
   if (rawSchedule !== undefined) {
@@ -721,7 +777,19 @@ function parseEntry(
     frost: partial.frost,
     boost: partial.boost,
   };
-  return { scheduleId, sensors, presets };
+  const overrideEnd = parseEndRule(report, at(path, "override_end"), read(obj, "override_end"));
+  const minutes = parseOverrideMinutes(
+    report,
+    at(path, "override_duration_min"),
+    read(obj, "override_duration_min"),
+  );
+  return {
+    scheduleId,
+    sensors,
+    presets,
+    overrideEnd,
+    overrideDurationMs: minutes === undefined ? undefined : minutes * MS_PER_MINUTE,
+  };
 }
 
 /** The entries, keyed by area id, in the document's order. */
@@ -854,13 +922,17 @@ function sensorToRaw(sensor: SensorRef): RawSensor {
   return { ref: sensor.ref, weight: sensor.weight };
 }
 
-/** Leaves out a missing schedule, empty sensors and empty presets: an entry with none is `{}`. */
+/** Leaves out a missing schedule, empty sensors, empty presets and missing override keys: an entry with none is `{}`. */
 function entryToRaw(entry: RoomEntry): RawRoomEntry {
   const presets = presetsToRaw(entry.presets);
   return {
     ...(entry.scheduleId === undefined ? {} : { schedule: entry.scheduleId }),
     ...(entry.sensors.length === 0 ? {} : { sensors: entry.sensors.map(sensorToRaw) }),
     ...(Object.keys(presets).length === 0 ? {} : { presets }),
+    ...(entry.overrideEnd === undefined ? {} : { override_end: entry.overrideEnd }),
+    ...(entry.overrideDurationMs === undefined
+      ? {}
+      : { override_duration_min: entry.overrideDurationMs / MS_PER_MINUTE }),
   };
 }
 
@@ -875,6 +947,8 @@ export function configToRaw(config: Config): RawConfig {
       hold_writes: settings.holdWrites,
       ...(settings.timezone === undefined ? {} : { timezone: settings.timezone }),
       language: settings.language,
+      override_end: settings.overrideEnd,
+      override_duration_min: settings.overrideDurationMs / MS_PER_MINUTE,
     },
     presets: presetsToRaw(config.presets),
     schedules: config.schedules.map((schedule) => ({

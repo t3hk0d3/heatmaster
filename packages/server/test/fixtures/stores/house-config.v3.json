@@ -12,7 +12,9 @@
         "sensor_stale_min": 30,
         "hold_writes": false,
         "timezone": "Europe/Amsterdam",
-        "language": "en"
+        "language": "en",
+        "override_end": "next_change",
+        "override_duration_min": 120
       },
       "presets": {
         "comfort": 21,

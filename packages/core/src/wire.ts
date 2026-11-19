@@ -6,6 +6,7 @@
 import type { UnplacedReason } from "./house.ts";
 import type { PendingReason } from "./join.ts";
 import type { ConfigState, DroppedRoomReason, HaChangeKind, Membership } from "./ledger.ts";
+import type { EndRule } from "./model.ts";
 import type { Liveness } from "./observation.ts";
 import type { Evidence, SettingKey, ValveMode } from "./settings.ts";
 import type { ProblemKind, Severity, Subject, SyncState } from "./status.ts";
@@ -81,6 +82,7 @@ export type HaChangeItemView = Readonly<{
   areaId?: string;
   entityId?: string;
   scheduleId?: string;
+  rule?: EndRule;
 }>;
 
 /** A config revision made from label edits in Home Assistant; `at` is epoch milliseconds. */

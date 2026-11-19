@@ -318,12 +318,19 @@ describe("views", () => {
               revision: 7,
               at,
               items: [
-                { kind: "schedule", areaId: "office", entityId: undefined, scheduleId: "night" },
+                {
+                  kind: "schedule",
+                  areaId: "office",
+                  entityId: undefined,
+                  scheduleId: "night",
+                  rule: undefined,
+                },
                 {
                   kind: "sensor_added",
                   areaId: "office",
                   entityId: "sensor.office",
                   scheduleId: undefined,
+                  rule: undefined,
                 },
               ],
             },
@@ -338,6 +345,31 @@ describe("views", () => {
               { kind: "sensor_added", areaId: "office", entityId: "sensor.office" },
             ],
           },
+        ]);
+      });
+    });
+
+    describe("With an haChanges item of kind override_end with rule timer", () => {
+      it("the item view carries kind override_end and rule timer", () => {
+        const view = viewOf({
+          haChanges: [
+            {
+              revision: 8,
+              at: Date.UTC(2026, 10, 16, 9, 0, 0),
+              items: [
+                {
+                  kind: "override_end",
+                  areaId: "office",
+                  entityId: undefined,
+                  scheduleId: undefined,
+                  rule: "timer",
+                },
+              ],
+            },
+          ],
+        });
+        expect(view.haChanges[0]?.items).toEqual([
+          { kind: "override_end", areaId: "office", rule: "timer" },
         ]);
       });
     });
@@ -601,6 +633,7 @@ describe("views", () => {
                   areaId: "x",
                   entityId: "sensor.x",
                   scheduleId: undefined,
+                  rule: undefined,
                 },
               ],
             },

@@ -130,6 +130,7 @@ export const ru: Dictionary = {
   "ha_changes.item.sensor_removed": "Датчик {entity} убран из зоны «{area}»",
   "ha_changes.item.sensors_imported":
     "Датчики зоны «{area}» импортированы по метке room_temperature_sensor",
+  "ha_changes.item.override_end": "Конец ручной настройки в {area}",
 
   "upgrade.title": "Конфигурация преобразована",
   "upgrade.intro":

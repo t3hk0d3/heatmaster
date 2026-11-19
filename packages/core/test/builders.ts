@@ -11,10 +11,12 @@ import {
   tick,
   withRecord,
 } from "../src/index.ts";
+import { DEFAULT_SETTINGS } from "../src/model.ts";
 import type {
   Config,
   DeviceState,
   DeviceView,
+  EndRule,
   Event,
   AreaMembership,
   Group,
@@ -129,6 +131,8 @@ const sensor: fc.Arbitrary<SensorRef> = fc.record({
   weight: fc.integer({ min: 1, max: 20 }).map((n) => n / 2),
 });
 
+const endRule = fc.constantFrom<EndRule>("next_change", "timer", "manual");
+
 const roomPresets = fc.record({
   comfort: fc.option(halfDegree, { nil: undefined }),
   eco: fc.option(halfDegree, { nil: undefined }),
@@ -155,6 +159,8 @@ export const arbConfig: fc.Arbitrary<Config> = fc
           nil: undefined,
         }),
         language: fc.constantFrom<"en" | "ru">("en", "ru"),
+        overrideEnd: endRule,
+        overrideDurationMs: fc.integer({ min: 15, max: 1440 }).map((n) => n * 60_000),
       }),
       presets: fc.record({
         comfort: halfDegree,
@@ -192,6 +198,11 @@ export const arbConfig: fc.Arbitrary<Config> = fc
                   : fc.option(fc.constantFrom(...scheduleIds), { nil: undefined }),
               sensors: fc.uniqueArray(sensor, { maxLength: 4, selector: (s) => s.ref }),
               presets: roomPresets,
+              overrideEnd: fc.option(endRule, { nil: undefined }),
+              overrideDurationMs: fc.option(
+                fc.integer({ min: 15, max: 1440 }).map((n) => n * 60_000),
+                { nil: undefined },
+              ),
             }),
           ),
         )
@@ -340,7 +351,13 @@ export function entriesOf(rooms: readonly Room[]): ReadonlyMap<string, RoomEntry
   return new Map(
     rooms.map((room): [string, RoomEntry] => [
       room.id,
-      { scheduleId: room.scheduleId, sensors: room.sensors, presets: room.presets },
+      {
+        scheduleId: room.scheduleId,
+        sensors: room.sensors,
+        presets: room.presets,
+        overrideEnd: room.overrideEnd,
+        overrideDurationMs: room.overrideDurationMs,
+      },
     ]),
   );
 }
@@ -464,6 +481,8 @@ export function makeManaged(
     valves: [{ valveId }],
     sensors: options.sensors ?? [],
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
+    overrideEnd: DEFAULT_SETTINGS.overrideEnd,
+    overrideDurationMs: DEFAULT_SETTINGS.overrideDurationMs,
   };
   const config = makeConfig({
     ...(options.holdWrites === undefined ? {} : { holdWrites: options.holdWrites }),

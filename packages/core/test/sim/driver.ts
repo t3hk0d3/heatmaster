@@ -627,6 +627,8 @@ export function simRoom(
     valves: valveIds.map((valveId) => ({ valveId })),
     sensors: sensorRefs.map((ref) => ({ ref, weight: 1 })),
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
+    overrideEnd: "next_change",
+    overrideDurationMs: 2 * 60 * 60 * 1000,
   };
 }
 

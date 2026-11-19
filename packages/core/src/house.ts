@@ -176,7 +176,8 @@ export function sameMembership(
 
 /**
  * One Room per room of the membership, in area-id order: its schedule is the entry's, else the
- * default; its sensors and presets are the entry's, none without one. No room when the config has
+ * default; its sensors and presets are the entry's, none without one; its override end rule and duration
+ * are the entry's, else the house's. No room when the config has
  * no schedule. `unused` lists the entries that are no room (all of them without a membership).
  */
 export function resolveRooms(
@@ -201,6 +202,8 @@ export function resolveRooms(
       valves: area.valveIds.map((valveId) => ({ valveId })),
       sensors: entry?.sensors ?? [],
       presets: entry?.presets ?? NO_PRESETS,
+      overrideEnd: entry?.overrideEnd ?? config.settings.overrideEnd,
+      overrideDurationMs: entry?.overrideDurationMs ?? config.settings.overrideDurationMs,
     });
   }
   return { rooms, unused };

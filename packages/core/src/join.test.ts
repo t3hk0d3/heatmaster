@@ -43,6 +43,8 @@ function room(id: string, valveIds: readonly string[]): Room {
     valves: valveIds.map((valveId) => ({ valveId })),
     sensors: [],
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
+    overrideEnd: "next_change",
+    overrideDurationMs: 2 * 60 * 60 * 1000,
   };
 }
 

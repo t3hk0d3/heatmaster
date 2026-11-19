@@ -155,6 +155,8 @@ describe("validation", () => {
           holdWrites: true,
           timezone: undefined,
           language: "en",
+          overrideEnd: "next_change",
+          overrideDurationMs: 7_200_000,
         });
         expect(config.presets).toEqual({ comfort: 20, eco: 17, frost: 7, boost: 23 });
         expect(config.rooms.get("a")?.sensors[0]?.weight).toBe(1);
@@ -1080,6 +1082,54 @@ describe("validation", () => {
     });
   });
 
+  describe("validateConfig (override end rules)", () => {
+    describe('With settings.override_end "timer" and override_duration_min 90', () => {
+      const settings = (): Config["settings"] =>
+        validateConfig({
+          ...validRaw(),
+          settings: { override_end: "timer", override_duration_min: 90 },
+        }).settings;
+      it("settings.overrideEnd is timer and overrideDurationMs is 90 min", () => {
+        expect(settings().overrideEnd).toBe("timer");
+        expect(settings().overrideDurationMs).toBe(90 * 60 * 1000);
+      });
+    });
+    describe("With neither key", () => {
+      it("next_change and 120 min", () => {
+        const settings = validateConfig(validRaw()).settings;
+        expect(settings.overrideEnd).toBe("next_change");
+        expect(settings.overrideDurationMs).toBe(120 * 60 * 1000);
+      });
+    });
+    describe('With override_end "forever"', () => {
+      it("issue at settings.override_end", () => {
+        expectIssue(
+          { ...validRaw(), settings: { override_end: "forever" } },
+          "override_end_unsupported",
+          "settings.override_end",
+        );
+      });
+    });
+    describe("With override_duration_min 10, 1441 or 30.5", () => {
+      it.each([10, 1441, 30.5])("issue at settings.override_duration_min (%j)", (minutes) => {
+        expectIssue(
+          { ...validRaw(), settings: { override_duration_min: minutes } },
+          "setting_out_of_range",
+          "settings.override_duration_min",
+        );
+      });
+    });
+    describe("With a room entry carrying override_end manual", () => {
+      it("the entry's overrideEnd is manual and overrideDurationMs undefined", () => {
+        const entry = validateConfig(withRooms({ office: { override_end: "manual" } })).rooms.get(
+          "office",
+        );
+        expect(entry?.overrideEnd).toBe("manual");
+        expect(entry?.overrideDurationMs).toBeUndefined();
+      });
+    });
+  });
+
   describe("configToRaw", () => {
     describe("Property: for every arbConfig", () => {
       fcTest.prop([arbConfig])("validateConfig(configToRaw(config)) equals config", (config) => {
@@ -1093,6 +1143,33 @@ describe("validation", () => {
           expect(JSON.parse(JSON.stringify(raw))).toStrictEqual(raw);
         },
       );
+    });
+
+    describe("With an entry without override keys", () => {
+      it("the entry has no override_end or override_duration_min", () => {
+        const raw = configToRaw(validateConfig(validRaw()));
+        const entry = raw.rooms?.living_room ?? {};
+        expect(Object.keys(entry)).not.toContain("override_end");
+        expect(Object.keys(entry)).not.toContain("override_duration_min");
+      });
+    });
+    describe("With an entry carrying both override keys", () => {
+      it("the entry has both, the duration in whole minutes", () => {
+        const config = validateConfig(
+          withRooms({ office: { override_end: "timer", override_duration_min: 45 } }),
+        );
+        expect(configToRaw(config).rooms?.office).toStrictEqual({
+          override_end: "timer",
+          override_duration_min: 45,
+        });
+      });
+    });
+    describe("With the house settings", () => {
+      it("the settings carry override_end and override_duration_min always", () => {
+        const settings = configToRaw(validateConfig(validRaw())).settings;
+        expect(settings?.override_end).toBe("next_change");
+        expect(settings?.override_duration_min).toBe(120);
+      });
     });
 
     describe("On a week with mon to fri equal and sat and sun equal", () => {
@@ -1296,6 +1373,8 @@ describe("validation", () => {
       valves: [],
       sensors: [],
       presets: { ...NO_PRESETS, comfort: 22 },
+      overrideEnd: "next_change",
+      overrideDurationMs: 2 * 60 * 60 * 1000,
     };
 
     describe("With a room that sets comfort only", () => {

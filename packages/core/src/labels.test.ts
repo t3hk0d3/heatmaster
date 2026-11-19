@@ -48,6 +48,8 @@ function entry(scheduleId: string | undefined, sensors: readonly string[] = []):
     scheduleId,
     sensors: sensors.map((entityId) => ({ ref: `ha:${entityId}`, weight: 1 })),
     presets: NO_PRESETS,
+    overrideEnd: undefined,
+    overrideDurationMs: undefined,
   };
 }
 
@@ -140,7 +142,7 @@ function scene(
 }
 
 function scheduleItem(areaId: string, scheduleId: string): HaChangeItem {
-  return { kind: "schedule", areaId, entityId: undefined, scheduleId };
+  return { kind: "schedule", areaId, entityId: undefined, scheduleId, rule: undefined };
 }
 
 function sensorItem(
@@ -148,7 +150,7 @@ function sensorItem(
   areaId: string,
   entityId: string,
 ): HaChangeItem {
-  return { kind, areaId, entityId, scheduleId: undefined };
+  return { kind, areaId, entityId, scheduleId: undefined, rule: undefined };
 }
 
 /** The edit; a test that expects one fails here when there is none. */
@@ -780,6 +782,18 @@ describe("labels", () => {
         );
         expect(edit.config.rooms.get("office")).toEqual(entry(undefined, ["sensor.office_a"]));
         expect(edit.items).toEqual([scheduleItem("office", "day")]);
+      });
+    });
+
+    describe("With a schedule label removed from an area whose entry also holds override_end manual", () => {
+      it("the entry keeps override_end manual", () => {
+        const edit = required(
+          edits(scene({ areas: { office: [NIGHT_LABEL] } }), scene(), {
+            office: { ...entry("night", ["sensor.office_a"]), overrideEnd: "manual" },
+          }),
+        );
+        expect(edit.config.rooms.get("office")?.scheduleId).toBeUndefined();
+        expect(edit.config.rooms.get("office")?.overrideEnd).toBe("manual");
       });
     });
 

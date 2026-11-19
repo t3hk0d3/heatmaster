@@ -1,9 +1,9 @@
 import { ascending } from "./house.ts";
 import type { AreaMembership, AreaRoom, HouseInput } from "./house.ts";
-import { ConfigError, EMPTY_CONFIG } from "./model.ts";
+import { ConfigError, EMPTY_CONFIG, END_RULES } from "./model.ts";
 import { SETTING_KEYS, groupOf } from "./settings.ts";
 import { configToRaw, validateConfig } from "./validation.ts";
-import type { Config, ConfigIssue, Room } from "./model.ts";
+import type { Config, ConfigIssue, EndRule, Room } from "./model.ts";
 import type { ResolvedDay, ResolvedPoint } from "./schedule.ts";
 import type { SettingKey, SettingValue, ValveMode } from "./settings.ts";
 
@@ -34,13 +34,16 @@ export const EMPTY_LEDGER: Ledger = { records: new Map(), released: [] };
 /** How many Home Assistant changes the stored config keeps, oldest dropped first. */
 export const HA_CHANGES_KEPT = 20;
 
-export type HaChangeKind = "schedule" | "sensor_added" | "sensor_removed" | "sensors_imported";
+export type HaChangeKind =
+  "schedule" | "sensor_added" | "sensor_removed" | "sensors_imported" | "override_end";
 
 export type HaChangeItem = Readonly<{
   kind: HaChangeKind;
   areaId: string | undefined;
   entityId: string | undefined;
   scheduleId: string | undefined;
+  /** The end rule an `override_end` item chose. */
+  rule: EndRule | undefined;
 }>;
 
 /** A config revision made from label edits in Home Assistant; `at` is when it was saved. */
@@ -451,6 +454,7 @@ function haChangeToRaw(path: string, change: HaChange): Record<string, unknown> 
       ...(item.areaId === undefined ? {} : { area_id: item.areaId }),
       ...(item.entityId === undefined ? {} : { entity_id: item.entityId }),
       ...(item.scheduleId === undefined ? {} : { schedule_id: item.scheduleId }),
+      ...(item.rule === undefined ? {} : { rule: item.rule }),
     })),
   };
 }
@@ -494,6 +498,7 @@ const HA_CHANGE_KINDS: readonly HaChangeKind[] = [
   "sensor_added",
   "sensor_removed",
   "sensors_imported",
+  "override_end",
 ];
 const DROPPED_ROOM_REASONS: readonly DroppedRoomReason[] = [
   "no_area",
@@ -621,7 +626,7 @@ function haChangesFromRaw(read: StoredReader, value: unknown): readonly HaChange
         itemPath,
         rawItem,
         ["kind"],
-        ["area_id", "entity_id", "schedule_id"],
+        ["area_id", "entity_id", "schedule_id", "rule"],
       );
       if (item === undefined) continue;
       const optionalText = (key: string): string | undefined =>
@@ -633,6 +638,10 @@ function haChangesFromRaw(read: StoredReader, value: unknown): readonly HaChange
         areaId: optionalText("area_id"),
         entityId: optionalText("entity_id"),
         scheduleId: optionalText("schedule_id"),
+        rule:
+          item.rule === undefined
+            ? undefined
+            : read.oneOf(at(itemPath, "rule"), item.rule, END_RULES),
       });
     }
     if (revision !== undefined && changedAt !== undefined) {

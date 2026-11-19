@@ -256,7 +256,13 @@ type UnusedReason =
   | "sensor_on_valve"
   | "sensor_limit";
 
-const EMPTY_ENTRY: RoomEntry = { scheduleId: undefined, sensors: [], presets: NO_PRESETS };
+const EMPTY_ENTRY: RoomEntry = {
+  scheduleId: undefined,
+  sensors: [],
+  presets: NO_PRESETS,
+  overrideEnd: undefined,
+  overrideDurationMs: undefined,
+};
 
 /** The schedule id each existing schedule's own label stands for, by label id. */
 function labelSchedules(config: Config): ReadonlyMap<string, string> {
@@ -350,6 +356,7 @@ export function labelEdits(
       areaId,
       entityId: undefined,
       scheduleId: scheduleId ?? config.defaultScheduleId,
+      rule: undefined,
     });
   }
 
@@ -373,13 +380,25 @@ export function labelEdits(
       const entry = rooms.get(areaId);
       const sensors = [...(entry?.sensors ?? []), { ref, weight: 1 }];
       rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), sensors });
-      items.push({ kind: "sensor_added", areaId, entityId, scheduleId: undefined });
+      items.push({
+        kind: "sensor_added",
+        areaId,
+        entityId,
+        scheduleId: undefined,
+        rule: undefined,
+      });
     } else {
       for (const [areaId, entry] of [...rooms]) {
         if (!entry.sensors.some((sensor) => sensor.ref === ref)) continue;
         const sensors = entry.sensors.filter((sensor) => sensor.ref !== ref);
         rooms.set(areaId, { ...entry, sensors });
-        items.push({ kind: "sensor_removed", areaId, entityId, scheduleId: undefined });
+        items.push({
+          kind: "sensor_removed",
+          areaId,
+          entityId,
+          scheduleId: undefined,
+          rule: undefined,
+        });
       }
     }
   }
@@ -441,7 +460,13 @@ export function importSensors(
     if (found.length === 0) continue;
     const sensors = found.map((entityId) => ({ ref: SENSOR_PREFIX + entityId, weight: 1 }));
     rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), sensors });
-    items.push({ kind: "sensors_imported", areaId, entityId: undefined, scheduleId: undefined });
+    items.push({
+      kind: "sensors_imported",
+      areaId,
+      entityId: undefined,
+      scheduleId: undefined,
+      rule: undefined,
+    });
   }
   const done: StoredConfig = { ...stored, importedAreas: ascending(imported) };
   if (items.length === 0) return done;

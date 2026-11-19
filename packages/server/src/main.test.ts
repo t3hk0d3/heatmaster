@@ -1098,6 +1098,8 @@ const CONFIG_DOCUMENT: Shape = {
         hold_writes: "leaf",
         timezone: "leaf",
         language: "leaf",
+        override_end: "leaf",
+        override_duration_min: "leaf",
       },
     },
     presets: PRESETS,
@@ -1116,6 +1118,8 @@ const CONFIG_DOCUMENT: Shape = {
           schedule: "leaf",
           sensors: { listOf: { fields: { ref: "leaf", weight: "leaf" } } },
           presets: PRESETS,
+          override_end: "leaf",
+          override_duration_min: "leaf",
         },
       },
       keys: (key) => AREA_ID.test(key),
@@ -1147,7 +1151,13 @@ const CONFIG_FILE: Shape = {
               at: "leaf",
               items: {
                 listOf: {
-                  fields: { kind: "leaf", area_id: "leaf", entity_id: "leaf", schedule_id: "leaf" },
+                  fields: {
+                    kind: "leaf",
+                    area_id: "leaf",
+                    entity_id: "leaf",
+                    schedule_id: "leaf",
+                    rule: "leaf",
+                  },
                 },
               },
             },

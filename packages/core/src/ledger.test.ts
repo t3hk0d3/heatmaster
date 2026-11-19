@@ -56,6 +56,8 @@ function roomsWith(valveIds: readonly string[]): readonly Room[] {
       valves: valveIds.map((valveId) => ({ valveId })),
       sensors: [],
       presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
+      overrideEnd: "next_change",
+      overrideDurationMs: 2 * 60 * 60 * 1000,
     },
   ];
 }
@@ -144,10 +146,17 @@ const arbMembership: fc.Arbitrary<AreaMembership> = fc.record({
   ignored: fc.uniqueArray(text, { maxLength: 2 }),
 });
 const arbHaChangeItem: fc.Arbitrary<HaChangeItem> = fc.record({
-  kind: fc.constantFrom("schedule", "sensor_added", "sensor_removed", "sensors_imported"),
+  kind: fc.constantFrom(
+    "schedule",
+    "sensor_added",
+    "sensor_removed",
+    "sensors_imported",
+    "override_end",
+  ),
   areaId: fc.option(text, { nil: undefined }),
   entityId: fc.option(text, { nil: undefined }),
   scheduleId: fc.option(text, { nil: undefined }),
+  rule: fc.option(fc.constantFrom("next_change", "timer", "manual"), { nil: undefined }),
 });
 const arbHaChange: fc.Arbitrary<HaChange> = fc.record({
   revision: fc.nat(),
@@ -237,6 +246,7 @@ function aFullStored(): StoredConfig {
             areaId: "office",
             entityId: undefined,
             scheduleId: "default",
+            rule: undefined,
           },
         ],
       },
@@ -249,12 +259,14 @@ function aFullStored(): StoredConfig {
             areaId: "office",
             entityId: "sensor.office_temperature",
             scheduleId: undefined,
+            rule: undefined,
           },
           {
             kind: "sensor_removed",
             areaId: undefined,
             entityId: "sensor.hall_temperature",
             scheduleId: undefined,
+            rule: undefined,
           },
         ],
       },
@@ -650,6 +662,40 @@ describe("ledger", () => {
         const value = aFullStored();
         const raw: unknown = JSON.parse(JSON.stringify(storedToRaw(value)));
         expect(storedFromRaw(raw)).toEqual(value);
+      });
+    });
+    describe("With an haChanges item without rule", () => {
+      it("loads with rule undefined", () => {
+        const raw = {
+          ...aRawStored(),
+          ha_changes: [
+            {
+              revision: 8,
+              at: "2026-11-14T09:30:00.000Z",
+              items: [{ kind: "schedule", area_id: "office" }],
+            },
+          ],
+        };
+        const item = storedFromRaw(raw).haChanges[0]?.items[0];
+        expect(item?.rule).toBeUndefined();
+      });
+    });
+    describe("With an override_end item with rule manual", () => {
+      it("round-trips through storedToRaw", () => {
+        const item: HaChangeItem = {
+          kind: "override_end",
+          areaId: "office",
+          entityId: undefined,
+          scheduleId: undefined,
+          rule: "manual",
+        };
+        const value: StoredConfig = {
+          ...aFullStored(),
+          haChanges: [{ revision: 10, at: T0, items: [item] }],
+        };
+        const raw: unknown = JSON.parse(JSON.stringify(storedToRaw(value)));
+        expect(storedFromRaw(raw)).toEqual(value);
+        expect(storedFromRaw(raw).haChanges[0]?.items[0]?.rule).toBe("manual");
       });
     });
     describe("With membership and upgrade undefined", () => {

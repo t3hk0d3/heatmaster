@@ -95,6 +95,7 @@ function haChangeView(change: HaChange): HaChangeView {
         areaId: item.areaId,
         entityId: item.entityId,
         scheduleId: item.scheduleId,
+        rule: item.rule,
       }),
     ),
   };

@@ -59,6 +59,8 @@ const ROOM: Room = {
   valves: [{ valveId: V1 }],
   sensors: [],
   presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
+  overrideEnd: "next_change",
+  overrideDurationMs: 2 * 60 * 60 * 1000,
 };
 
 const DAY = points("00:00/18 06:30/21 22:00/18");

@@ -8,6 +8,7 @@ import {
   fitWeek,
   normalizeDay,
   resolveWeek,
+  segmentAt,
   type ResolvedDay,
   type ResolvedWeek,
 } from "./schedule.ts";
@@ -314,6 +315,61 @@ describe("schedule", () => {
       fcTest.prop([arbWeek, arbNow])("nextChangeAt, when set, is later than now", (w, now) => {
         const { nextChangeAt } = activePoint(w, now);
         if (nextChangeAt !== undefined) expect(nextChangeAt).toBeGreaterThan(now.epochMilliseconds);
+      });
+    });
+  });
+
+  describe("segmentAt", () => {
+    const DAY: ResolvedDay = points("06:00/21 09:00/21 22:00/17");
+    describe("At 07:30 in a day 06:00/21, 09:00/21, 22:00/17", () => {
+      const segment = segmentAt(weekOf(DAY), at("2027-06-09T07:30"));
+      it("temperature 21", () => {
+        expect(segment.temperature).toBe(21);
+      });
+      it("startAt today 06:00", () => {
+        expect(segment.startAt).toBe(at("2027-06-09T06:00").epochMilliseconds);
+      });
+      it("nextAt today 09:00", () => {
+        expect(segment.nextAt).toBe(at("2027-06-09T09:00").epochMilliseconds);
+      });
+    });
+    describe("At 23:00", () => {
+      const segment = segmentAt(weekOf(DAY), at("2027-06-09T23:00"));
+      it("startAt today 22:00", () => {
+        expect(segment.startAt).toBe(at("2027-06-09T22:00").epochMilliseconds);
+      });
+      it("nextAt tomorrow's first point", () => {
+        expect(segment.nextAt).toBe(at("2027-06-10T06:00").epochMilliseconds);
+      });
+    });
+    describe("At 01:00 with no point before 01:00 today", () => {
+      it("startAt is yesterday's last point", () => {
+        const segment = segmentAt(weekOf(DAY), at("2027-06-09T01:00"));
+        expect(segment.startAt).toBe(at("2027-06-08T22:00").epochMilliseconds);
+      });
+    });
+    describe("On the night clocks go forward, with a point at 02:30", () => {
+      it("nextAt is the transition instant", () => {
+        const w = weekOf(points("00:00/16 02:30/20"));
+        const segment = segmentAt(w, at("2027-03-28T01:30"));
+        expect(segment.nextAt).toBe(ms("2027-03-28T01:00:00Z"));
+      });
+    });
+    describe("By default", () => {
+      it("nextAt is the next set point even when its temperature is the same", () => {
+        const w = weekOf(points("00:00/16 12:00/16"));
+        const segment = segmentAt(w, at("2027-06-09T10:00"));
+        expect(segment.nextAt).toBe(at("2027-06-09T12:00").epochMilliseconds);
+      });
+      it("nextAt is strictly after now", () => {
+        const segment = segmentAt(weekOf(DAY), at("2027-06-09T09:00"));
+        expect(segment.nextAt).toBe(at("2027-06-09T22:00").epochMilliseconds);
+      });
+      it("temperature equals activePoint's", () => {
+        const now = at("2027-06-09T09:00");
+        expect(segmentAt(weekOf(DAY), now).temperature).toBe(
+          activePoint(weekOf(DAY), now).temperature,
+        );
       });
     });
   });

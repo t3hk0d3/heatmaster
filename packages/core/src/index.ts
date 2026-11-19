@@ -1,7 +1,19 @@
-export { ConfigError, EMPTY_CONFIG, WEEKDAYS, effectivePresets, sensorId } from "./model.ts";
+export {
+  BOOST_DURATION_MS,
+  ConfigError,
+  DEFAULT_OVERRIDE_DURATION_MS,
+  EMPTY_CONFIG,
+  END_RULES,
+  NEXT_CHANGE_LEAD_MS,
+  OVERRIDE_DURATION_RANGE_MS,
+  WEEKDAYS,
+  effectivePresets,
+  sensorId,
+} from "./model.ts";
 export type {
   Config,
   ConfigIssue,
+  EndRule,
   PresetName,
   Presets,
   Room,
@@ -36,13 +48,21 @@ export type {
 } from "./validation.ts";
 export { aggregate, freshness } from "./temperature.ts";
 export type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";
-export { activePoint, daysEqual, fitWeek, normalizeDay, resolveWeek } from "./schedule.ts";
+export {
+  activePoint,
+  daysEqual,
+  fitWeek,
+  normalizeDay,
+  resolveWeek,
+  segmentAt,
+} from "./schedule.ts";
 export type {
   ActivePoint,
   FittedWeek,
   ResolvedDay,
   ResolvedPoint,
   ResolvedWeek,
+  Segment,
 } from "./schedule.ts";
 export { roundHalfUp } from "./rounding.ts";
 export {

@@ -36,6 +36,8 @@ const OFFICE_ENTRY: RoomEntry = {
   scheduleId: "night",
   sensors: [OFFICE_SENSOR],
   presets: { ...NO_PRESETS, comfort: 22 },
+  overrideEnd: undefined,
+  overrideDurationMs: undefined,
 };
 
 function storedWith(config: Config): StoredConfig {
@@ -59,6 +61,8 @@ describe("house", () => {
       valves: valveIds.map((valveId) => ({ valveId })),
       sensors: [],
       presets: NO_PRESETS,
+      overrideEnd: "next_change",
+      overrideDurationMs: 2 * 60 * 60 * 1000,
     });
 
     describe("With rooms that each list their own valves", () => {
@@ -315,8 +319,38 @@ describe("house", () => {
             valves: [{ valveId: A }],
             sensors: [OFFICE_SENSOR],
             presets: { ...NO_PRESETS, comfort: 22 },
+            overrideEnd: "next_change",
+            overrideDurationMs: 2 * 60 * 60 * 1000,
           },
         ]);
+      });
+    });
+
+    describe("With an entry override_end manual and house timer 90 min", () => {
+      it("the room has manual and 90 min", () => {
+        const base = configWith({
+          office: { ...OFFICE_ENTRY, overrideEnd: "manual", overrideDurationMs: undefined },
+        });
+        const config: Config = {
+          ...base,
+          settings: { ...base.settings, overrideEnd: "timer", overrideDurationMs: 90 * 60 * 1000 },
+        };
+        const room = resolveRooms(config, makeMembership({ office: [A] })).rooms[0];
+        expect(room?.overrideEnd).toBe("manual");
+        expect(room?.overrideDurationMs).toBe(90 * 60 * 1000);
+      });
+    });
+
+    describe("With no entry", () => {
+      it("the room has the house values", () => {
+        const base = configWith({});
+        const config: Config = {
+          ...base,
+          settings: { ...base.settings, overrideEnd: "timer", overrideDurationMs: 90 * 60 * 1000 },
+        };
+        const room = resolveRooms(config, makeMembership({ hall: [A] })).rooms[0];
+        expect(room?.overrideEnd).toBe("timer");
+        expect(room?.overrideDurationMs).toBe(90 * 60 * 1000);
       });
     });
 
@@ -331,6 +365,8 @@ describe("house", () => {
             valves: [{ valveId: A }],
             sensors: [],
             presets: NO_PRESETS,
+            overrideEnd: "next_change",
+            overrideDurationMs: 2 * 60 * 60 * 1000,
           },
         ]);
       });
@@ -403,6 +439,8 @@ describe("house", () => {
             valves: [{ valveId: A }],
             sensors: [OFFICE_SENSOR],
             presets: { ...NO_PRESETS, comfort: 22 },
+            overrideEnd: "next_change",
+            overrideDurationMs: 2 * 60 * 60 * 1000,
           },
         ]);
       });

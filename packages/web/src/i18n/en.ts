@@ -208,6 +208,7 @@ export const en = {
   "ha_changes.item.sensor_removed": "Sensor {entity} removed from {area}",
   "ha_changes.item.sensors_imported":
     "Sensors of {area} imported from the room_temperature_sensor label",
+  "ha_changes.item.override_end": "Override end in {area}",
 
   "upgrade.title": "Configuration converted",
   "upgrade.intro":

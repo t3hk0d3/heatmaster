@@ -15,6 +15,17 @@ export type ActivePoint = Readonly<{
   nextTemperature: number | undefined;
 }>;
 
+/**
+ * One stretch of the schedule. `startAt` is the instant the set point in force began (undefined
+ * when none lies within the look-back); `nextAt` is the next set point instant after now, whatever
+ * its temperature.
+ */
+export type Segment = Readonly<{
+  temperature: number;
+  startAt: number | undefined;
+  nextAt: number | undefined;
+}>;
+
 function resolvePoint(point: SetPoint, presets: Presets): ResolvedPoint {
   const temperature = point.preset === undefined ? point.temperature : presets[point.preset];
   if (temperature === undefined)
@@ -120,4 +131,37 @@ export function activePoint(week: ResolvedWeek, now: Temporal.ZonedDateTime): Ac
     }
   }
   return { temperature, nextChangeAt: undefined, nextTemperature: undefined };
+}
+
+/**
+ * The set point in force at `now`, the instant it began (looking back up to `LOOKAHEAD_DAYS` days)
+ * and the first set point instant strictly after `now`, even when it keeps the temperature. A time
+ * that does not exist moves to the transition, as in `activePoint`.
+ */
+export function segmentAt(week: ResolvedWeek, now: Temporal.ZonedDateTime): Segment {
+  const { temperature } = activePoint(week, now);
+  const today = now.toPlainDate();
+  const clock = now.toPlainTime();
+  const nowMs = now.epochMilliseconds;
+  const weekdayOf = (date: Temporal.PlainDate): Weekday => WEEKDAYS[date.dayOfWeek - 1] ?? "mon";
+
+  let startAt: number | undefined;
+  for (let back = 0; back <= LOOKAHEAD_DAYS && startAt === undefined; back++) {
+    const date = today.subtract({ days: back });
+    const started = week[weekdayOf(date)]
+      .filter((p) => back > 0 || Temporal.PlainTime.compare(p.time, clock) <= 0)
+      .map((p) => instantOf(date, p.time, now.timeZoneId))
+      .findLast((instant) => instant !== undefined);
+    startAt = started;
+  }
+
+  let nextAt: number | undefined;
+  for (let ahead = 0; ahead <= LOOKAHEAD_DAYS && nextAt === undefined; ahead++) {
+    const date = today.add({ days: ahead });
+    const later = week[weekdayOf(date)]
+      .map((p) => instantOf(date, p.time, now.timeZoneId))
+      .filter((instant): instant is number => instant !== undefined && instant > nowMs);
+    if (later.length > 0) nextAt = Math.min(...later);
+  }
+  return { temperature, startAt, nextAt };
 }

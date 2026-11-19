@@ -94,7 +94,7 @@ describe("i18n", () => {
             (code) => `pending.reason.${code}`,
           ),
           ...["valve_not_observed", "originals_unreadable"].map((code) => `pending.reason.${code}`),
-          ...["schedule", "sensor_added", "sensor_removed", "sensors_imported"].map(
+          ...["schedule", "sensor_added", "sensor_removed", "sensors_imported", "override_end"].map(
             (kind) => `ha_changes.item.${kind}`,
           ),
           ...["no_area", "area_duplicate", "area_id_invalid"].map(
