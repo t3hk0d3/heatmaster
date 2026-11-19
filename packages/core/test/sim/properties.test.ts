@@ -4,6 +4,7 @@ import {
   BUCKET,
   configToRaw,
   START_TOKENS,
+  GROUPS,
   findProfile,
   groupOf,
   reconcile,
@@ -71,7 +72,7 @@ const IDS = [
   "intent.unreadable",
   "intent.firstMessage",
   "intent.zbtGroups",
-  "mode.wire",
+  "mode.managed",
 ] as const;
 type Id = (typeof IDS)[number];
 
@@ -159,7 +160,7 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
 
     // A group's epoch is one stretch of one desired value in one incarnation of the memory.
     for (const valveId of VALVE_IDS) {
-      for (const group of ["schedule", "active_group", "sensor_source"] as const) {
+      for (const group of GROUPS) {
         const desiredKey = result.memory.valves.get(valveId)?.groups[group]?.desiredKey;
         const id = `${valveId}|${group}`;
         const inc = incarnation(valveId);
@@ -195,10 +196,14 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
         found("intent.firstMessage", `${tag} before the first message`);
       }
 
-      // mode never written: look at the payload the binding would send
+      // mode and setpoint written only to managed or releasing valves: look at the payload the
+      // binding would send
       const payload = payloadOf(sim, valveId, effect);
-      if (payload !== undefined && Object.hasOwn(payload, Z2M_KEYS.mode)) {
-        found("mode.wire", `${tag} wrote ${Z2M_KEYS.mode} on the ${binding}`);
+      const thermostatKeys = [Z2M_KEYS.mode, Z2M_KEYS.setpoint].filter(
+        (key) => payload !== undefined && Object.hasOwn(payload, key),
+      );
+      if (thermostatKeys.length > 0 && kind !== "managed" && kind !== "releasing") {
+        found("mode.managed", `${tag} wrote ${thermostatKeys.join(", ")} on the ${binding}`);
       }
       if (effect.kind === "publish" && kind === "releasing") {
         if (Object.keys(effect.values).some((key) => groupOf(key as SettingKey) === "schedule")) {
@@ -277,6 +282,8 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
         const truth = decodeTruth(sim, valveId);
         for (const [key, original] of Object.entries(record.originals)) {
           if (original === null) continue;
+          // The setpoint is restored only where the captured mode is heat (R17).
+          if (key === "setpoint" && record.originals.system_mode !== "heat") continue;
           if (!sameValue(cache[key as SettingKey], original)) {
             found(
               "release.cache",
@@ -551,7 +558,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         ["release.cache"],
       );
       propertyTest(
-        "in a plan with no battery swap the valve's true sensor source and active group equal them too",
+        "in a plan with no battery swap the valve's true captured settings equal them too, the setpoint only where the captured mode is heat",
         ["release.truth"],
       );
       propertyTest("no day was published to the valve while it was releasing", ["release.noDays"]);
@@ -583,15 +590,18 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
     describe("With a crash after any effect and with a restart at any step", () => {
       propertyTest(
         "the four properties above still hold",
-        IDS.filter((id) => id !== "mode.wire"),
+        IDS.filter((id) => id !== "mode.managed"),
         { crashy: true },
       );
     });
   });
 
-  describe("mode", () => {
+  describe("mode.managed", () => {
     describe("At every moment", () => {
-      propertyTest("Heatmaster never writes a valve's mode", ["mode.wire"]);
+      propertyTest(
+        "holds over the fault plans: system_mode and occupied_heating_setpoint are written only to valves that are managed or releasing",
+        ["mode.managed"],
+      );
     });
   });
 
@@ -676,6 +686,33 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
             return [(at - startMs) / 1000];
           });
           expect(heard.filter((t) => t >= 390 && t < 450)).not.toEqual([]);
+        },
+        PLAN_MS,
+      );
+    });
+
+    describe("With a TRVZB captured in auto with setpoint 17, set to heat at 22 by a person, then removed from its room", () => {
+      const plan: FaultPlan = {
+        initial,
+        steps: [
+          ...waits(4),
+          { k: "person", valve: 0, change: { what: "mode", mode: "heat" } },
+          { k: "person", valve: 0, change: { what: "setpoint", celsius: 22 } },
+          { k: "wait", seconds: 120 },
+          { k: "place", valve: 0, room: null },
+          { k: "wait", seconds: 3600 },
+        ],
+      };
+      it(
+        "a valve captured in auto with setpoint 17 ends in auto, whatever its setpoint",
+        () => {
+          const { report, rig } = execute(plan);
+          nothingBroken(report);
+          const released = rig.sim
+            .ledger()
+            ?.released.find((r) => r.record.valveId === VALVE_IDS[0]);
+          expect(released?.record.originals).toMatchObject({ system_mode: "auto", setpoint: 17 });
+          expect(rig.sim.valve(VALVE_IDS[0]).truth()).toMatchObject({ mode: "auto", setpoint: 22 });
         },
         PLAN_MS,
       );

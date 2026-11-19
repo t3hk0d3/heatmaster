@@ -39,6 +39,16 @@ describe("settings", () => {
         expect(valuesEqual("active_group", 1, 3)).toBe(false);
       });
     });
+    describe('For system_mode "auto" and "auto"', () => {
+      it("true", () => {
+        expect(valuesEqual("system_mode", "auto", "auto")).toBe(true);
+      });
+    });
+    describe("For setpoint 20 and 20.5", () => {
+      it("false", () => {
+        expect(valuesEqual("setpoint", 20, 20.5)).toBe(false);
+      });
+    });
     describe("With values of different kinds", () => {
       it("returns false and does not throw", () => {
         const day = points("00:00/17");
@@ -127,6 +137,35 @@ describe("settings", () => {
       it("active_group and sensor_source each have one member", () => {
         expect(members("active_group")).toEqual(["active_group"]);
         expect(members("sensor_source")).toEqual(["sensor_source"]);
+      });
+      it("SETTING_KEYS and GROUPS are in write order", () => {
+        expect(SETTING_KEYS.slice(7)).toEqual([
+          "active_group",
+          "sensor_source",
+          "frost_protection",
+          "system_mode",
+          "setpoint",
+        ]);
+        expect(GROUPS).toEqual([
+          "schedule",
+          "active_group",
+          "sensor_source",
+          "frost_protection",
+          "thermostat",
+        ]);
+      });
+    });
+    describe("For system_mode and setpoint", () => {
+      it("the group is thermostat, members in the order system_mode, setpoint", () => {
+        expect(groupOf("system_mode")).toBe("thermostat");
+        expect(groupOf("setpoint")).toBe("thermostat");
+        expect(members("thermostat")).toEqual(["system_mode", "setpoint"]);
+      });
+    });
+    describe("For frost_protection", () => {
+      it("the group is frost_protection", () => {
+        expect(groupOf("frost_protection")).toBe("frost_protection");
+        expect(members("frost_protection")).toEqual(["frost_protection"]);
       });
     });
   });

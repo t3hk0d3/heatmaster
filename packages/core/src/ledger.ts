@@ -5,7 +5,7 @@ import { SETTING_KEYS, groupOf } from "./settings.ts";
 import { configToRaw, validateConfig } from "./validation.ts";
 import type { Config, ConfigIssue, Room } from "./model.ts";
 import type { ResolvedDay, ResolvedPoint } from "./schedule.ts";
-import type { SettingKey, SettingValue } from "./settings.ts";
+import type { SettingKey, SettingValue, ValveMode } from "./settings.ts";
 
 /** How many released records the ledger keeps, newest first. */
 const RELEASED_KEPT = 50;
@@ -243,6 +243,14 @@ function pointToRaw(path: string, point: ResolvedPoint): unknown[] {
   return [time.toString({ smallestUnit: "minute" }), point.temperature];
 }
 
+function isTemperature(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isMode(value: unknown): value is ValveMode {
+  return value === "off" || value === "auto" || value === "heat";
+}
+
 function valueToRaw(path: string, key: SettingKey, value: SettingValue | null): unknown {
   if (value === null) return null;
   switch (groupOf(key)) {
@@ -257,6 +265,12 @@ function valueToRaw(path: string, key: SettingKey, value: SettingValue | null): 
       return value === "internal" || value === "external"
         ? value
         : writeFail(path, "expected internal or external");
+    case "frost_protection":
+      return isTemperature(value) ? value : writeFail(path, "expected a temperature");
+    case "thermostat":
+      if (key === "setpoint")
+        return isTemperature(value) ? value : writeFail(path, "expected a temperature");
+      return isMode(value) ? value : writeFail(path, "expected off, auto or heat");
   }
 }
 
@@ -355,6 +369,12 @@ function valueFromRaw(path: string, key: SettingKey, value: unknown): SettingVal
       return value === "internal" || value === "external"
         ? value
         : fail(path, "expected internal or external");
+    case "frost_protection":
+      return isTemperature(value) ? value : fail(path, "expected a temperature");
+    case "thermostat":
+      if (key === "setpoint")
+        return isTemperature(value) ? value : fail(path, "expected a temperature");
+      return isMode(value) ? value : fail(path, "expected off, auto or heat");
   }
 }
 

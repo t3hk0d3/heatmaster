@@ -15,7 +15,10 @@ export type SettingKey =
   | "day_sat"
   | "day_sun"
   | "active_group"
-  | "sensor_source";
+  | "sensor_source"
+  | "frost_protection"
+  | "system_mode"
+  | "setpoint";
 
 /** The day key of each weekday. */
 export const DAY_KEYS: Readonly<Record<Weekday, SettingKey>> = {
@@ -28,30 +31,61 @@ export const DAY_KEYS: Readonly<Record<Weekday, SettingKey>> = {
   sun: "day_sun",
 };
 
-/** Every setting key: the seven days in weekday order, then the active group and the source. */
+/**
+ * Every setting key: the seven days in weekday order, then the active group, the source, the frost
+ * protection temperature, the mode and the setpoint (°C).
+ */
 export const SETTING_KEYS: readonly SettingKey[] = [
   ...WEEKDAYS.map((d) => DAY_KEYS[d]),
   "active_group",
   "sensor_source",
+  "frost_protection",
+  "system_mode",
+  "setpoint",
 ];
 
-/** `schedule` is the seven days. */
-export type Group = "schedule" | "active_group" | "sensor_source";
+/** `schedule` is the seven days; `thermostat` is the mode and the setpoint. */
+export type Group =
+  "schedule" | "active_group" | "sensor_source" | "frost_protection" | "thermostat";
 
-export const GROUPS: readonly Group[] = ["schedule", "active_group", "sensor_source"];
+export const GROUPS: readonly Group[] = [
+  "schedule",
+  "active_group",
+  "sensor_source",
+  "frost_protection",
+  "thermostat",
+];
 
 const SCHEDULE_KEYS: readonly SettingKey[] = WEEKDAYS.map((d) => DAY_KEYS[d]);
+const THERMOSTAT_KEYS: readonly SettingKey[] = ["system_mode", "setpoint"];
 
 export function groupOf(key: SettingKey): Group {
-  return key === "active_group" || key === "sensor_source" ? key : "schedule";
+  switch (key) {
+    case "active_group":
+    case "sensor_source":
+    case "frost_protection":
+      return key;
+    case "system_mode":
+    case "setpoint":
+      return "thermostat";
+    default:
+      return "schedule";
+  }
 }
 
 export function members(group: Group): readonly SettingKey[] {
-  return group === "schedule" ? SCHEDULE_KEYS : [group];
+  switch (group) {
+    case "schedule":
+      return SCHEDULE_KEYS;
+    case "thermostat":
+      return THERMOSTAT_KEYS;
+    default:
+      return [group];
+  }
 }
 
-/** A day, a group number, or a sensor source. */
-export type SettingValue = ResolvedDay | number | SensorSource;
+/** A day, a group number, a temperature (°C), a sensor source, or a mode. */
+export type SettingValue = ResolvedDay | number | SensorSource | ValveMode;
 
 /** A missing key means "unknown". A key is either absent or holds a value. */
 export type SettingValues = Readonly<Partial<Record<SettingKey, SettingValue>>>;
@@ -78,8 +112,8 @@ export function valueKey(key: SettingKey, value: SettingValue): string {
 }
 
 /**
- * A JSON-friendly form for people: a day as `"HH:MM/temp"` texts, a source as its name, a group as
- * its number, unknown or unreadable as `null`.
+ * A JSON-friendly form for people: a day as `"HH:MM/temp"` texts, a source or a mode as its name, a
+ * group or a temperature as its number, unknown or unreadable as `null`.
  */
 export function describeValue(key: SettingKey, value: SettingValue | null | undefined): unknown {
   if (value === null || value === undefined) return null;
@@ -103,6 +137,8 @@ export type Activation = "none" | "setpoint";
  *   means never by age.
  * - `capture` false: the group's original is not captured and not restored.
  * - `readable` false: a refresh does not return the group's value.
+ * - `atomic` true: whenever one desired member differs, every desired member is sent, in one
+ *   message.
  */
 export type GroupSpec = Readonly<{
   group: Group;
@@ -110,17 +146,21 @@ export type GroupSpec = Readonly<{
   maxAgeMs: number | undefined;
   capture: boolean;
   readable: boolean;
+  atomic: boolean;
 }>;
 
 /**
  * Everything the core needs to know about a valve model on a transport. `groups` is in write
  * order. `scheduleGroup` is the schedule slot Heatmaster owns, `undefined` where the valve has one
  * schedule. `externalSensor` false: never fed a temperature, no `sensor_source` group.
+ * `frostMinTemp`–`frostMaxTemp` is the range of its frost protection temperature.
  */
 export type ValveSpec = Readonly<{
   profile: string;
   minTemp: number;
   maxTemp: number;
+  frostMinTemp: number;
+  frostMaxTemp: number;
   tempStep: number;
   maxSetPoints: number;
   slotCount: number;

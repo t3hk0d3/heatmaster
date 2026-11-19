@@ -40,6 +40,8 @@ export const ru: Dictionary = {
   "group.schedule": "расписание",
   "group.active_group": "активная группа расписания",
   "group.sensor_source": "источник температуры",
+  "group.frost_protection": "температура защиты от замерзания",
+  "group.thermostat": "режим и целевая температура",
 
   "rooms.title": "Комнаты",
   "rooms.none": "Пока ни в одной зоне Home Assistant нет клапана, поэтому комнат нет.",
@@ -214,6 +216,9 @@ export const ru: Dictionary = {
   "setting.day_sun": "Расписание на воскресенье",
   "setting.active_group": "Активная группа расписания",
   "setting.sensor_source": "Источник температуры",
+  "setting.frost_protection": "Температура защиты от замерзания",
+  "setting.system_mode": "Режим",
+  "setting.setpoint": "Целевая температура",
 
   "evidence.acked": "подтверждено клапаном",
   "evidence.echoed": "как сообщил Zigbee2MQTT",

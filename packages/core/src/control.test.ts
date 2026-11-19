@@ -5,6 +5,7 @@ import {
   BUILDER_NOW,
   BUILDER_ROOM,
   BUILDER_SCHEDULE,
+  BUILDER_THERMOSTAT,
   BUILDER_VALVE,
   arbConfig,
   entriesOf,
@@ -706,6 +707,28 @@ describe("control", () => {
             differed: true,
             marked: false,
           },
+        ]);
+      });
+    });
+    describe("For the thermostat group desiring auto and 19 on a valve showing auto and 22", () => {
+      it("both system_mode and setpoint are sent", () => {
+        const thermostat = want({ ...EQUAL, system_mode: "auto", setpoint: 19 });
+        const state = heardAt(C0, { ...EQUAL, system_mode: "auto", setpoint: 22 });
+        expect(candidates(TRVZB, thermostat, state, unmarkedVm(TRVZB))).toEqual([
+          {
+            group: "thermostat",
+            values: { system_mode: "auto", setpoint: 19 },
+            differed: true,
+            marked: false,
+          },
+        ]);
+      });
+    });
+    describe("For the schedule group with one day differing", () => {
+      it("only that day is sent", () => {
+        const state = heardAt(C0, { ...EQUAL, day_thu: OTHER_DAY });
+        expect(candidates(TRVZB, desired, state, unmarkedVm(TRVZB))).toEqual([
+          { group: "schedule", values: { day_thu: BUILDER_DAY }, differed: true, marked: false },
         ]);
       });
     });
@@ -2683,7 +2706,9 @@ describe("control", () => {
   describe("tick — joins, pending valves and releases", () => {
     const V2 = "z2m:0x00124b0000000002";
     /** The builder room's TRVZB without a ledger record, heard just now holding `values`. */
-    const joining = (values: SettingValues = { sensor_source: "internal" }): World => ({
+    const joining = (
+      values: SettingValues = { sensor_source: "internal", ...BUILDER_THERMOSTAT },
+    ): World => ({
       ...makeManaged({ state: makeState({ values, heardAgoMs: 0 }) }),
       ledger: EMPTY_LEDGER,
     });
@@ -2703,7 +2728,7 @@ describe("control", () => {
     describe("With a valve that joins this tick", () => {
       /** A valve that was pending, has been asked and answered, and now joins: one day differs. */
       const answered = (): World => ({
-        ...withValues(equalWorld(), { day_sat: OTHER_DAY }),
+        ...withValues(equalWorld(), { day_sat: OTHER_DAY, ...BUILDER_THERMOSTAT }),
         ledger: EMPTY_LEDGER,
       });
       it("the effects start with saveLedger and writeOriginalsCopy", () => {
@@ -2781,6 +2806,7 @@ describe("control", () => {
         const saved = result.effects[0];
         expect(saved?.kind === "saveLedger" && saved.ledger.records.get(V)?.originals).toEqual({
           sensor_source: "internal",
+          ...BUILDER_THERMOSTAT,
         });
         expect(result.effects.filter((e) => VALVE_WRITES.has(e.kind))).toEqual([]);
       });
@@ -2853,7 +2879,7 @@ describe("control", () => {
       });
       describe("With a pending valve", () => {
         it("valve_pending with its reason and room", () => {
-          const result = tick(joining({}));
+          const result = tick(joining(BUILDER_THERMOSTAT));
           expect(problemsOf(result, "valve_pending")).toEqual([
             {
               kind: "valve_pending",

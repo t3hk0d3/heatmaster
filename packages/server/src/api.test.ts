@@ -1320,6 +1320,7 @@ describe("api", () => {
       temperature_sensor_select: "local_temperature",
       system_mode: "auto",
       occupied_heating_setpoint: 17,
+      frost_protection_temperature: 7,
       local_temperature: 19.3,
       battery: 90,
     };

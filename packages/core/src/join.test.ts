@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUILDER_NOW,
   BUILDER_ROOM,
+  BUILDER_THERMOSTAT,
   makeConfig,
   makeMembership,
   makeOriginals,
@@ -59,8 +60,8 @@ function observed(
 
 function makeOriginalsOf(model: Model): SettingValues {
   return model === "trvzb"
-    ? { sensor_source: "internal" }
-    : { active_group: 1, sensor_source: "internal" };
+    ? { sensor_source: "internal", ...BUILDER_THERMOSTAT }
+    : { active_group: 1, sensor_source: "internal", ...BUILDER_THERMOSTAT };
 }
 
 /** A usable view of a valve that has sent no message since the start. */
@@ -135,7 +136,7 @@ describe("join", () => {
       const world = liveWorld([room(BUILDER_ROOM, [V1])], { [V1]: observed() });
       it("joined holds its capture", () => {
         expect(reconcile(world).joined).toEqual([
-          { valveId: V1, originals: { sensor_source: "internal" }, unreadable: [] },
+          { valveId: V1, originals: makeOriginalsOf("trvzb"), unreadable: [] },
         ]);
       });
       it("effects start with saveLedger and writeOriginalsCopy", () => {
@@ -149,7 +150,7 @@ describe("join", () => {
           valveId: V1,
           profile: "sonoff_trvzb",
           adoptedAt: NOW_MS,
-          originals: { sensor_source: "internal" },
+          originals: makeOriginalsOf("trvzb"),
         });
       });
     });
@@ -245,7 +246,9 @@ describe("join", () => {
     });
 
     describe("With a joining TRVZB whose sensor source is not observed", () => {
-      const world = liveWorld([room(BUILDER_ROOM, [V1])], { [V1]: observed("trvzb", {}) });
+      const world = liveWorld([room(BUILDER_ROOM, [V1])], {
+        [V1]: observed("trvzb", BUILDER_THERMOSTAT),
+      });
       it("it is pending with originals_unreadable and sensor_source in unreadable", () => {
         expect(reconcile(world).pending).toEqual([
           {
@@ -268,7 +271,7 @@ describe("join", () => {
 
     describe("With a joining TRV-ZBT whose active group is not observed", () => {
       const world = liveWorld([room(BUILDER_ROOM, [V1])], {
-        [V1]: observed("trv_zbt", { sensor_source: "internal" }),
+        [V1]: observed("trv_zbt", { sensor_source: "internal", ...BUILDER_THERMOSTAT }),
       });
       it("it is pending with originals_unreadable and active_group in unreadable", () => {
         expect(reconcile(world).pending).toEqual([
@@ -507,7 +510,7 @@ describe("join", () => {
     describe("For a valve pending with originals_unreadable", () => {
       it("saveLedger with a record whose unreadable originals are null, then writeOriginalsCopy", () => {
         const world = liveWorld([room(BUILDER_ROOM, [V1])], {
-          [V1]: observed("trv_zbt", { sensor_source: "internal" }),
+          [V1]: observed("trv_zbt", { sensor_source: "internal", ...BUILDER_THERMOSTAT }),
         });
         const effects = acceptUnknownOriginals(world, V1);
         expect(kinds(effects)).toEqual(["saveLedger", "writeOriginalsCopy"]);
@@ -517,7 +520,7 @@ describe("join", () => {
           valveId: V1,
           profile: "sonoff_trv_zbt",
           adoptedAt: NOW_MS,
-          originals: { active_group: null, sensor_source: "internal" },
+          originals: { active_group: null, sensor_source: "internal", ...BUILDER_THERMOSTAT },
         });
         expect(effects[1]).toEqual({ kind: "writeOriginalsCopy", ledger });
       });

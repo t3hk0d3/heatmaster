@@ -3,8 +3,10 @@ import { DAY_KEYS } from "../settings.ts";
 import {
   Z2M_DAY_PAYLOAD,
   Z2M_KEYS,
+  THERMOSTAT_REFRESH,
   decodeCommon,
   encodeDay,
+  encodeThermostat,
   groupSpec,
   selectOption,
 } from "./sonoff-codec.ts";
@@ -16,6 +18,8 @@ export const TRVZB_SPEC: ValveSpec = {
   profile: "sonoff_trvzb",
   minTemp: 4,
   maxTemp: 35,
+  frostMinTemp: 4,
+  frostMaxTemp: 35,
   tempStep: 0.5,
   maxSetPoints: 6,
   slotCount: 6,
@@ -23,6 +27,8 @@ export const TRVZB_SPEC: ValveSpec = {
   groups: [
     groupSpec({ group: "schedule", evidence: "echoed", capture: false, readable: false }),
     groupSpec({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "frost_protection", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "thermostat", evidence: "acked", capture: true, readable: true }),
   ],
   activation: "none",
   externalSensor: true,
@@ -43,11 +49,12 @@ export const TRVZB_BINDING: Binding = {
     if (values.active_group !== undefined) throw new RangeError("the TRVZB has no active group");
     if (values.sensor_source !== undefined)
       message[Z2M_KEYS.select] = selectOption(values.sensor_source);
+    Object.assign(message, encodeThermostat(values));
     return message;
   },
   encodeSetpoint: (celsius) => ({ [Z2M_KEYS.setpoint]: celsius }),
   encodeTemperature: (celsius) => ({ [Z2M_KEYS.external]: celsius }),
-  encodeRefresh: () => ({ [Z2M_KEYS.select]: "" }),
+  encodeRefresh: () => ({ [Z2M_KEYS.select]: "", ...THERMOSTAT_REFRESH }),
 };
 
 export const SONOFF_TRVZB: Profile = {

@@ -24,6 +24,7 @@ function group(name: GroupSpec["group"], over: Partial<GroupSpec> = {}): GroupSp
     maxAgeMs: undefined,
     capture: false,
     readable: true,
+    atomic: false,
     ...over,
   };
 }
@@ -33,11 +34,18 @@ const TRVZB: ValveSpec = {
   profile: "sonoff_trvzb",
   minTemp: 4,
   maxTemp: 35,
+  frostMinTemp: 4,
+  frostMaxTemp: 35,
   tempStep: 0.5,
   maxSetPoints: 6,
   slotCount: 6,
   scheduleGroup: undefined,
-  groups: [group("schedule"), group("sensor_source", { capture: true })],
+  groups: [
+    group("schedule"),
+    group("sensor_source", { capture: true }),
+    group("frost_protection", { capture: true }),
+    group("thermostat", { capture: true, atomic: true }),
+  ],
   activation: "none",
   externalSensor: true,
   feedWhenOff: false,
@@ -49,11 +57,15 @@ const TRV_ZBT: ValveSpec = {
   profile: "sonoff_trv_zbt",
   minTemp: 5,
   maxTemp: 30,
+  frostMinTemp: 5,
+  frostMaxTemp: 15,
   scheduleGroup: 3,
   groups: [
     group("schedule", { evidence: "none", readable: false }),
     group("active_group", { capture: true }),
     group("sensor_source", { capture: true }),
+    group("frost_protection", { capture: true }),
+    group("thermostat", { capture: true, atomic: true }),
   ],
 };
 
@@ -238,6 +250,38 @@ describe("desired", () => {
     describe("With a record whose originals are empty", () => {
       it("returns an empty Desired", () => {
         expect(releaseDesired(TRV_ZBT, record({}))).toEqual({});
+      });
+    });
+
+    describe("For a record with system_mode heat and setpoint 17", () => {
+      it("desires system_mode heat and setpoint 17 with reason release", () => {
+        const desired = releaseDesired(TRVZB, record({ system_mode: "heat", setpoint: 17 }));
+        expect(desired).toEqual({
+          system_mode: { value: "heat", reason: "release" },
+          setpoint: { value: 17, reason: "release" },
+        });
+      });
+    });
+
+    describe("For a record with system_mode auto and setpoint 17", () => {
+      it("desires system_mode auto and no setpoint", () => {
+        const desired = releaseDesired(TRVZB, record({ system_mode: "auto", setpoint: 17 }));
+        expect(desired).toEqual({ system_mode: { value: "auto", reason: "release" } });
+      });
+    });
+
+    describe("For a record with system_mode off and setpoint 17", () => {
+      it("desires system_mode off and no setpoint", () => {
+        const desired = releaseDesired(TRV_ZBT, record({ system_mode: "off", setpoint: 17 }));
+        expect(desired).toEqual({ system_mode: { value: "off", reason: "release" } });
+      });
+    });
+
+    describe("For a record made before 3a (no such originals)", () => {
+      it("desires neither system_mode, setpoint nor frost_protection", () => {
+        const desired = releaseDesired(TRVZB, record({ sensor_source: "internal" }));
+        for (const key of ["system_mode", "setpoint", "frost_protection"])
+          expect(Object.hasOwn(desired, key)).toBe(false);
       });
     });
   });

@@ -239,7 +239,14 @@ function groupSpec(
   captured: boolean,
   readable: boolean,
 ): GroupSpec {
-  return { group, evidence, maxAgeMs: 24 * HOUR_MS, capture: captured, readable };
+  return {
+    group,
+    evidence,
+    maxAgeMs: 24 * HOUR_MS,
+    capture: captured,
+    readable,
+    atomic: group === "thermostat",
+  };
 }
 
 /** The default values of Task 12's spec tables. */
@@ -257,11 +264,15 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
       profile: "sonoff_trvzb",
       minTemp: 4,
       maxTemp: 35,
+      frostMinTemp: 4,
+      frostMaxTemp: 35,
       slotCount: 6,
       scheduleGroup: undefined,
       groups: [
         groupSpec("schedule", "echoed", false, false),
         groupSpec("sensor_source", "acked", true, true),
+        groupSpec("frost_protection", "acked", true, true),
+        groupSpec("thermostat", "acked", true, true),
       ],
     };
   }
@@ -270,12 +281,16 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
     profile: "sonoff_trv_zbt",
     minTemp: 5,
     maxTemp: 30,
+    frostMinTemp: 5,
+    frostMaxTemp: 15,
     slotCount: 12,
     scheduleGroup: 3,
     groups: [
       groupSpec("schedule", "none", false, false),
       groupSpec("active_group", "acked", true, true),
       groupSpec("sensor_source", "acked", true, true),
+      groupSpec("frost_protection", "acked", true, true),
+      groupSpec("thermostat", "acked", true, true),
     ],
   };
 }
@@ -406,7 +421,20 @@ export function makeWorld(
   };
 }
 
-/** The captured originals `makeManaged` records: source internal, and active group 1 on TRV-ZBT. */
+/**
+ * What a valve shows of the settings plan 3a captures: frost protection 7, mode auto, setpoint 17.
+ * A join needs them observed.
+ */
+export const BUILDER_THERMOSTAT: SettingValues = {
+  frost_protection: 7,
+  system_mode: "auto",
+  setpoint: 17,
+};
+
+/**
+ * The captured originals `makeManaged` records, as a record made before plan 3a: source internal,
+ * and active group 1 on TRV-ZBT.
+ */
 export function makeOriginals(model: "trvzb" | "trv_zbt"): ValveRecord["originals"] {
   return model === "trvzb"
     ? { sensor_source: "internal" }

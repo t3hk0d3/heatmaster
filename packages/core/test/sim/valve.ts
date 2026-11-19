@@ -11,6 +11,8 @@ export type ValveWrite = Readonly<{
   days: Readonly<{ group: number; texts: Readonly<Partial<Record<Weekday, string>>> }> | undefined;
   activeGroup: number | undefined;
   select: SelectValue | undefined;
+  frostProtection: number | undefined;
+  mode: ValveTruth["mode"] | undefined;
   setpoint: number | undefined;
   external: number | undefined;
 }>;
@@ -33,6 +35,7 @@ export type Speech = Readonly<{
 export type ValveTruth = Readonly<{
   mode: "off" | "auto" | "heat";
   setpoint: number;
+  frostProtection: number;
   select: SelectValue;
   activeGroup: number;
   schedules: Readonly<Record<number, DayTexts>>;
@@ -58,6 +61,7 @@ export type SimValveOptions = Readonly<{
   activeGroup?: number;
   mode?: ValveTruth["mode"];
   setpoint?: number;
+  frostProtection?: number;
   selfReports?: boolean;
   selfReportMs?: number;
   onSpeak: (speech: Speech, nowMs: number) => void;
@@ -126,6 +130,7 @@ export function reported(model: ValveModel, truth: ValveTruth): Record<string, u
   const out: Record<string, unknown> = {
     [Z2M_KEYS.mode]: truth.mode,
     [Z2M_KEYS.setpoint]: truth.setpoint,
+    [Z2M_KEYS.frost]: truth.frostProtection,
     [Z2M_KEYS.select]: truth.select,
     local_temperature: truth.localTemperature,
     running_state: "idle",
@@ -144,6 +149,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
   const state = {
     mode: options.mode ?? "auto",
     setpoint: options.setpoint ?? 17,
+    frostProtection: options.frostProtection ?? 7,
     select: options.select ?? "local_temperature",
     activeGroup: options.activeGroup ?? 1,
     external: undefined as number | undefined,
@@ -183,6 +189,8 @@ export function createSimValve(options: SimValveOptions): SimValve {
     if (w.days !== undefined) applyDays(model === "trvzb" ? 1 : w.days.group, w.days.texts);
     if (w.activeGroup !== undefined) state.activeGroup = w.activeGroup;
     if (w.select !== undefined) state.select = w.select;
+    if (w.frostProtection !== undefined) state.frostProtection = w.frostProtection;
+    if (w.mode !== undefined) state.mode = w.mode;
     if (w.setpoint !== undefined) {
       state.setpoint = w.setpoint;
       // Measured: a setpoint written in auto moves the TRVZB to heat; the TRV-ZBT stays in auto.
@@ -208,6 +216,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
     truth: () => ({
       mode: state.mode,
       setpoint: state.setpoint,
+      frostProtection: state.frostProtection,
       select: state.select,
       activeGroup: state.activeGroup,
       schedules: { ...schedules },

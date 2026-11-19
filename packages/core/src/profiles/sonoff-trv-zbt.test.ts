@@ -96,10 +96,13 @@ describe("TRV-ZBT binding", () => {
   });
   describe("encodeRefresh", () => {
     describe("Always", () => {
-      it("returns the active group key and the sensor select key, each with an empty text", () => {
+      it("returns the active group key, the sensor select key and the thermostat and frost keys, each with an empty text", () => {
         expect(binding.encodeRefresh()).toEqual({
           schedule_active_group: "",
           temperature_sensor_select: "",
+          system_mode: "",
+          occupied_heating_setpoint: "",
+          frost_protection_temperature: "",
         });
       });
       it("holds no day key and no group to edit", () => {

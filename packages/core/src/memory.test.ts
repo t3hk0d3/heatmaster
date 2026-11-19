@@ -20,7 +20,14 @@ const DAY_MS = 24 * HOUR_MS;
 const T0 = 1_700_000_000_000;
 
 function groupSpec(group: Group, readable: boolean, maxAgeMs: number | undefined): GroupSpec {
-  return { group, evidence: readable ? "acked" : "echoed", maxAgeMs, capture: readable, readable };
+  return {
+    group,
+    evidence: readable ? "acked" : "echoed",
+    maxAgeMs,
+    capture: readable,
+    readable,
+    atomic: false,
+  };
 }
 
 function valveSpec(groups: readonly GroupSpec[]): ValveSpec {
@@ -28,6 +35,8 @@ function valveSpec(groups: readonly GroupSpec[]): ValveSpec {
     profile: "test",
     minTemp: 4,
     maxTemp: 35,
+    frostMinTemp: 4,
+    frostMaxTemp: 35,
     tempStep: 0.5,
     maxSetPoints: 6,
     slotCount: 6,

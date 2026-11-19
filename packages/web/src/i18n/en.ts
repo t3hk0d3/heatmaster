@@ -119,6 +119,8 @@ export const en = {
   "group.schedule": "schedule",
   "group.active_group": "active schedule group",
   "group.sensor_source": "temperature sensor source",
+  "group.frost_protection": "frost protection temperature",
+  "group.thermostat": "mode and target temperature",
 
   "rooms.title": "Rooms",
   "rooms.none": "No Home Assistant area holds a valve yet, so there are no rooms.",
@@ -292,6 +294,9 @@ export const en = {
   "setting.day_sun": "Sunday schedule",
   "setting.active_group": "Active schedule group",
   "setting.sensor_source": "Temperature sensor source",
+  "setting.frost_protection": "Frost protection temperature",
+  "setting.system_mode": "Mode",
+  "setting.setpoint": "Target temperature",
 
   "evidence.acked": "confirmed by the valve",
   "evidence.echoed": "as Zigbee2MQTT reported it",

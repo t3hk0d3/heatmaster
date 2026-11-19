@@ -662,6 +662,13 @@ describe("views", () => {
       return { values } as unknown as DeviceState;
     }
 
+    /** What a valve shows of its frost protection, mode and setpoint. */
+    const THERMOSTAT: DeviceState["values"] = {
+      frost_protection: 7,
+      system_mode: "auto",
+      setpoint: 17,
+    };
+
     function plan(over: Partial<ChangePlan> = {}, holdWrites = false): ChangePlan {
       return {
         stored: {
@@ -682,14 +689,25 @@ describe("views", () => {
 
     describe("With a joining TRVZB whose sensor source was captured as external", () => {
       const view = planView(
-        plan({ joining: [capture(A, spec("TRVZB"), state({ sensor_source: "external" }))] }),
+        plan({
+          joining: [
+            capture(
+              A,
+              spec("TRVZB"),
+              state({ sensor_source: "external", ...THERMOSTAT, setpoint: 21.5 }),
+            ),
+          ],
+        }),
         false,
         snap,
       );
 
-      it('originals is [{ setting: "sensor_source", value: "external", evidence: "acked" }]', () => {
+      it('originals is [{ setting: "sensor_source", value: "external", evidence: "acked" }], then frost protection, mode and setpoint', () => {
         expect(view.joining[0]?.originals).toEqual([
           { setting: "sensor_source", value: "external", evidence: "acked" },
+          { setting: "frost_protection", value: 7, evidence: "acked" },
+          { setting: "system_mode", value: "auto", evidence: "acked" },
+          { setting: "setpoint", value: 21.5, evidence: "acked" },
         ]);
       });
 
@@ -724,13 +742,15 @@ describe("views", () => {
     describe("With a joining valve whose sensor source could not be read", () => {
       it("that original has value null and the setting is listed in unreadable", () => {
         const view = planView(
-          plan({ joining: [capture(A, spec("TRVZB"), state({}))] }),
+          plan({ joining: [capture(A, spec("TRVZB"), state(THERMOSTAT))] }),
           false,
           snap,
         );
-        expect(view.joining[0]?.originals).toEqual([
-          { setting: "sensor_source", value: null, evidence: "acked" },
-        ]);
+        expect(view.joining[0]?.originals).toContainEqual({
+          setting: "sensor_source",
+          value: null,
+          evidence: "acked",
+        });
         expect(view.joining[0]?.unreadable).toEqual(["sensor_source"]);
       });
     });

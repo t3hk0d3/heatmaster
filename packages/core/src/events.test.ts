@@ -20,6 +20,7 @@ function groupSpec(group: Group, readable: boolean): GroupSpec {
     maxAgeMs: undefined,
     capture: readable,
     readable,
+    atomic: false,
   };
 }
 
@@ -27,6 +28,8 @@ const SPEC: ValveSpec = {
   profile: "test",
   minTemp: 4,
   maxTemp: 35,
+  frostMinTemp: 4,
+  frostMaxTemp: 35,
   tempStep: 0.5,
   maxSetPoints: 6,
   slotCount: 6,
@@ -91,6 +94,8 @@ const NONE: Readonly<Record<Group, undefined>> = {
   schedule: undefined,
   active_group: undefined,
   sensor_source: undefined,
+  frost_protection: undefined,
+  thermostat: undefined,
 };
 
 function unmarked(at = T0): ValveMemory {

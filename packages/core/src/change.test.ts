@@ -3,6 +3,7 @@ import {
   BUILDER_DAY,
   BUILDER_NOW,
   BUILDER_SCHEDULE,
+  BUILDER_THERMOSTAT,
   liveHouse,
   makeConfig,
   makeOriginals,
@@ -63,11 +64,14 @@ function sevenDays(): SettingValues {
   return Object.fromEntries(DAY_KEY_LIST.map((key) => [key, BUILDER_DAY]));
 }
 
-/** Every captured key observed: source internal, and active group 1 on TRV-ZBT. */
+/**
+ * Every captured key observed: source internal, active group 1 on TRV-ZBT, and
+ * `BUILDER_THERMOSTAT`.
+ */
 function observedValues(model: Model): SettingValues {
   return model === "trvzb"
-    ? { sensor_source: "internal" }
-    : { active_group: 1, sensor_source: "internal" };
+    ? { sensor_source: "internal", ...BUILDER_THERMOSTAT }
+    : { active_group: 1, sensor_source: "internal", ...BUILDER_THERMOSTAT };
 }
 
 function viewWith(model: Model, state: DeviceState | undefined): DeviceView {
@@ -252,11 +256,13 @@ describe("change", () => {
       const result = capture(
         V1,
         makeSpec("trvzb"),
-        makeState({ values: { ...sevenDays(), sensor_source: "external" } }),
+        makeState({
+          values: { ...sevenDays(), sensor_source: "external", ...BUILDER_THERMOSTAT },
+        }),
       );
 
-      it("originals hold the sensor source only", () => {
-        expect(result.originals).toEqual({ sensor_source: "external" });
+      it("originals hold the sensor source, frost protection, mode and setpoint only", () => {
+        expect(result.originals).toEqual({ sensor_source: "external", ...BUILDER_THERMOSTAT });
       });
 
       it("unreadable is empty", () => {
@@ -266,8 +272,9 @@ describe("change", () => {
 
     describe("With a TRVZB whose source is not observed", () => {
       it("the source is null and listed in unreadable", () => {
-        const result = capture(V1, makeSpec("trvzb"), makeState({ values: sevenDays() }));
-        expect(result.originals).toEqual({ sensor_source: null });
+        const values = { ...sevenDays(), ...BUILDER_THERMOSTAT };
+        const result = capture(V1, makeSpec("trvzb"), makeState({ values }));
+        expect(result.originals).toEqual({ sensor_source: null, ...BUILDER_THERMOSTAT });
         expect(result.unreadable).toEqual(["sensor_source"]);
       });
     });
@@ -275,7 +282,11 @@ describe("change", () => {
     describe("With a TRVZB whose Tuesday is not observed and whose source is", () => {
       it("unreadable is empty", () => {
         const days = Object.entries(sevenDays()).filter(([key]) => key !== "day_tue");
-        const values = { ...Object.fromEntries(days), sensor_source: "internal" } as SettingValues;
+        const values = {
+          ...Object.fromEntries(days),
+          sensor_source: "internal",
+          ...BUILDER_THERMOSTAT,
+        } as SettingValues;
         const state = makeState({ values });
         expect(capture(V1, makeSpec("trvzb"), state).unreadable).toEqual([]);
       });
@@ -283,12 +294,21 @@ describe("change", () => {
 
     describe("With a TRV-ZBT", () => {
       const state = makeState({
-        values: { ...sevenDays(), active_group: 1, sensor_source: "internal" },
+        values: {
+          ...sevenDays(),
+          active_group: 1,
+          sensor_source: "internal",
+          ...BUILDER_THERMOSTAT,
+        },
       });
       const result = capture(V1, makeSpec("trv_zbt"), state);
 
-      it("active_group and sensor_source are captured", () => {
-        expect(result.originals).toEqual({ active_group: 1, sensor_source: "internal" });
+      it("active_group, sensor_source, frost_protection, system_mode and setpoint are captured", () => {
+        expect(result.originals).toEqual({
+          active_group: 1,
+          sensor_source: "internal",
+          ...BUILDER_THERMOSTAT,
+        });
       });
 
       it("originals hold no day key", () => {
@@ -299,8 +319,52 @@ describe("change", () => {
     describe("With state undefined", () => {
       it("every captured key is null and listed in unreadable", () => {
         const result = capture(V1, makeSpec("trv_zbt"), undefined);
-        expect(result.originals).toEqual({ active_group: null, sensor_source: null });
-        expect(result.unreadable).toEqual(["active_group", "sensor_source"]);
+        expect(result.originals).toEqual({
+          active_group: null,
+          sensor_source: null,
+          frost_protection: null,
+          system_mode: null,
+          setpoint: null,
+        });
+        expect(result.unreadable).toEqual([
+          "active_group",
+          "sensor_source",
+          "frost_protection",
+          "system_mode",
+          "setpoint",
+        ]);
+      });
+    });
+
+    describe("For a TRVZB that reported all keys", () => {
+      it("capture includes system_mode, setpoint and frost_protection", () => {
+        const values: SettingValues = {
+          ...sevenDays(),
+          sensor_source: "internal",
+          system_mode: "heat",
+          setpoint: 21.5,
+          frost_protection: 7,
+        };
+        const result = capture(V1, makeSpec("trvzb"), makeState({ values }));
+        expect(result.originals).toEqual({
+          sensor_source: "internal",
+          frost_protection: 7,
+          system_mode: "heat",
+          setpoint: 21.5,
+        });
+      });
+    });
+
+    describe("For a valve that never reported frost_protection_temperature", () => {
+      it("frost_protection is null and listed in unreadable", () => {
+        const values: SettingValues = {
+          sensor_source: "internal",
+          system_mode: "auto",
+          setpoint: 17,
+        };
+        const result = capture(V1, makeSpec("trvzb"), makeState({ values }));
+        expect(result.originals.frost_protection).toBeNull();
+        expect(result.unreadable).toEqual(["frost_protection"]);
       });
     });
 
@@ -328,8 +392,8 @@ describe("change", () => {
 
       it("joining holds both captures", () => {
         expect(result.joining).toEqual([
-          { valveId: V1, originals: { sensor_source: "internal" }, unreadable: [] },
-          { valveId: V2, originals: { sensor_source: "internal" }, unreadable: [] },
+          { valveId: V1, originals: observedValues("trvzb"), unreadable: [] },
+          { valveId: V2, originals: observedValues("trvzb"), unreadable: [] },
         ]);
       });
 
@@ -590,16 +654,14 @@ describe("change", () => {
 
     describe("With a new TRVZB whose days are not observed and whose source is", () => {
       it("returns a plan", () => {
-        const world = first(
-          devicesOf({ [V1]: observedView("trvzb", { sensor_source: "internal" }) }),
-        );
+        const world = first(devicesOf({ [V1]: observedView("trvzb", observedValues("trvzb")) }));
         expect(plan(world, doc({ living: {} })).joining).toHaveLength(1);
       });
     });
 
     describe("With a new TRV-ZBT whose active group is 3", () => {
       it("returns a plan and the captured original active group is 3", () => {
-        const view = observedView("trv_zbt", { active_group: 3, sensor_source: "internal" });
+        const view = observedView("trv_zbt", { ...observedValues("trv_zbt"), active_group: 3 });
         const result = plan(first(devicesOf({ [V1]: view })), doc({ living: {} }));
         expect(result.joining[0]?.originals.active_group).toBe(3);
       });
@@ -638,7 +700,7 @@ describe("change", () => {
 
     describe("With a new valve whose days already equal the room's schedule", () => {
       it("writes still lists the seven days", () => {
-        const values = { ...sevenDays(), sensor_source: "internal" as const };
+        const values = { ...sevenDays(), ...observedValues("trvzb") };
         const world = first(devicesOf({ [V1]: observedView("trvzb", values) }));
         const result = plan(world, doc({ living: {} }));
         expect(result.writes.map((w) => w.values)).toContainEqual(sevenDays());

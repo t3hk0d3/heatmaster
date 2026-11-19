@@ -100,6 +100,13 @@ const V2_FIXTURE = path.resolve(
 const TRVZB = findProfile("TRVZB", "z2m");
 if (TRVZB === undefined) throw new Error("no TRVZB profile");
 const TRVZB_BINDING = TRVZB.binding;
+/** The groups of the TRVZB spec, sorted. */
+const TRVZB_GROUPS = TRVZB.spec.groups.map((g) => g.group).sort();
+
+/** The same mark on every group of the TRVZB spec. */
+function everyGroup<T>(mark: T): Readonly<Record<string, T>> {
+  return Object.fromEntries(TRVZB_GROUPS.map((group) => [group, mark]));
+}
 
 function trvzb(id: string, modelId = "TRVZB"): DeviceInfo {
   const address = id.slice(4);
@@ -233,7 +240,14 @@ function trvzbMessage(
   source = "local_temperature",
   extra: Readonly<Record<string, unknown>> = {},
 ): Readonly<Record<string, unknown>> {
-  return { temperature_sensor_select: source, system_mode: "auto", last_seen: token, ...extra };
+  return {
+    temperature_sensor_select: source,
+    system_mode: "auto",
+    occupied_heating_setpoint: 17,
+    frost_protection_temperature: 7,
+    last_seen: token,
+    ...extra,
+  };
 }
 
 // ---- files ---------------------------------------------------------------------------------------
@@ -1871,7 +1885,7 @@ describe("runtime", () => {
         await inSync(rig, [A, B]);
         const at = rig.clock.nowMs();
         rig.z2m.emit({ kind: "rejoined", deviceId: A });
-        expect(Object.keys(rig.marks(A)).sort()).toEqual(["schedule", "sensor_source"]);
+        expect(Object.keys(rig.marks(A)).sort()).toEqual(TRVZB_GROUPS);
         expect(rig.marks(A).schedule?.at).toBe(at);
         expect(rig.marks(B)).toEqual({});
       });
@@ -2575,7 +2589,7 @@ describe("runtime", () => {
         await hear(rig, [A]);
         rig.z2m.failNext(1);
         await rig.advance(1000);
-        expect(rig.marks(A)).toEqual({ schedule: fresh, sensor_source: fresh });
+        expect(rig.marks(A)).toEqual(everyGroup(fresh));
       });
     });
 
@@ -2590,7 +2604,7 @@ describe("runtime", () => {
         await rig.advance(1000);
         expect(sends(rig).filter((s) => s.kind === "publish")).toEqual([]);
         for (const id of [A, B, C]) {
-          expect(rig.marks(id)).toEqual({ schedule: fresh, sensor_source: fresh });
+          expect(rig.marks(id)).toEqual(everyGroup(fresh));
         }
       });
     });
@@ -2609,7 +2623,7 @@ describe("runtime", () => {
 
       it("that valve is marked in that way", async () => {
         const rig = await failedA();
-        expect(rig.marks(A)).toEqual({ schedule: fresh, sensor_source: fresh });
+        expect(rig.marks(A)).toEqual(everyGroup(fresh));
       });
 
       it("the other two publishes went out, and their valves are not marked again", async () => {
@@ -2745,7 +2759,16 @@ describe("runtime", () => {
       it("the returned plan lists the valve as joining, with its captured originals and the planned writes", async () => {
         const rig = await applied();
         expect(rig.plan.joining).toEqual([
-          { valveId: A, originals: { sensor_source: "internal" }, unreadable: [] },
+          {
+            valveId: A,
+            originals: {
+              sensor_source: "internal",
+              frost_protection: 7,
+              system_mode: "auto",
+              setpoint: 17,
+            },
+            unreadable: [],
+          },
         ]);
         expect(rig.plan.writes.map((w) => w.valveId)).toContain(A);
         expect(rig.plan.writes.length).toBeGreaterThan(0);
@@ -3268,7 +3291,7 @@ describe("runtime", () => {
         const rig = await boot({ devices: [trvzb(A), trvzb(B)], seed });
         await inSync(rig, [A, B]);
         await rig.rt.resync("living");
-        expect(Object.keys(rig.marks(A)).sort()).toEqual(["schedule", "sensor_source"]);
+        expect(Object.keys(rig.marks(A)).sort()).toEqual(TRVZB_GROUPS);
         expect(rig.marks(B)).toEqual({});
       });
 
@@ -3287,7 +3310,7 @@ describe("runtime", () => {
         await inSync(rig, [A, B]);
         await rig.rt.resync(undefined);
         for (const id of [A, B]) {
-          expect(Object.keys(rig.marks(id)).sort()).toEqual(["schedule", "sensor_source"]);
+          expect(Object.keys(rig.marks(id)).sort()).toEqual(TRVZB_GROUPS);
         }
       });
     });
@@ -3647,7 +3670,12 @@ describe("runtime", () => {
         house: { living: [A, B] },
         seed: { config: raw(), ledger: [record(A)] },
       });
-      rig.say(B, "b-1", { system_mode: "auto", last_seen: "b-1" });
+      rig.say(B, "b-1", {
+        system_mode: "auto",
+        occupied_heating_setpoint: 17,
+        frost_protection_temperature: 7,
+        last_seen: "b-1",
+      });
       await rig.advance(EVENT_DEBOUNCE_MS);
       return rig;
     }
@@ -3667,7 +3695,12 @@ describe("runtime", () => {
         const ledger = readJson(path.join(rig.dataDir, "ledger.json")) as {
           data: { records: Record<string, { originals: Record<string, unknown> }> };
         };
-        expect(ledger.data.records[B]?.originals).toEqual({ sensor_source: null });
+        expect(ledger.data.records[B]?.originals).toEqual({
+          sensor_source: null,
+          frost_protection: 7,
+          system_mode: "auto",
+          setpoint: 17,
+        });
         expect(rig.stores.calls.slice(-2)).toEqual(["ledger.save", "copy.write"]);
         expect(rig.rt.snapshot().memberships[B]).toBe("managed");
         expect(rig.rt.snapshot().pending).toEqual([]);
@@ -3935,6 +3968,9 @@ describe("runtime", () => {
         expect(entry?.observed).toBe(true);
         expect(entry?.values).toEqual({
           sensor_source: "external",
+          frost_protection: 7,
+          system_mode: "auto",
+          setpoint: 17,
           day_mon: ["00:00/16", "07:00/20", "07:00/20", "07:00/20", "07:00/20", "07:00/20"],
         });
       });

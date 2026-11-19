@@ -81,7 +81,7 @@ describe("TRVZB binding", () => {
           battery: "full",
         });
         const decoded = binding.decode(payload);
-        expect(Object.keys(decoded.values)).toHaveLength(8);
+        expect(Object.keys(decoded.values)).toHaveLength(10);
         expect(Object.values(decoded.values).every((v) => v === null)).toBe(true);
         expect(decoded.readings).toEqual(EMPTY_READINGS);
       });
@@ -141,8 +141,13 @@ describe("TRVZB binding", () => {
   });
   describe("encodeRefresh", () => {
     describe("Always", () => {
-      it("returns the sensor select key with an empty text and no other key", () => {
-        expect(binding.encodeRefresh()).toEqual({ temperature_sensor_select: "" });
+      it("returns the sensor select key and the thermostat and frost keys, each with an empty text", () => {
+        expect(binding.encodeRefresh()).toEqual({
+          temperature_sensor_select: "",
+          system_mode: "",
+          occupied_heating_setpoint: "",
+          frost_protection_temperature: "",
+        });
       });
     });
   });

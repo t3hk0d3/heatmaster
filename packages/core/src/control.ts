@@ -213,7 +213,10 @@ function scheduleHeard(vm: ValveMemory, spec: ValveSpec, state: DeviceState): bo
   return state.heardAt > Math.max(...writes.map((w) => w.at));
 }
 
-/** Groups in the spec's order; see the task's candidate rule. Pacing is not considered. */
+/**
+ * Groups in the spec's order; see the task's candidate rule. A marked group, and an atomic group
+ * with a differing key, carry every desired member. Pacing is not considered.
+ */
 export function candidates(
   spec: ValveSpec,
   desired: Desired,
@@ -236,9 +239,10 @@ export function candidates(
     const marked = !gs.readable && vm.groups[gs.group]?.mark !== undefined;
     const ready = marked && (anyMarkReady || markedReady(vm, spec, gs.group, state.heardAt));
     if (diff.length === 0 && !ready) continue;
+    const whole = marked || (gs.atomic && diff.length > 0);
     result.push({
       group: gs.group,
-      values: valuesOf(desired, marked ? keys : diff),
+      values: valuesOf(desired, whole ? keys : diff),
       differed: diff.length > 0,
       marked,
     });

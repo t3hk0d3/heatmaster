@@ -31,6 +31,7 @@ function groupSpec(group: Group, readable: boolean): GroupSpec {
     maxAgeMs: DAY_MS,
     capture: readable,
     readable,
+    atomic: false,
   };
 }
 
@@ -39,6 +40,8 @@ const TRV_ZBT: ValveSpec = {
   profile: "sonoff_trv_zbt",
   minTemp: 4,
   maxTemp: 35,
+  frostMinTemp: 4,
+  frostMaxTemp: 35,
   tempStep: 0.5,
   maxSetPoints: 6,
   slotCount: 6,

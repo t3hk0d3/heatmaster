@@ -21,7 +21,7 @@ import {
   simRoom,
   valveIdOf,
 } from "./driver.ts";
-import { factoryWeek } from "./valve.ts";
+import { factoryWeek, reported } from "./valve.ts";
 import type { SimDriver } from "./driver.ts";
 import type { Config, Effect, ProblemKind, Room, SettingKey } from "../../src/index.ts";
 import type { ValveModel } from "./valve.ts";
@@ -1208,6 +1208,50 @@ describe("scenarios", () => {
         sim.bridge.write(b, { occupied_heating_setpoint: 18 }, sim.now());
         expect(sim.valve(a).truth().mode).toBe("heat");
         expect(sim.valve(b).truth().mode).toBe("auto");
+      });
+    });
+
+    describe("sim valve", () => {
+      /** The payload of the last message the bridge handed over for the valve. */
+      const lastPayload = (sim: SimDriver, valveId: string): Readonly<Record<string, unknown>> => {
+        const messages = sim.bridge
+          .drain()
+          .flatMap((item) => (item.kind === "message" && item.deviceId === valveId ? [item] : []));
+        return messages.at(-1)?.payload ?? {};
+      };
+      describe("With a TRVZB in auto written setpoint 22", () => {
+        it("it reports system_mode heat and setpoint 22", () => {
+          const { sim, a } = pair();
+          sim.bridge.drain();
+          sim.bridge.write(a, { occupied_heating_setpoint: 22 }, sim.now());
+          expect(lastPayload(sim, a)).toMatchObject({
+            system_mode: "heat",
+            occupied_heating_setpoint: 22,
+          });
+        });
+      });
+      describe("With a TRV-ZBT in auto written setpoint 22", () => {
+        it("it reports system_mode auto and setpoint 22", () => {
+          const { sim, b } = pair();
+          sim.bridge.drain();
+          sim.bridge.write(b, { occupied_heating_setpoint: 22 }, sim.now());
+          expect(lastPayload(sim, b)).toMatchObject({
+            system_mode: "auto",
+            occupied_heating_setpoint: 22,
+          });
+        });
+      });
+      describe("By default", () => {
+        it("reported() carries frost_protection_temperature", () => {
+          const { sim, a, b } = pair();
+          for (const id of [a, b]) {
+            const valve = sim.valve(id);
+            expect(reported(valve.model, valve.truth())).toHaveProperty(
+              "frost_protection_temperature",
+              valve.truth().frostProtection,
+            );
+          }
+        });
       });
     });
 

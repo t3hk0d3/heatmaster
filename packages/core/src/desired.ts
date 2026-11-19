@@ -53,13 +53,17 @@ export function managedDesired(
   return desired;
 }
 
-/** The captured originals to restore. The schedule is never restored. */
+/**
+ * The captured originals to restore. The schedule is never restored, and the setpoint only when the
+ * captured mode is `heat`: a setpoint written to a TRVZB in `auto` moves it to `heat`.
+ */
 export function releaseDesired(spec: ValveSpec, record: ValveRecord): Desired {
   const desired: Partial<Record<SettingKey, DesiredValue>> = {};
   for (const groupSpec of spec.groups) {
     if (!groupSpec.capture || groupSpec.group === "schedule") continue;
     for (const key of members(groupSpec.group)) {
       const original = record.originals[key];
+      if (key === "setpoint" && record.originals.system_mode !== "heat") continue;
       if (original !== null && original !== undefined)
         desired[key] = { value: original, reason: "release" };
     }

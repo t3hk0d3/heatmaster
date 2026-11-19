@@ -17,7 +17,7 @@ describe("profiles index", () => {
       it("returns the TRVZB spec and binding", () => {
         const found = findProfile("TRVZB", "z2m");
         expect(found?.spec).toBe(TRVZB_SPEC);
-        expect(found?.binding.encodeRefresh()).toEqual({ temperature_sensor_select: "" });
+        expect(found?.binding.encodeRefresh()).toHaveProperty("temperature_sensor_select");
       });
     });
     describe("With model TRV-ZBT and transport z2m", () => {
@@ -68,26 +68,25 @@ describe("profiles index", () => {
           expect(refresh !== undefined).toBe(spec.groups.some((g) => g.readable));
         }
       });
-      it("encode, encodeSetpoint, encodeTemperature and encodeRefresh never return the mode key", () => {
-        for (const { profile, transport, spec } of ALL_SPECS) {
-          const hasActive = spec.groups.some((g) => g.group === "active_group");
-          const b = profile.bindings[transport];
-          const messages = [
-            b?.encode({
-              sensor_source: "internal",
-              ...(hasActive ? { active_group: 3 } : {}),
-              day_mon: [{ time: Temporal.PlainTime.from("07:00"), temperature: 19 }],
-            }),
-            b?.encodeSetpoint(20),
-            b?.encodeTemperature(20),
-            b?.encodeRefresh(),
-          ];
-          for (const m of messages) expect(Object.keys(m ?? {})).not.toContain("system_mode");
-        }
-      });
       it("the specs equal what makeSpec builds", () => {
         expect(TRVZB_SPEC).toEqual(makeSpec("trvzb"));
         expect(TRV_ZBT_SPEC).toEqual(makeSpec("trv_zbt"));
+      });
+    });
+  });
+  describe("specs", () => {
+    const tail = (groups: readonly { group: string }[]): readonly string[] =>
+      groups.slice(-2).map((g) => g.group);
+    describe("TRVZB", () => {
+      it("frost range 4–35, groups end with frost_protection then thermostat", () => {
+        expect([TRVZB_SPEC.frostMinTemp, TRVZB_SPEC.frostMaxTemp]).toEqual([4, 35]);
+        expect(tail(TRVZB_SPEC.groups)).toEqual(["frost_protection", "thermostat"]);
+      });
+    });
+    describe("TRV-ZBT", () => {
+      it("frost range 5–15, groups end with frost_protection then thermostat", () => {
+        expect([TRV_ZBT_SPEC.frostMinTemp, TRV_ZBT_SPEC.frostMaxTemp]).toEqual([5, 15]);
+        expect(tail(TRV_ZBT_SPEC.groups)).toEqual(["frost_protection", "thermostat"]);
       });
     });
   });
@@ -142,6 +141,13 @@ describe("profiles index", () => {
         expect(() => {
           validateProfile(withSpec({ groups: spec.groups.filter((g) => g.group !== "schedule") }));
         }).toThrow(/active_group needs schedule$/);
+      });
+    });
+    describe("With frostMinTemp above frostMaxTemp", () => {
+      it("throws", () => {
+        expect(() => {
+          validateProfile(withSpec({ frostMinTemp: 16, frostMaxTemp: 15 }));
+        }).toThrow(/frostMinTemp/);
       });
     });
     describe("With sensor_source and no external sensor", () => {

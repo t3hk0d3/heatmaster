@@ -413,6 +413,7 @@ const TRVZB_STATE = {
   temperature_sensor_select: "local_temperature",
   system_mode: "auto",
   occupied_heating_setpoint: 17,
+  frost_protection_temperature: 7,
   local_temperature: 19.3,
   battery: 90,
   ...Object.fromEntries(
@@ -1064,6 +1065,9 @@ const SETTING_KEYS_RAW = [
   "day_sun",
   "active_group",
   "sensor_source",
+  "frost_protection",
+  "system_mode",
+  "setpoint",
 ];
 const TIME_KEY = /^\d\d:\d\d$/;
 

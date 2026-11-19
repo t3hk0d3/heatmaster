@@ -3,9 +3,11 @@ import { DAY_KEYS } from "../settings.ts";
 import {
   Z2M_DAY_PAYLOAD,
   Z2M_KEYS,
+  THERMOSTAT_REFRESH,
   decodeCommon,
   checkGroup,
   encodeDay,
+  encodeThermostat,
   groupSpec,
   parseGroup,
   selectOption,
@@ -25,6 +27,8 @@ export const TRV_ZBT_SPEC: ValveSpec = {
   profile: "sonoff_trv_zbt",
   minTemp: 5,
   maxTemp: 30,
+  frostMinTemp: 5,
+  frostMaxTemp: 15,
   tempStep: 0.5,
   maxSetPoints: 6,
   slotCount: 12,
@@ -33,6 +37,8 @@ export const TRV_ZBT_SPEC: ValveSpec = {
     groupSpec({ group: "schedule", evidence: "none", capture: false, readable: false }),
     groupSpec({ group: "active_group", evidence: "acked", capture: true, readable: true }),
     groupSpec({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "frost_protection", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "thermostat", evidence: "acked", capture: true, readable: true }),
   ],
   activation: "none",
   externalSensor: true,
@@ -62,11 +68,16 @@ export const TRV_ZBT_BINDING: Binding = {
       message[Z2M_KEYS.activeGroup] = String(checkGroup(values.active_group));
     if (values.sensor_source !== undefined)
       message[Z2M_KEYS.select] = selectOption(values.sensor_source);
+    Object.assign(message, encodeThermostat(values));
     return message;
   },
   encodeSetpoint: (celsius) => ({ [Z2M_KEYS.setpoint]: celsius }),
   encodeTemperature: (celsius) => ({ [Z2M_KEYS.external]: celsius }),
-  encodeRefresh: () => ({ [Z2M_KEYS.activeGroup]: "", [Z2M_KEYS.select]: "" }),
+  encodeRefresh: () => ({
+    [Z2M_KEYS.activeGroup]: "",
+    [Z2M_KEYS.select]: "",
+    ...THERMOSTAT_REFRESH,
+  }),
 };
 
 export const SONOFF_TRV_ZBT: Profile = {

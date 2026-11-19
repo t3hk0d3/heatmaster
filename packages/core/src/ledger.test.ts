@@ -89,7 +89,11 @@ const arbValueFor = (key: SettingKey): fc.Arbitrary<SettingValue | null> => {
       ? fc.constantFrom("internal" as const, "external" as const)
       : key === "active_group"
         ? fc.integer({ min: 1, max: 3 })
-        : arbDay;
+        : key === "system_mode"
+          ? fc.constantFrom("off" as const, "auto" as const, "heat" as const)
+          : key === "setpoint" || key === "frost_protection"
+            ? halfDegree
+            : arbDay;
   return fc.option(value, { nil: null });
 };
 const arbOriginals = fc
@@ -449,6 +453,41 @@ describe("ledger", () => {
         expect(raw).toMatchObject({
           records: { [V2]: { originals: { active_group: 1, sensor_source: null } } },
         });
+      });
+    });
+    describe("With originals system_mode heat, setpoint 17, frost_protection 7", () => {
+      it("they round-trip", () => {
+        const ledger = ledgerOf(
+          record(V1, {
+            originals: {
+              sensor_source: "internal",
+              frost_protection: 7,
+              system_mode: "heat",
+              setpoint: 17,
+            },
+          }),
+        );
+        const raw: unknown = JSON.parse(JSON.stringify(ledgerToRaw(ledger)));
+        expect(ledgerFromRaw(raw)).toEqual(ledger);
+      });
+    });
+    describe("With a version 1 file without the new keys", () => {
+      it("it loads and the record has no such originals", () => {
+        const originals = ledgerFromRaw(aRawLedger()).records.get(V1)?.originals;
+        expect(originals).toEqual({ sensor_source: "internal" });
+      });
+    });
+    describe('With system_mode "cool" in a file', () => {
+      it("throws LedgerError", () => {
+        const raw = aRawLedger();
+        const records = raw.records as Record<string, Record<string, unknown>>;
+        const bad = {
+          ...raw,
+          records: { [V1]: { ...records[V1], originals: { system_mode: "cool" } } },
+        };
+        const error = thrown(() => ledgerFromRaw(bad));
+        expect(error).toBeInstanceOf(LedgerError);
+        expect((error as LedgerError).path).toBe(`records.${V1}.originals.system_mode`);
       });
     });
     describe("With a record", () => {

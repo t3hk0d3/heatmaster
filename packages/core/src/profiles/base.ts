@@ -29,8 +29,8 @@ export type Profile = Readonly<{
 
 /**
  * Throws an `Error` when a profile contradicts itself: a spec whose `profile` is not the key, a
- * spec without a binding, `schedule` not first, or an `active_group` group without a schedule
- * group to choose.
+ * spec without a binding, `schedule` not first, an `active_group` group without a schedule group
+ * to choose, or a frost range whose minimum is above its maximum.
  */
 export function validateProfile(profile: Profile): void {
   for (const [transport, spec] of Object.entries(profile.specs)) {
@@ -48,5 +48,7 @@ export function validateProfile(profile: Profile): void {
       throw new Error(`${where}: active_group needs a schedule group`);
     if (groups.includes("sensor_source") && !spec.externalSensor)
       throw new Error(`${where}: sensor_source needs an external sensor`);
+    if (spec.frostMinTemp > spec.frostMaxTemp)
+      throw new Error(`${where}: frostMinTemp is above frostMaxTemp`);
   }
 }

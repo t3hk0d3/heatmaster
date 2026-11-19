@@ -3,7 +3,15 @@ import { normalizeDay } from "../schedule.ts";
 import { DAY_KEYS, EMPTY_READINGS } from "../settings.ts";
 import type { Weekday } from "../model.ts";
 import type { ResolvedDay, ResolvedPoint } from "../schedule.ts";
-import type { GroupSpec, Readings, SensorSource, SettingKey, SettingValue } from "../settings.ts";
+import type {
+  GroupSpec,
+  Readings,
+  SensorSource,
+  SettingKey,
+  SettingValue,
+  SettingValues,
+  ValveMode,
+} from "../settings.ts";
 
 const ENTRY = /^(\d{1,2}):(\d{2})\/(-?\d+(?:\.\d+)?)$/;
 
@@ -64,6 +72,7 @@ export const Z2M_KEYS = {
   external: "external_temperature_input",
   setpoint: "occupied_heating_setpoint",
   mode: "system_mode",
+  frost: "frost_protection_temperature",
   activeGroup: "schedule_active_group",
   editGroup: "schedule_group_to_edit",
 } as const;
@@ -93,17 +102,69 @@ export function checkGroup(value: unknown): number {
   return n;
 }
 
+function parseMode(value: unknown): ValveMode | undefined {
+  return value === "off" || value === "auto" || value === "heat" ? value : undefined;
+}
+
+/** A mode to write: `off`, `auto` or `heat`. Throws `RangeError` for anything else. */
+function checkMode(value: unknown): ValveMode {
+  const mode = parseMode(value);
+  if (mode === undefined) throw new RangeError(`unknown mode: ${JSON.stringify(value)}`);
+  return mode;
+}
+
+/** A temperature to write: a finite number. Throws `RangeError` for anything else. */
+function checkTemperature(value: unknown): number {
+  const n = finite(value);
+  if (n === undefined) throw new RangeError(`not a temperature: ${JSON.stringify(value)}`);
+  return n;
+}
+
+/**
+ * The frost protection temperature, the mode and the setpoint of `values`, in that order, for the
+ * keys present. Throws `RangeError` for a value of the wrong kind.
+ */
+export function encodeThermostat(values: SettingValues): Record<string, unknown> {
+  const message: Record<string, unknown> = {};
+  if (values.frost_protection !== undefined)
+    message[Z2M_KEYS.frost] = checkTemperature(values.frost_protection);
+  if (values.system_mode !== undefined) message[Z2M_KEYS.mode] = checkMode(values.system_mode);
+  if (values.setpoint !== undefined) message[Z2M_KEYS.setpoint] = checkTemperature(values.setpoint);
+  return message;
+}
+
+/** The refresh keys of the frost protection and thermostat groups, each with an empty text. */
+export const THERMOSTAT_REFRESH: Readonly<Record<string, string>> = {
+  [Z2M_KEYS.mode]: "",
+  [Z2M_KEYS.setpoint]: "",
+  [Z2M_KEYS.frost]: "",
+};
+
 const HOUR_MS = 60 * 60 * 1000;
 
-/** A group of a spec; every group is trusted for 24 h before it is marked again. */
+/**
+ * A group of a spec; every group is trusted for 24 h before it is marked again, and only the
+ * `thermostat` group is atomic.
+ */
 export function groupSpec(
   spec: Pick<GroupSpec, "group" | "evidence" | "capture" | "readable">,
 ): GroupSpec {
-  return { ...spec, maxAgeMs: 24 * HOUR_MS };
+  return { ...spec, maxAgeMs: 24 * HOUR_MS, atomic: spec.group === "thermostat" };
 }
 
 function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** `null` for a present key that cannot be read; the key is left out when it is not present. */
+function decodeKey(
+  values: Partial<Record<SettingKey, SettingValue | null>>,
+  key: SettingKey,
+  payload: Readonly<Record<string, unknown>>,
+  payloadKey: string,
+  parse: (value: unknown) => SettingValue | undefined,
+): void {
+  if (Object.hasOwn(payload, payloadKey)) values[key] = parse(payload[payloadKey]) ?? null;
 }
 
 /** A group number from `1`, `"1"` … `3`; `undefined` for anything else. */
@@ -120,7 +181,7 @@ function readings(payload: Readonly<Record<string, unknown>>, editGroup: number 
   if (typeof select === "string") feedLost = select === "remote_source_offline";
   const out: Readings = {
     ...EMPTY_READINGS,
-    mode: mode === "off" || mode === "auto" || mode === "heat" ? mode : undefined,
+    mode: parseMode(mode),
     setpoint: finite(payload[Z2M_KEYS.setpoint]),
     localTemperature: finite(payload.local_temperature),
     running: running === "heat" ? true : running === "idle" ? false : undefined,
@@ -150,6 +211,9 @@ export function decodeCommon(
         ? (SELECT_TO_SOURCE[select] ?? null)
         : null;
   }
+  decodeKey(values, "frost_protection", payload, Z2M_KEYS.frost, finite);
+  decodeKey(values, "system_mode", payload, Z2M_KEYS.mode, parseMode);
+  decodeKey(values, "setpoint", payload, Z2M_KEYS.setpoint, finite);
   const editGroup = parseGroup(payload[Z2M_KEYS.editGroup]);
   return { values, readings: readings(payload, editGroup) };
 }

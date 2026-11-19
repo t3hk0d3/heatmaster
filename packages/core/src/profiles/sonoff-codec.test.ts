@@ -2,7 +2,10 @@ import { fc, test as fcTest } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import { daysEqual } from "../schedule.ts";
 import { checkGroup, decodeDay, encodeDay, selectOption } from "./sonoff-codec.ts";
+import { TRV_ZBT_BINDING } from "./sonoff-trv-zbt.ts";
+import { TRVZB_BINDING } from "./sonoff-trvzb.ts";
 import type { ResolvedPoint } from "../schedule.ts";
+import type { ValveMode } from "../settings.ts";
 
 function point(hhmm: string, temperature: number): ResolvedPoint {
   return { time: Temporal.PlainTime.from(hhmm), temperature };
@@ -173,3 +176,95 @@ describe("sonoff-codec", () => {
     });
   });
 });
+
+const BINDINGS = [
+  { model: "TRVZB", binding: TRVZB_BINDING, select: { temperature_sensor_select: "" } },
+  {
+    model: "TRV-ZBT",
+    binding: TRV_ZBT_BINDING,
+    select: { schedule_active_group: "", temperature_sensor_select: "" },
+  },
+] as const;
+
+for (const { model, binding, select } of BINDINGS) {
+  describe(`sonoff bindings (${model})`, () => {
+    describe("decode", () => {
+      describe('With system_mode "heat", occupied_heating_setpoint 21.5, frost_protection_temperature 7', () => {
+        const decoded = binding.decode({
+          system_mode: "heat",
+          occupied_heating_setpoint: 21.5,
+          frost_protection_temperature: 7,
+        });
+        it("values hold system_mode heat, setpoint 21.5, frost_protection 7", () => {
+          expect(decoded.values).toEqual({
+            system_mode: "heat",
+            setpoint: 21.5,
+            frost_protection: 7,
+          });
+        });
+        it("readings.mode is heat and readings.setpoint 21.5", () => {
+          expect(decoded.readings.mode).toBe("heat");
+          expect(decoded.readings.setpoint).toBe(21.5);
+        });
+      });
+      describe('With system_mode "cool"', () => {
+        it("system_mode is null", () => {
+          expect(binding.decode({ system_mode: "cool" }).values.system_mode).toBeNull();
+        });
+      });
+      describe('With occupied_heating_setpoint "x"', () => {
+        it("setpoint is null", () => {
+          expect(binding.decode({ occupied_heating_setpoint: "x" }).values.setpoint).toBeNull();
+        });
+      });
+      describe("With none of the three keys", () => {
+        it("none of the three values is present", () => {
+          const values = binding.decode({ battery: 80 }).values;
+          for (const key of ["system_mode", "setpoint", "frost_protection"])
+            expect(Object.hasOwn(values, key)).toBe(false);
+        });
+      });
+    });
+    describe("encode", () => {
+      describe("With system_mode auto and setpoint 21", () => {
+        it("the message's keys are system_mode then occupied_heating_setpoint", () => {
+          const message = binding.encode({ system_mode: "auto", setpoint: 21 });
+          expect(Object.entries(message)).toEqual([
+            ["system_mode", "auto"],
+            ["occupied_heating_setpoint", 21],
+          ]);
+        });
+      });
+      describe("With frost_protection 8 alone", () => {
+        it("the message is frost_protection_temperature 8", () => {
+          expect(binding.encode({ frost_protection: 8 })).toEqual({
+            frost_protection_temperature: 8,
+          });
+        });
+      });
+      describe('With system_mode "cool"', () => {
+        it("throws RangeError", () => {
+          expect(() => binding.encode({ system_mode: "cool" as ValveMode })).toThrow(RangeError);
+        });
+      });
+      describe("With setpoint 22 then system_mode heat in the desired order", () => {
+        it("system_mode comes first in the message", () => {
+          const message = binding.encode({ setpoint: 22, system_mode: "heat" });
+          expect(Object.keys(message)).toEqual(["system_mode", "occupied_heating_setpoint"]);
+        });
+      });
+    });
+    describe("encodeRefresh", () => {
+      describe("By default", () => {
+        it("asks for system_mode, occupied_heating_setpoint and frost_protection_temperature with the sensor select", () => {
+          expect(binding.encodeRefresh()).toEqual({
+            ...select,
+            system_mode: "",
+            occupied_heating_setpoint: "",
+            frost_protection_temperature: "",
+          });
+        });
+      });
+    });
+  });
+}

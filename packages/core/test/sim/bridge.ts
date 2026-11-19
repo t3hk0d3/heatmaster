@@ -162,6 +162,10 @@ export function createSimBridge(): SimBridge {
         rawSelect === "local_temperature" || rawSelect === "remote_temperature"
           ? rawSelect
           : undefined;
+      const frostProtection = numberOf(payload[Z2M_KEYS.frost]);
+      const rawMode = payload[Z2M_KEYS.mode];
+      const mode =
+        rawMode === "off" || rawMode === "auto" || rawMode === "heat" ? rawMode : undefined;
       const setpoint = numberOf(payload[Z2M_KEYS.setpoint]);
       const external = numberOf(payload[Z2M_KEYS.external]);
       if (external !== undefined) echoed[Z2M_KEYS.external] = external;
@@ -170,11 +174,21 @@ export function createSimBridge(): SimBridge {
         Object.assign(entry.cache, echoed);
         message(valveId, entry); // the echo: the valve has not spoken, so the token is the old one
       }
-      const write: ValveWrite = { days, activeGroup, select, setpoint, external };
+      const write: ValveWrite = {
+        days,
+        activeGroup,
+        select,
+        frostProtection,
+        mode,
+        setpoint,
+        external,
+      };
       if (
         days === undefined &&
         activeGroup === undefined &&
         select === undefined &&
+        frostProtection === undefined &&
+        mode === undefined &&
         setpoint === undefined &&
         external === undefined
       ) {
