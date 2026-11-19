@@ -38,7 +38,10 @@ export type ChangeRefusedCode =
   | "valve_not_orphan"
   | "valve_managed"
   | "valve_not_pending"
-  | "schedule_in_use";
+  | "schedule_in_use"
+  | "room_unknown"
+  | "state_unreadable"
+  | "schedule_unknown";
 
 /** A config change, restore or forget that cannot be done. */
 export class ChangeRefused extends Error {

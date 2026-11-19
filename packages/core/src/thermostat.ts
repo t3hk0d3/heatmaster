@@ -1,0 +1,514 @@
+import { ChangeRefused } from "./change.ts";
+import { membershipsOf, roomWeek } from "./control.ts";
+import type { Effect, World } from "./control.ts";
+import { EMPTY_ENTRY, mayHoldEntry, withHaEdit } from "./labels.ts";
+import type { HaChangeItem, Membership, StoredConfig } from "./ledger.ts";
+import {
+  BOOST_DURATION_MS,
+  END_RULES,
+  NEXT_CHANGE_LEAD_MS,
+  PRESET_NAMES,
+  effectivePresets,
+} from "./model.ts";
+import type { EndRule, PresetName, Room, RoomEntry } from "./model.ts";
+import { roundHalfUp } from "./rounding.ts";
+import { activePoint, segmentAt } from "./schedule.ts";
+import type { ResolvedWeek } from "./schedule.ts";
+import type { ValveMode, ValveSpec } from "./settings.ts";
+
+/** How many sent writes a valve expectation keeps, newest first. */
+export const SENT_KEPT = 4;
+
+/** A sent write is retired when a report heard this long after it neither matches nor shows it. */
+export const SENT_RETIRE_MS = 60 * 1000;
+
+/** Targets are rounded half up to this step, in °C. */
+const TARGET_STEP = 0.5;
+
+/** Where a room change came from; callers outside a valve pass `valveId: undefined`. */
+export type Origin = Readonly<{ source: "valve" | "climate" | "api"; valveId: string | undefined }>;
+
+/**
+ * A room's state: on its schedule, overridden at a target, or off. An override or off ends by its
+ * `rule`, at `endsAt` (undefined: never); `since` is when it was made.
+ */
+export type Thermostat =
+  | Readonly<{ kind: "schedule" }>
+  | Readonly<{
+      kind: "override";
+      target: number;
+      preset: PresetName | undefined;
+      rule: EndRule;
+      endsAt: number | undefined;
+      origin: Origin;
+      since: number;
+    }>
+  | Readonly<{
+      kind: "off";
+      rule: EndRule;
+      endsAt: number | undefined;
+      origin: Origin;
+      since: number;
+    }>;
+
+/** A room that is not on its schedule. */
+type Held = Exclude<Thermostat, Readonly<{ kind: "schedule" }>>;
+
+/** What an override and an off share. */
+type HeldFields = Pick<Held, "rule" | "endsAt" | "origin" | "since">;
+
+export const SCHEDULE: Thermostat = { kind: "schedule" };
+
+/** By room id. A missing room is `SCHEDULE`; a room on its schedule is never stored. */
+export type Thermostats = ReadonlyMap<string, Thermostat>;
+
+/** What a valve is sent for a room state; `scheduled` says it follows the schedule (R18). */
+export type ThermostatWanted = Readonly<{
+  mode: ValveMode;
+  setpoint: number | undefined;
+  scheduled: boolean;
+}>;
+
+/** What a valve shows. */
+export type ThermostatSeen = Readonly<{
+  mode: ValveMode | undefined;
+  setpoint: number | undefined;
+}>;
+
+/** A thermostat write, the instant it was sent, and what the valve showed then (R4.5). */
+export type SentWrite = Readonly<{ wanted: ThermostatWanted; at: number; from: ThermostatSeen }>;
+
+/** The week a scheduled state was confirmed under: its week key and its temperatures (R23). */
+export type SavedWeek = Readonly<{ key: string; values: readonly number[] }>;
+
+/**
+ * What a managed valve is expected to show for its room (R3). `confirmed` undefined: the valve is
+ * taken over. `sent` is newest first, holds each wanted state at most once and at most
+ * `SENT_KEPT` writes.
+ */
+export type ValveExpectation = Readonly<{
+  roomId: string;
+  confirmed: ThermostatWanted | undefined;
+  sent: readonly SentWrite[];
+  week: SavedWeek | undefined;
+}>;
+
+/** Everything `state.json` holds; `valves` is by valve id. */
+export type ThermostatState = Readonly<{
+  rooms: Thermostats;
+  valves: ReadonlyMap<string, ValveExpectation>;
+}>;
+
+/** Every room on its schedule, no valve expectation. */
+export const EMPTY_THERMOSTAT_STATE: ThermostatState = { rooms: new Map(), valves: new Map() };
+
+/** How a change ends; `durationMs` undefined: the room's duration. */
+export type EndChoice = Readonly<{ rule: EndRule; durationMs: number | undefined }>;
+
+/** A change to a room's thermostat; `end` undefined: the room's default end. */
+export type ThermostatCommand =
+  | Readonly<{ kind: "set_target"; celsius: number; end: EndChoice | undefined }>
+  | Readonly<{ kind: "set_preset"; preset: PresetName; end: EndChoice | undefined }>
+  | Readonly<{ kind: "heat" }>
+  | Readonly<{ kind: "off"; end: EndChoice | undefined }>
+  | Readonly<{ kind: "resume" }>;
+
+/** A choice made on a room's Home Assistant selects (R13). */
+export type RoomChoice =
+  | Readonly<{ kind: "schedule"; scheduleId: string }>
+  | Readonly<{ kind: "override_end"; rule: EndRule }>;
+
+/** The temperatures a room's targets are held in, inclusive. */
+export type RoomLimits = Readonly<{ min: number; max: number }>;
+
+/** The narrowest range of the specs: the largest `minTemp`, the smallest `maxTemp` (R12). */
+export function roomLimits(specs: readonly ValveSpec[]): RoomLimits | undefined {
+  if (specs.length === 0) return undefined;
+  return {
+    min: Math.max(...specs.map((spec) => spec.minTemp)),
+    max: Math.min(...specs.map((spec) => spec.maxTemp)),
+  };
+}
+
+/** Held inside the limits, then rounded half up to 0.5. */
+export function clampTarget(celsius: number, limits: RoomLimits): number {
+  return roundHalfUp(Math.min(Math.max(celsius, limits.min), limits.max), TARGET_STEP);
+}
+
+/**
+ * When a change made at `now` ends: `next_change` at the first set point after
+ * `now + NEXT_CHANGE_LEAD_MS` (R8; the timer when there is none), `timer` after the choice's or
+ * the room's duration, `manual` never.
+ */
+export function endsAt(
+  choice: EndChoice,
+  room: Room,
+  week: ResolvedWeek,
+  now: Temporal.ZonedDateTime,
+): number | undefined {
+  const timer = now.epochMilliseconds + (choice.durationMs ?? room.overrideDurationMs);
+  switch (choice.rule) {
+    case "manual":
+      return undefined;
+    case "timer":
+      return timer;
+    case "next_change":
+      return segmentAt(week, now.add({ milliseconds: NEXT_CHANGE_LEAD_MS })).nextAt ?? timer;
+  }
+}
+
+/** The room's own end rule and duration. */
+export function defaultEnd(room: Room): EndChoice {
+  return { rule: room.overrideEnd, durationMs: room.overrideDurationMs };
+}
+
+/** The thermostat has an end and it is not after `nowMs`. */
+export function ended(thermostat: Thermostat, nowMs: number): boolean {
+  return (
+    thermostat.kind !== "schedule" && thermostat.endsAt !== undefined && thermostat.endsAt <= nowMs
+  );
+}
+
+/** Equal in kind, target, preset and rule (R21); `endsAt`, `origin` and `since` are ignored. */
+export function sameThermostat(a: Thermostat, b: Thermostat): boolean {
+  if (a.kind === "schedule" || b.kind === "schedule") return a.kind === b.kind;
+  if (a.rule !== b.rule) return false;
+  if (a.kind === "off" || b.kind === "off") return a.kind === b.kind;
+  return a.target === b.target && a.preset === b.preset;
+}
+
+/** The managed valves' specs of a room. */
+function roomSpecs(world: World, room: Room, kinds: ReadonlyMap<string, Membership>): ValveSpec[] {
+  return room.valves.flatMap(({ valveId }) => {
+    const spec = kinds.get(valveId) === "managed" ? world.devices.get(valveId)?.spec : undefined;
+    return spec === undefined ? [] : [spec];
+  });
+}
+
+/**
+ * The room's thermostat after the command (R11: whether writes are held does not matter). Returns
+ * `[{ kind: "saveThermostats", state }]` with only the room's thermostat replaced, or `[]` when the
+ * result equals the current thermostat (R21). Refuses with `config_unreadable`, then
+ * `state_unreadable`, then `room_unknown` for a room that is not resolved, has no plan or has no
+ * managed valve with a spec (R12).
+ */
+export function thermostatCommand(
+  world: World,
+  roomId: string,
+  command: ThermostatCommand,
+  origin: Origin,
+): readonly Effect[] {
+  const config = world.configState === "ok" ? world.stored?.config : undefined;
+  if (config === undefined) throw new ChangeRefused("config_unreadable");
+  const state = world.thermostats;
+  if (state === undefined) throw new ChangeRefused("state_unreadable");
+  const { rooms, kinds } = membershipsOf(world);
+  const room = rooms.find((r) => r.id === roomId);
+  const week = room === undefined ? undefined : roomWeek(config, room);
+  const limits = room === undefined ? undefined : roomLimits(roomSpecs(world, room, kinds));
+  if (room === undefined || week === undefined || limits === undefined) {
+    throw new ChangeRefused("room_unknown", { roomId });
+  }
+
+  const now = world.now;
+  const current = state.rooms.get(roomId) ?? SCHEDULE;
+  const held = (end: EndChoice): HeldFields => ({
+    rule: end.rule,
+    endsAt: endsAt(end, room, week, now),
+    origin,
+    since: now.epochMilliseconds,
+  });
+  const override = (celsius: number, preset: PresetName | undefined, end: EndChoice): Held => ({
+    kind: "override",
+    target: clampTarget(celsius, limits),
+    preset,
+    ...held(end),
+  });
+
+  let next: Thermostat;
+  switch (command.kind) {
+    case "set_target":
+      next = override(command.celsius, undefined, command.end ?? defaultEnd(room));
+      break;
+    case "set_preset": {
+      const boost: EndChoice = { rule: "timer", durationMs: BOOST_DURATION_MS };
+      const end = command.end ?? (command.preset === "boost" ? boost : defaultEnd(room));
+      next = override(effectivePresets(config, room)[command.preset], command.preset, end);
+      break;
+    }
+    case "heat":
+      next =
+        current.kind === "override"
+          ? current
+          : override(activePoint(week, now).temperature, undefined, defaultEnd(room));
+      break;
+    case "off":
+      next = { kind: "off", ...held(command.end ?? defaultEnd(room)) };
+      break;
+    case "resume":
+      next = SCHEDULE;
+      break;
+  }
+  if (sameThermostat(next, current)) return [];
+  const thermostats = new Map(state.rooms);
+  if (next.kind === "schedule") thermostats.delete(roomId);
+  else thermostats.set(roomId, next);
+  return [{ kind: "saveThermostats", state: { rooms: thermostats, valves: state.valves } }];
+}
+
+/**
+ * The stored config with the room's entry changed by the choice (created when missing), saved as a
+ * Home Assistant change through `withHaEdit` (R13). The default schedule clears `scheduleId`. A
+ * choice equal to the entry returns `stored` itself. Refuses an unknown schedule with
+ * `schedule_unknown`, and an entry the config cannot hold with `room_unknown`.
+ */
+export function withRoomChoice(
+  stored: StoredConfig,
+  roomId: string,
+  choice: RoomChoice,
+  nowMs: number,
+): StoredConfig {
+  const config = stored.config;
+  const entry = config.rooms.get(roomId) ?? EMPTY_ENTRY;
+  let changed: RoomEntry;
+  let item: HaChangeItem;
+  if (choice.kind === "schedule") {
+    const scheduleId = choice.scheduleId;
+    if (!config.schedules.some((s) => s.id === scheduleId)) {
+      throw new ChangeRefused("schedule_unknown", { scheduleId });
+    }
+    const wanted = scheduleId === config.defaultScheduleId ? undefined : scheduleId;
+    if (entry.scheduleId === wanted) return stored;
+    changed = { ...entry, scheduleId: wanted };
+    item = { kind: "schedule", areaId: roomId, entityId: undefined, scheduleId, rule: undefined };
+  } else {
+    if (entry.overrideEnd === choice.rule) return stored;
+    changed = { ...entry, overrideEnd: choice.rule };
+    item = {
+      kind: "override_end",
+      areaId: roomId,
+      entityId: undefined,
+      scheduleId: undefined,
+      rule: choice.rule,
+    };
+  }
+  if (!mayHoldEntry(config.rooms, roomId)) throw new ChangeRefused("room_unknown", { roomId });
+  const rooms = new Map(config.rooms);
+  rooms.set(roomId, changed);
+  return withHaEdit(stored, { config: { ...config, rooms }, items: [item] }, nowMs);
+}
+
+// Raw form ---------------------------------------------------------------------------------------
+
+/** `{ [key]: value }`, or nothing when the value is undefined. */
+function optional(key: string, value: unknown): Record<string, unknown> {
+  return value === undefined ? {} : { [key]: value };
+}
+
+function thermostatToRaw(thermostat: Held): Record<string, unknown> {
+  return {
+    kind: thermostat.kind,
+    ...(thermostat.kind === "override"
+      ? { target: thermostat.target, ...optional("preset", thermostat.preset) }
+      : {}),
+    rule: thermostat.rule,
+    ...optional("ends_at", thermostat.endsAt),
+    origin: {
+      source: thermostat.origin.source,
+      ...optional("valve_id", thermostat.origin.valveId),
+    },
+    since: thermostat.since,
+  };
+}
+
+function wantedToRaw(wanted: ThermostatWanted): Record<string, unknown> {
+  return {
+    mode: wanted.mode,
+    ...optional("setpoint", wanted.setpoint),
+    scheduled: wanted.scheduled,
+  };
+}
+
+function expectationToRaw(expectation: ValveExpectation): Record<string, unknown> {
+  return {
+    room: expectation.roomId,
+    ...optional(
+      "confirmed",
+      expectation.confirmed === undefined ? undefined : wantedToRaw(expectation.confirmed),
+    ),
+    sent: expectation.sent.map((write) => ({
+      ...wantedToRaw(write.wanted),
+      at: write.at,
+      from: { ...optional("mode", write.from.mode), ...optional("setpoint", write.from.setpoint) },
+    })),
+    ...optional(
+      "week",
+      expectation.week === undefined
+        ? undefined
+        : { key: expectation.week.key, values: [...expectation.week.values] },
+    ),
+  };
+}
+
+/** `{ rooms, valves }` of `state.json`; the store adds `version`. Keys left undefined are left out. */
+export function thermostatStateToRaw(state: ThermostatState): Record<string, unknown> {
+  const rooms: Record<string, unknown> = {};
+  for (const [roomId, thermostat] of state.rooms) {
+    if (thermostat.kind !== "schedule") rooms[roomId] = thermostatToRaw(thermostat);
+  }
+  const valves: Record<string, unknown> = {};
+  for (const [valveId, expectation] of state.valves) {
+    valves[valveId] = expectationToRaw(expectation);
+  }
+  return { rooms, valves };
+}
+
+/** Thrown inside the reader on anything not well formed; never leaves this module. */
+const MALFORMED = new Error("malformed thermostat state");
+
+function malformed(): never {
+  throw MALFORMED;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The object, which holds every `required` key and no key outside `required` and `optional`. */
+function objectOf(
+  value: unknown,
+  required: readonly string[],
+  optionalKeys: readonly string[] = [],
+): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) return malformed();
+  for (const key of Object.keys(value)) {
+    if (!required.includes(key) && !optionalKeys.includes(key)) malformed();
+  }
+  for (const key of required) if (value[key] === undefined) malformed();
+  return value;
+}
+
+function finite(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : malformed();
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : malformed();
+}
+
+function flag(value: unknown): boolean {
+  return typeof value === "boolean" ? value : malformed();
+}
+
+function oneOf<T extends string>(value: unknown, names: readonly T[]): T {
+  return names.find((name) => name === value) ?? malformed();
+}
+
+function maybe<T>(value: unknown, read: (value: unknown) => T): T | undefined {
+  return value === undefined ? undefined : read(value);
+}
+
+const MODES: readonly ValveMode[] = ["off", "auto", "heat"];
+const SOURCES: readonly Origin["source"][] = ["valve", "climate", "api"];
+const HELD_KINDS: readonly Held["kind"][] = ["override", "off"];
+
+function originFromRaw(value: unknown): Origin {
+  const obj = objectOf(value, ["source"], ["valve_id"]);
+  return { source: oneOf(obj.source, SOURCES), valveId: maybe(obj.valve_id, text) };
+}
+
+function thermostatFromRaw(value: unknown): Held {
+  const kind = oneOf(isRecord(value) ? value.kind : undefined, HELD_KINDS);
+  const common = ["kind", "rule", "origin", "since"];
+  const obj =
+    kind === "override"
+      ? objectOf(value, [...common, "target"], ["preset", "ends_at"])
+      : objectOf(value, common, ["ends_at"]);
+  const held: HeldFields = {
+    rule: oneOf(obj.rule, END_RULES),
+    endsAt: maybe(obj.ends_at, finite),
+    origin: originFromRaw(obj.origin),
+    since: finite(obj.since),
+  };
+  if (kind === "off") return { kind, ...held };
+  const preset = maybe(obj.preset, (raw) => oneOf(raw, PRESET_NAMES));
+  return { kind, target: finite(obj.target), preset, ...held };
+}
+
+const WANTED_KEYS = ["mode", "scheduled"];
+
+function wantedOf(obj: Readonly<Record<string, unknown>>): ThermostatWanted {
+  return {
+    mode: oneOf(obj.mode, MODES),
+    setpoint: maybe(obj.setpoint, finite),
+    scheduled: flag(obj.scheduled),
+  };
+}
+
+function sameWanted(a: ThermostatWanted, b: ThermostatWanted): boolean {
+  return a.mode === b.mode && a.setpoint === b.setpoint && a.scheduled === b.scheduled;
+}
+
+function sentFromRaw(value: unknown): SentWrite {
+  const obj = objectOf(value, [...WANTED_KEYS, "at", "from"], ["setpoint"]);
+  const from = objectOf(obj.from, [], ["mode", "setpoint"]);
+  return {
+    wanted: wantedOf(obj),
+    at: finite(obj.at),
+    from: {
+      mode: maybe(from.mode, (raw) => oneOf(raw, MODES)),
+      setpoint: maybe(from.setpoint, finite),
+    },
+  };
+}
+
+/** Newest first; of equal wanted states the newer is kept; at most `SENT_KEPT`. */
+function sentListFromRaw(value: unknown): readonly SentWrite[] {
+  if (!Array.isArray(value)) return malformed();
+  const writes = (value as readonly unknown[]).map(sentFromRaw).sort((a, b) => b.at - a.at);
+  return writes
+    .filter(
+      (write, i) => !writes.slice(0, i).some((newer) => sameWanted(newer.wanted, write.wanted)),
+    )
+    .slice(0, SENT_KEPT);
+}
+
+function weekFromRaw(value: unknown): SavedWeek {
+  const obj = objectOf(value, ["key", "values"]);
+  if (!Array.isArray(obj.values)) return malformed();
+  return { key: text(obj.key), values: (obj.values as readonly unknown[]).map(finite) };
+}
+
+function expectationFromRaw(value: unknown): ValveExpectation {
+  const obj = objectOf(value, ["room", "sent"], ["confirmed", "week"]);
+  return {
+    roomId: text(obj.room),
+    confirmed: maybe(obj.confirmed, (raw) => wantedOf(objectOf(raw, WANTED_KEYS, ["setpoint"]))),
+    sent: sentListFromRaw(obj.sent),
+    week: maybe(obj.week, weekFromRaw),
+  };
+}
+
+/** An object keyed by id, each item read; a missing one is an empty map. */
+function mapFromRaw<T>(value: unknown, read: (value: unknown) => T): ReadonlyMap<string, T> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) return malformed();
+  return new Map(Object.entries(value).map(([id, item]) => [id, read(item)]));
+}
+
+/**
+ * Reads `{ rooms, valves }` of `state.json`; undefined for anything not well formed. A missing
+ * `rooms` or `valves` key is an empty map.
+ */
+export function thermostatStateFromRaw(raw: unknown): ThermostatState | undefined {
+  try {
+    const doc = objectOf(raw, [], ["rooms", "valves"]);
+    return {
+      rooms: mapFromRaw(doc.rooms, thermostatFromRaw),
+      valves: mapFromRaw(doc.valves, expectationFromRaw),
+    };
+  } catch (error) {
+    if (error === MALFORMED) return undefined;
+    throw error;
+  }
+}

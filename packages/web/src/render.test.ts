@@ -958,6 +958,7 @@ describe("render", () => {
           schedule_in_use: { roomId: "hall" },
           mqtt_fault: { reason: "mqtt_unavailable" },
           room_unknown: { roomId: "hall" },
+          schedule_unknown: { scheduleId: "night" },
           ask_limited: { valveId: ID },
           device_unknown: { deviceId: ID },
           mqtt_refused: { reasonCode: "135" },

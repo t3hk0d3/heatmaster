@@ -9,6 +9,7 @@ import {
   EMPTY_CONFIG,
   EMPTY_MEMORY,
   EMPTY_READINGS,
+  EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
   REFILL_MS,
   SETTING_KEYS,
@@ -365,6 +366,9 @@ export async function executeEffects(
           if (effect.kind === "saveConfig") context.onConfigSaved(effect.stored);
           break;
         }
+        case "saveThermostats":
+          // The state store comes with Task 7 of plan 3a; until then the save does nothing.
+          break;
         default: {
           if (dropped || skipped.has(effect.valveId)) {
             notOut(effect);
@@ -1004,6 +1008,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       memory: inbox.memory,
       buckets,
       now: Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(zone()),
+      // The state store comes with Task 7 of plan 3a; until then every room is on its schedule.
+      thermostats: EMPTY_THERMOSTAT_STATE,
     };
   }
 

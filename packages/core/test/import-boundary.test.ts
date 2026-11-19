@@ -14,10 +14,11 @@ function sourceFiles(folder: string): string[] {
   });
 }
 
+/** A specifier holds no whitespace, so a "from" string followed by more strings is no import. */
 function importsOf(text: string): string[] {
   const found: string[] = [];
   for (const match of text.matchAll(
-    /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["']([^"']+)["']/g,
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["']([^"'\s]+)["']/g,
   )) {
     found.push(match[1] ?? "");
   }

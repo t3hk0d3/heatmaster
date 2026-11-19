@@ -4,6 +4,7 @@ import {
   EMPTY_LEDGER,
   EMPTY_MEMORY,
   EMPTY_READINGS,
+  EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
   applyEvent,
   memberships,
@@ -24,6 +25,7 @@ import type {
   HaSnapshot,
   HouseInput,
   Inbox,
+  Origin,
   PresetName,
   RawConfig,
   Readings,
@@ -34,6 +36,7 @@ import type {
   SensorRef,
   SetPoint,
   SettingValues,
+  Thermostat,
   ValveRecord,
   ValveSpec,
   Week,
@@ -405,9 +408,9 @@ export function makeConfig(
 
 /**
  * Config state `ok` (revision 1, nothing releasing), an empty ledger, `z2m` up, no faults, `z2m`'s
- * device list holding the given devices, and a live house with no room. With `rooms`, the
- * config's entries and the live house come from them. The saved membership is the house's (none
- * when unlinked), so the tick has no membership to save.
+ * device list holding the given devices, every room on its schedule with no valve expectation, and
+ * a live house with no room. With `rooms`, the config's entries and the live house come from them.
+ * The saved membership is the house's (none when unlinked), so the tick has no membership to save.
  */
 export function makeWorld(
   options: Partial<World> & { config?: Config; rooms?: readonly Room[] } = {},
@@ -434,6 +437,7 @@ export function makeWorld(
     memory: EMPTY_MEMORY,
     buckets: undefined,
     now: BUILDER_NOW,
+    thermostats: EMPTY_THERMOSTAT_STATE,
     ...rest,
   };
 }
@@ -561,6 +565,32 @@ export function settled(world: World): World {
     nowMs = answers.size > 0 ? messageAt + 2000 : nowMs + 2 * MINUTE_MS;
   }
   throw new Error("the world did not settle");
+}
+
+/**
+ * A room thermostat: unless told otherwise, an override at 22 without a preset, rule
+ * `next_change`, ending an hour after `BUILDER_NOW`, made through the API ten minutes before it.
+ * An `off` takes the same rule, end, origin and start.
+ */
+export function makeThermostat(
+  options: {
+    kind?: "override" | "off";
+    target?: number;
+    preset?: PresetName;
+    rule?: EndRule;
+    endsAt?: number | undefined;
+    origin?: Origin;
+    since?: number;
+  } = {},
+): Thermostat {
+  const common = {
+    rule: options.rule ?? "next_change",
+    endsAt: "endsAt" in options ? options.endsAt : BUILDER_NOW_MS + HOUR_MS,
+    origin: options.origin ?? { source: "api", valveId: undefined },
+    since: options.since ?? BUILDER_NOW_MS - 10 * MINUTE_MS,
+  } as const;
+  if (options.kind === "off") return { kind: "off", ...common };
+  return { kind: "override", target: options.target ?? 22, preset: options.preset, ...common };
 }
 
 /** A Home Assistant snapshot; an area's name defaults to its id. */

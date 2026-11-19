@@ -398,6 +398,9 @@ export const en = {
   "error.not_found": "There is nothing at that address.",
   "error.internal": "Heatmaster failed inside. See its log.",
   "error.room_unknown": "Room {roomId} does not exist.",
+  "error.state_unreadable":
+    "The saved room states cannot be read, so rooms cannot be changed. Start over to put every room back on its schedule.",
+  "error.schedule_unknown": "Schedule {scheduleId} does not exist.",
   "error.config_missing": "There is no configuration yet.",
   "error.ask_limited": "Valve {valveId} was asked a moment ago. Try again in a minute.",
   "error.not_started": "Heatmaster has not finished starting.",

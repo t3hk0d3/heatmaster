@@ -256,7 +256,8 @@ type UnusedReason =
   | "sensor_on_valve"
   | "sensor_limit";
 
-const EMPTY_ENTRY: RoomEntry = {
+/** An entry that sets nothing: the default schedule, no sensor, the house presets and rules. */
+export const EMPTY_ENTRY: RoomEntry = {
   scheduleId: undefined,
   sensors: [],
   presets: NO_PRESETS,
@@ -278,7 +279,7 @@ function labelSchedules(config: Config): ReadonlyMap<string, string> {
  * validation (a valid area id, at most `MAX_ROOMS` entries). A label edit that needs an entry the
  * config cannot hold changes nothing, so the saved config always stays readable.
  */
-function mayHoldEntry(rooms: ReadonlyMap<string, RoomEntry>, areaId: string): boolean {
+export function mayHoldEntry(rooms: ReadonlyMap<string, RoomEntry>, areaId: string): boolean {
   return rooms.has(areaId) || (AREA_ID_PATTERN.test(areaId) && rooms.size < MAX_ROOMS);
 }
 

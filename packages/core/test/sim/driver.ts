@@ -2,6 +2,7 @@ import {
   ChangeRefused,
   EMPTY_LEDGER,
   EMPTY_MEMORY,
+  EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
   TRVZB_SPEC,
   TRV_ZBT_SPEC,
@@ -321,6 +322,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       memory: inbox.memory,
       buckets: undefined,
       now: nowZoned(),
+      thermostats: EMPTY_THERMOSTAT_STATE,
     };
   };
 

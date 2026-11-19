@@ -322,6 +322,9 @@ export const ru: Dictionary = {
   "error.not_found": "По этому адресу ничего нет.",
   "error.internal": "Внутренний сбой Heatmaster. Смотрите его журнал.",
   "error.room_unknown": "Комнаты {roomId} нет.",
+  "error.state_unreadable":
+    "Сохранённые состояния комнат не удаётся прочитать, поэтому комнаты нельзя изменить. Начните заново, чтобы вернуть все комнаты к их расписаниям.",
+  "error.schedule_unknown": "Расписания {scheduleId} нет.",
   "error.config_missing": "Конфигурации ещё нет.",
   "error.ask_limited": "Клапан {valveId} только что получил запрос. Повторите через минуту.",
   "error.not_started": "Heatmaster ещё не закончил запуск.",

@@ -65,6 +65,7 @@ import {
 import type { Problem, RoomStatus, ValveStatus } from "./status.ts";
 import { aggregate, freshness } from "./temperature.ts";
 import type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";
+import type { ThermostatState } from "./thermostat.ts";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -103,6 +104,7 @@ export type BucketStart = Readonly<{ stamps: ReadonlyMap<string, number>; fallba
  * transport, the ids of every device it lists (followed or not), once it has delivered its device
  * list since the start; a transport with no entry has not, and its list vouches for nothing.
  * `sensors` and `unobservableSensors` are keyed by sensor id. `now` is in the house's time zone.
+ * `thermostats` undefined: the state file could not be read.
  */
 export type World = Readonly<{
   configState: ConfigState;
@@ -118,6 +120,7 @@ export type World = Readonly<{
   memory: Memory;
   buckets: BucketStart | undefined;
   now: Temporal.ZonedDateTime;
+  thermostats: ThermostatState | undefined;
 }>;
 
 export type Effect =
@@ -127,7 +130,8 @@ export type Effect =
   | Readonly<{ kind: "publish"; valveId: string; values: SettingValues }>
   | Readonly<{ kind: "publishSetpoint"; valveId: string; celsius: number }>
   | Readonly<{ kind: "pushTemperature"; valveId: string; celsius: number }>
-  | Readonly<{ kind: "refresh"; valveId: string }>;
+  | Readonly<{ kind: "refresh"; valveId: string }>
+  | Readonly<{ kind: "saveThermostats"; state: ThermostatState }>;
 
 /** `pending` lists the valves that wait to join, in valve-id order (see `reconcile`). */
 export type TickResult = Readonly<{
@@ -269,7 +273,18 @@ type RoomPlan = Readonly<{
   rm: RoomMemory;
 }>;
 
-/** Each room whose schedule exists and has no empty day; others are left out. */
+/**
+ * The room's week with its presets resolved, or undefined when the room has no plan: its schedule
+ * does not exist or has an empty day.
+ */
+export function roomWeek(config: Config, room: Room): ResolvedWeek | undefined {
+  const schedule = config.schedules.find((s) => s.id === room.scheduleId);
+  if (schedule === undefined) return undefined;
+  if (WEEKDAYS.some((day) => schedule.defaultWeek[day].length === 0)) return undefined;
+  return resolveWeek(schedule.defaultWeek, effectivePresets(config, room));
+}
+
+/** Each room whose schedule exists and has no empty day (`roomWeek`); others are left out. */
 function planRooms(
   config: Config,
   rooms: readonly Room[],
@@ -278,10 +293,8 @@ function planRooms(
 ): ReadonlyMap<string, RoomPlan> {
   const plans = new Map<string, RoomPlan>();
   for (const room of rooms) {
-    const schedule = config.schedules.find((s) => s.id === room.scheduleId);
-    if (schedule === undefined) continue;
-    if (WEEKDAYS.some((day) => schedule.defaultWeek[day].length === 0)) continue;
-    const week = resolveWeek(schedule.defaultWeek, effectivePresets(config, room));
+    const week = roomWeek(config, room);
+    if (week === undefined) continue;
     const temperature = aggregate(
       room.sensors,
       world.sensors,
@@ -648,7 +661,7 @@ function clampReleases(stored: StoredConfig | undefined, nowMs: number): StoredC
 }
 
 /** The resolved rooms (none when unlinked) and each valve's membership over them. */
-function membershipsOf(
+export function membershipsOf(
   world: World,
 ): Readonly<{ rooms: readonly Room[]; kinds: ReadonlyMap<string, Membership> }> {
   const rooms = roomsOf(world.configState, world.stored, world.house);

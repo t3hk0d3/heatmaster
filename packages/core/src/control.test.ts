@@ -56,6 +56,7 @@ import type {
 } from "./settings.ts";
 import type { Problem, ProblemKind, ValveStatus } from "./status.ts";
 import type { SensorReading } from "./temperature.ts";
+import { EMPTY_THERMOSTAT_STATE } from "./thermostat.ts";
 
 const V = BUILDER_VALVE;
 const SECOND_MS = 1000;
@@ -646,6 +647,7 @@ const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) =>
           memory,
           buckets: undefined,
           now: BUILDER_NOW,
+          thermostats: EMPTY_THERMOSTAT_STATE,
         };
         return { world, steps: r.steps };
       });
