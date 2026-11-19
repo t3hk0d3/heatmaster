@@ -61,7 +61,6 @@ export const ru: Dictionary = {
   "rooms.target": "Цель",
   "rooms.sync": "Синхронизация",
   "rooms.degraded": "Ограничено: в комнате нет работающего датчика температуры",
-  "rooms.diverged": "Расхождение: клапаны не согласованы",
   "rooms.valves": "Клапаны",
   "rooms.no_valves": "В комнате нет клапанов.",
 
@@ -254,8 +253,8 @@ export const ru: Dictionary = {
   "problem.sensor_liveness_unobservable":
     "Heatmaster не может определить, работает ли датчик {name}",
   "problem.feed_lost": "Клапан {name} не получает температуру комнаты",
-  "problem.valve_not_auto":
-    "Клапан {name} в режиме «{mode}» и не следует расписанию. Heatmaster не меняет режим клапана",
+  "problem.state_unreadable":
+    "Сохранённые состояния комнат не удаётся прочитать. Heatmaster не записывает режим и уставку ни в один клапан, пока вы не начнёте заново",
   "problem.store_write_failed":
     "Heatmaster не смог сохранить {store}. Проверьте диск: запись в клапаны может быть остановлена, пока сохранение не удастся",
   "problem.tick_failed":

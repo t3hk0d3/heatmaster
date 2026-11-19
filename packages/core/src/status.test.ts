@@ -24,10 +24,10 @@ import {
   problemSensorStale,
   problemSensorUnlabellable,
   problemSettingNotHolding,
+  problemStateUnreadable,
   problemStoreWriteFailed,
   problemTickFailed,
   problemTransportUnusable,
-  problemValveNotAuto,
   problemValveNotInHa,
   problemValveOrphan,
   problemValvePending,
@@ -90,8 +90,9 @@ function valve(over: Partial<ValveStatus> = {}): ValveStatus {
   };
 }
 
+/** The room's status while the state file is unreadable, so its mode is the valves'. */
 function status(valves: readonly ValveStatus[], fresh: Freshness = "fresh") {
-  return roomStatus(ROOM, WEEK, TEMPERATURE, fresh, valves, NOW);
+  return roomStatus(ROOM, WEEK, TEMPERATURE, fresh, valves, NOW, undefined, undefined);
 }
 
 describe("status", () => {
@@ -153,17 +154,17 @@ describe("status", () => {
         expect(status([]).sync).toBe("unverified");
       });
     });
-    describe("With one valve off and one in auto", () => {
+    describe("With the state unreadable, one valve off and one in auto", () => {
       it("mode is auto", () => {
         expect(status([valve({ mode: "off" }), valve({ mode: "auto" })]).mode).toBe("auto");
       });
     });
-    describe("With every valve off", () => {
+    describe("With the state unreadable and every valve off", () => {
       it("mode is off", () => {
         expect(status([valve({ mode: "off" }), valve(), valve({ mode: "off" })]).mode).toBe("off");
       });
     });
-    describe("With no valve showing a mode", () => {
+    describe("With the state unreadable and no valve showing a mode", () => {
       it("mode is undefined", () => {
         expect(status([valve(), valve()]).mode).toBeUndefined();
       });
@@ -193,21 +194,6 @@ describe("status", () => {
       it("degraded is false", () => {
         expect(status([valve()], "pending").degraded).toBe(false);
         expect(status([valve()], "fresh").degraded).toBe(false);
-      });
-    });
-    describe("With a valve in heat", () => {
-      it("diverged is true", () => {
-        expect(status([valve({ mode: "auto" }), valve({ mode: "heat" })]).diverged).toBe(true);
-      });
-    });
-    describe("With a valve that is off", () => {
-      it("diverged is true", () => {
-        expect(status([valve({ mode: "off" })]).diverged).toBe(true);
-      });
-    });
-    describe("With every valve in auto, or showing no mode", () => {
-      it("diverged is false", () => {
-        expect(status([valve({ mode: "auto" }), valve()]).diverged).toBe(false);
       });
     });
     describe("With a room temperature of 20.4", () => {
@@ -292,7 +278,7 @@ describe("status", () => {
             [],
           ],
           [problemFeedLost(V1), "feed_lost", "valve", "warning", []],
-          [problemValveNotAuto(V1, "off"), "valve_not_auto", "valve", "warning", ["mode"]],
+          [problemStateUnreadable(), "state_unreadable", "system", "error", []],
           [problemStoreWriteFailed("config"), "store_write_failed", "system", "error", ["store"]],
           [problemTickFailed(), "tick_failed", "system", "error", []],
           [
@@ -403,13 +389,6 @@ describe("status", () => {
           problemSensorLivenessUnobservable(SENSOR),
         ])
           expect(problem.subject).toEqual({ kind: "sensor", id: SENSOR });
-      });
-    });
-    describe('With problemValveNotAuto(valve, "heat")', () => {
-      it('data.mode is "heat" and the severity is warning', () => {
-        const problem = problemValveNotAuto(V1, "heat");
-        expect(problem.data.mode).toBe("heat");
-        expect(problem.severity).toBe("warning");
       });
     });
     describe("With problemTickFailed()", () => {
@@ -545,6 +524,19 @@ describe("status", () => {
       it("data.entities joins them with commas", () => {
         expect(problemLegacyLabelPresent("office", ["sensor.a", "sensor.b"]).data).toEqual({
           entities: "sensor.a,sensor.b",
+        });
+      });
+    });
+  });
+
+  describe("problems", () => {
+    describe("problemStateUnreadable", () => {
+      it("kind state_unreadable, subject system, severity error", () => {
+        expect(problemStateUnreadable()).toEqual({
+          kind: "state_unreadable",
+          subject: { kind: "system", id: SYSTEM_ID },
+          severity: "error",
+          data: {},
         });
       });
     });

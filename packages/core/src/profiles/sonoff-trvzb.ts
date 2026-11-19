@@ -10,8 +10,22 @@ import {
   groupSpec,
   selectOption,
 } from "./sonoff-codec.ts";
+import { commonMatch, wantedFor } from "../thermostat-adapter.ts";
 import type { Binding, Profile } from "./base.ts";
 import type { ValveSpec } from "../settings.ts";
+import type { ThermostatAdapter } from "../thermostat-adapter.ts";
+
+/**
+ * The TRVZB on its schedule is wanted in `auto` alone. In `auto` its setpoint is ignored: a written
+ * setpoint or a knob leaves `auto` (M1), and the valve moves its own setpoint at its points and
+ * after a day write.
+ */
+export const TRVZB_THERMOSTAT: ThermostatAdapter = {
+  wanted: (thermostat) =>
+    wantedFor(thermostat, { mode: "auto", setpoint: undefined, scheduled: true }),
+  matches: (expected, seen) => commonMatch(expected, seen) ?? true,
+  explains: (expected, seen) => commonMatch(expected, seen) ?? true,
+};
 
 /** Sonoff TRVZB: one schedule of 6 slots, whose days cannot be read back; an external sensor. */
 export const TRVZB_SPEC: ValveSpec = {
@@ -33,6 +47,7 @@ export const TRVZB_SPEC: ValveSpec = {
   activation: "none",
   externalSensor: true,
   feedWhenOff: false,
+  thermostat: TRVZB_THERMOSTAT,
 };
 
 export const TRVZB_BINDING: Binding = {

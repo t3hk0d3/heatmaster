@@ -1,4 +1,14 @@
-import { differing, fitted, managedDesired, releaseDesired } from "./desired.ts";
+import {
+  differing,
+  fitted,
+  frostDesired,
+  managedDesired,
+  releaseDesired,
+  thermostatContext,
+  thermostatDesired,
+  thermostatWanted,
+  weekKey,
+} from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { FEED_LOST_AFTER_MS, pushDue, pushed, stopped, trackRoom, wantedSource } from "./feed.ts";
 import { roomOfValves, roomsOf } from "./house.ts";
@@ -26,7 +36,7 @@ import {
 } from "./pacing.ts";
 import { activePoint, resolveWeek } from "./schedule.ts";
 import type { FittedWeek, ResolvedWeek } from "./schedule.ts";
-import { members, valueKey } from "./settings.ts";
+import { groupOf, members, valueKey } from "./settings.ts";
 import type {
   Group,
   Readings,
@@ -34,6 +44,7 @@ import type {
   SettingKey,
   SettingValue,
   SettingValues,
+  ValveMode,
   ValveSpec,
 } from "./settings.ts";
 import {
@@ -52,8 +63,8 @@ import {
   problemSensorOutOfRange,
   problemSensorStale,
   problemSettingNotHolding,
+  problemStateUnreadable,
   problemTransportUnusable,
-  problemValveNotAuto,
   problemValveNotInHa,
   problemValveOrphan,
   problemValvePending,
@@ -65,7 +76,14 @@ import {
 import type { Problem, RoomStatus, ValveStatus } from "./status.ts";
 import { aggregate, freshness } from "./temperature.ts";
 import type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";
-import type { ThermostatState } from "./thermostat.ts";
+import { SCHEDULE, ended, roomLimits } from "./thermostat.ts";
+import type {
+  SavedWeek,
+  Thermostat,
+  ThermostatSeen,
+  ThermostatState,
+  ThermostatWanted,
+} from "./thermostat.ts";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -77,6 +95,11 @@ export const RELEASE_STALLED_AFTER_MS = 6 * HOUR_MS;
 
 /** Rounds of `preview` per valve. */
 const PREVIEW_ROUNDS = 10;
+
+/**
+ * For this long after an override or off starts, its room's valves get no mode or setpoint (R6).
+ */
+export const THERMOSTAT_SETTLE_MS = 10 * 1000;
 
 /**
  * - `spec` undefined: not a supported valve.
@@ -133,13 +156,17 @@ export type Effect =
   | Readonly<{ kind: "refresh"; valveId: string }>
   | Readonly<{ kind: "saveThermostats"; state: ThermostatState }>;
 
-/** `pending` lists the valves that wait to join, in valve-id order (see `reconcile`). */
+/**
+ * `pending` lists the valves that wait to join, in valve-id order (see `reconcile`).
+ * `thermostats` is the thermostat state after this tick (undefined: the state file is unreadable).
+ */
 export type TickResult = Readonly<{
   memory: Memory;
   effects: readonly Effect[];
   rooms: ReadonlyMap<string, RoomStatus>;
   problems: readonly Problem[];
   pending: readonly Pending[];
+  thermostats: ThermostatState | undefined;
 }>;
 
 /** One group to write: every desired key when `marked`, otherwise the differing ones. */
@@ -218,8 +245,30 @@ function scheduleHeard(vm: ValveMemory, spec: ValveSpec, state: DeviceState): bo
 }
 
 /**
+ * The week a valve is known to run (R23): its fitted week while the schedule is trusted and heard
+ * and, on a model with a schedule group, while the valve shows that group active; otherwise
+ * undefined. `vm` must already have noted this tick's desired schedule values.
+ */
+export function confirmedWeek(
+  spec: ValveSpec,
+  vm: ValveMemory,
+  state: DeviceState | undefined,
+  fittedWeek: ResolvedWeek,
+): ResolvedWeek | undefined {
+  if (state === undefined || !scheduleTrusted(vm, spec) || !scheduleHeard(vm, spec, state)) {
+    return undefined;
+  }
+  if (spec.scheduleGroup !== undefined && state.values.active_group !== spec.scheduleGroup) {
+    return undefined;
+  }
+  return fittedWeek;
+}
+
+/**
  * Groups in the spec's order; see the task's candidate rule. A marked group, and an atomic group
- * with a differing key, carry every desired member. Pacing is not considered.
+ * with a differing key, carry every desired member. Pacing is not considered. `thermostatMatches`
+ * is the adapter's verdict for a managed valve (R24): when it is given, the `thermostat` group
+ * differs exactly when it is false; undefined compares the group key by key (R25).
  */
 export function candidates(
   spec: ValveSpec,
@@ -227,6 +276,7 @@ export function candidates(
   state: DeviceState,
   vm: ValveMemory,
   anyMarkReady = false,
+  thermostatMatches?: boolean,
 ): readonly Selection[] {
   const result: Selection[] = [];
   const differs = new Set(differing(desired, state));
@@ -234,12 +284,11 @@ export function candidates(
     const keys = members(gs.group).filter((key) => desired[key] !== undefined);
     if (keys.length === 0) continue;
     // A write-only group's observed keys are never compared: it differs until a write is recorded.
-    const diff =
-      gs.evidence === "none"
-        ? unwritten(vm, gs.group)
-          ? keys
-          : []
-        : keys.filter((key) => differs.has(key));
+    let diff: readonly SettingKey[];
+    if (gs.evidence === "none") diff = unwritten(vm, gs.group) ? keys : [];
+    else if (gs.group === "thermostat" && thermostatMatches !== undefined) {
+      diff = thermostatMatches ? [] : keys;
+    } else diff = keys.filter((key) => differs.has(key));
     const marked = !gs.readable && vm.groups[gs.group]?.mark !== undefined;
     const ready = marked && (anyMarkReady || markedReady(vm, spec, gs.group, state.heardAt));
     if (diff.length === 0 && !ready) continue;
@@ -265,12 +314,19 @@ function valuesOf(desired: Desired, keys: readonly SettingKey[]): SettingValues 
 
 // Rooms ------------------------------------------------------------------------------------------
 
+/**
+ * `thermostat` undefined: the state file is unreadable. `frost` is the room's frost preset.
+ * `settling`: no mode or setpoint is written to the room's valves (R6).
+ */
 type RoomPlan = Readonly<{
   room: Room;
   week: ResolvedWeek;
   temperature: RoomTemperature;
   fresh: Freshness;
   rm: RoomMemory;
+  thermostat: Thermostat | undefined;
+  frost: number;
+  settling: boolean;
 }>;
 
 /**
@@ -284,12 +340,23 @@ export function roomWeek(config: Config, room: Room): ResolvedWeek | undefined {
   return resolveWeek(schedule.defaultWeek, effectivePresets(config, room));
 }
 
-/** Each room whose schedule exists and has no empty day (`roomWeek`); others are left out. */
+/** An override or off made less than `THERMOSTAT_SETTLE_MS` ago, and not in the future (R6). */
+function settles(thermostat: Thermostat | undefined, nowMs: number): boolean {
+  if (thermostat === undefined || thermostat.kind === "schedule") return false;
+  const age = nowMs - thermostat.since;
+  return age >= 0 && age < THERMOSTAT_SETTLE_MS;
+}
+
+/**
+ * Each room whose schedule exists and has no empty day (`roomWeek`); others are left out. Each
+ * plan carries the room's thermostat from `thermostats` (undefined: unreadable).
+ */
 function planRooms(
   config: Config,
   rooms: readonly Room[],
   world: World,
   nowMs: number,
+  thermostats: ThermostatState | undefined,
 ): ReadonlyMap<string, RoomPlan> {
   const plans = new Map<string, RoomPlan>();
   for (const room of rooms) {
@@ -303,9 +370,50 @@ function planRooms(
     );
     const fresh = freshness(room.sensors, temperature);
     const old = world.memory.rooms.get(room.id) ?? { freshSince: undefined };
-    plans.set(room.id, { room, week, temperature, fresh, rm: trackRoom(old, fresh, nowMs) });
+    const thermostat =
+      thermostats === undefined ? undefined : (thermostats.rooms.get(room.id) ?? SCHEDULE);
+    plans.set(room.id, {
+      room,
+      week,
+      temperature,
+      fresh,
+      rm: trackRoom(old, fresh, nowMs),
+      thermostat,
+      frost: effectivePresets(config, room).frost,
+      settling: settles(thermostat, nowMs),
+    });
   }
   return plans;
+}
+
+/**
+ * The thermostat state after the tick's own changes (undefined while unreadable), the same object
+ * when nothing changed:
+ * - an ended override or off of a planned room that holds a managed valve is back on its schedule;
+ * - while the house is live and the config readable, a room that is not resolved is dropped (R16).
+ */
+function nextThermostats(
+  world: World,
+  config: Config | undefined,
+  resolved: readonly Room[],
+  kinds: ReadonlyMap<string, Membership>,
+  nowMs: number,
+): ThermostatState | undefined {
+  const state = world.thermostats;
+  if (state === undefined) return undefined;
+  const rooms = new Map(state.rooms);
+  for (const room of resolved) {
+    const thermostat = rooms.get(room.id);
+    if (thermostat === undefined || !ended(thermostat, nowMs)) continue;
+    const planned = config !== undefined && roomWeek(config, room) !== undefined;
+    const managed = room.valves.some(({ valveId }) => kinds.get(valveId) === "managed");
+    if (planned && managed) rooms.delete(room.id);
+  }
+  if (world.house.kind === "live" && config !== undefined) {
+    const ids = new Set(resolved.map((room) => room.id));
+    for (const roomId of [...rooms.keys()]) if (!ids.has(roomId)) rooms.delete(roomId);
+  }
+  return rooms.size === state.rooms.size ? state : { rooms, valves: state.valves };
 }
 
 function roomProblems(plan: RoomPlan, world: World): readonly Problem[] {
@@ -383,6 +491,81 @@ function managedFor(
   return [desired, noteAll(days, spec, desired)];
 }
 
+const MODES: readonly ValveMode[] = ["off", "auto", "heat"];
+
+/** The mode and setpoint the valve shows. */
+function seenOf(state: DeviceState): ThermostatSeen {
+  const { system_mode: mode, setpoint } = state.values;
+  return {
+    mode: MODES.find((m) => m === mode),
+    setpoint: typeof setpoint === "number" ? setpoint : undefined,
+  };
+}
+
+/** The saved week, unless the valve is seen with another schedule group active (R23). */
+function usableSavedWeek(
+  spec: ValveSpec,
+  state: DeviceState | undefined,
+  saved: SavedWeek | undefined,
+): SavedWeek | undefined {
+  const active = state?.values.active_group;
+  const other = spec.scheduleGroup !== undefined && active !== undefined;
+  return other && active !== spec.scheduleGroup ? undefined : saved;
+}
+
+/**
+ * What a managed valve of a planned room is wanted at for the room's state: its frost protection,
+ * always; and, while the state is readable, its mode and setpoint (`wanted`) with the adapter's
+ * verdict on what it shows (`matches`, undefined without a state). `days` is the valve's fitted
+ * week; `vm` must already have noted this tick's desired schedule values.
+ */
+function thermostatPart(
+  spec: ValveSpec,
+  plan: RoomPlan,
+  days: ResolvedWeek,
+  state: DeviceState | undefined,
+  vm: ValveMemory,
+  now: Temporal.ZonedDateTime,
+): Readonly<{
+  desired: Desired;
+  wanted: ThermostatWanted | undefined;
+  matches: boolean | undefined;
+}> {
+  const frost = frostDesired(spec, plan.frost);
+  if (plan.thermostat === undefined)
+    return { desired: frost, wanted: undefined, matches: undefined };
+  // No valve expectation is kept yet, so no saved week is known.
+  const saved = usableSavedWeek(spec, state, undefined);
+  const confirmed = confirmedWeek(spec, vm, state, days);
+  const ctx = thermostatContext(spec, confirmed, saved, weekKey(days), state?.heardAt, now);
+  const wanted = thermostatWanted(spec, plan.thermostat, ctx);
+  return {
+    desired: { ...frost, ...thermostatDesired(wanted) },
+    wanted,
+    matches: state === undefined ? undefined : spec.thermostat.matches(wanted, seenOf(state), ctx),
+  };
+}
+
+/**
+ * A managed valve's target: its wanted setpoint, or the schedule's value while it is wanted in
+ * `auto` without one, or while no state is readable.
+ */
+function valveTarget(
+  wanted: ThermostatWanted | undefined,
+  scheduled: number | undefined,
+): number | undefined {
+  if (wanted === undefined) return scheduled;
+  return wanted.setpoint ?? (wanted.mode === "auto" ? scheduled : undefined);
+}
+
+/** A publish of the `thermostat` group. */
+function isThermostatWrite(effect: Effect): boolean {
+  return (
+    effect.kind === "publish" &&
+    Object.keys(effect.values).some((key) => groupOf(key as SettingKey) === "thermostat")
+  );
+}
+
 function withFeedLost(vm: ValveMemory, state: DeviceState | undefined, nowMs: number): ValveMemory {
   const lost = vm.feedAt !== undefined && state?.readings.feedLost === true;
   return { ...vm, feedLostSince: lost ? (vm.feedLostSince ?? nowMs) : undefined };
@@ -432,7 +615,8 @@ function runValve(
   if (live === "silent") problems.push(problemValveSilent(valveId));
 
   const week: FittedWeek | undefined = plan === undefined ? undefined : fitted(plan.week, spec);
-  const target = week === undefined ? undefined : activePoint(week.days, world.now).temperature;
+  const scheduled = week === undefined ? undefined : activePoint(week.days, world.now).temperature;
+  const managedPlan = kind === "managed" ? plan : undefined;
   if (week?.clamped === true) {
     problems.push(problemScheduleClamped(valveId, spec.minTemp, spec.maxTemp));
   }
@@ -448,6 +632,10 @@ function runValve(
 
   if (!isObservable(view) || state === undefined) {
     const action = canRead && readable && mayAsk(vm, nowMs) ? ask() : undefined;
+    const part =
+      managedPlan === undefined || week === undefined
+        ? undefined
+        : thermostatPart(spec, managedPlan, week.days, state, vm, world.now);
     // A release counts its hold only while the valve is observed.
     if (kind === "releasing") vm = { ...vm, equalSince: undefined };
     vm = withFeedLost(vm, state, nowMs);
@@ -459,21 +647,32 @@ function runValve(
       live,
       verified: false,
       pending: false,
-      target,
+      target: managedPlan === undefined ? undefined : valveTarget(part?.wanted, scheduled),
       problems,
     };
   }
 
   const record = world.ledger?.records.get(valveId);
   let desired: Desired = {};
-  if (kind === "managed" && plan !== undefined) {
-    const source = spec.externalSensor ? wantedSource(plan.fresh, plan.rm, vm, nowMs) : undefined;
-    [desired, vm] = managedFor(spec, plan.week, state, source, vm);
+  let wanted: ThermostatWanted | undefined;
+  let matches: boolean | undefined;
+  if (managedPlan !== undefined && week !== undefined) {
+    const source = spec.externalSensor
+      ? wantedSource(managedPlan.fresh, managedPlan.rm, vm, nowMs)
+      : undefined;
+    [desired, vm] = managedFor(spec, managedPlan.week, state, source, vm);
+    const part = thermostatPart(spec, managedPlan, week.days, state, vm, world.now);
+    desired = { ...desired, ...part.desired };
+    vm = noteAll(vm, spec, part.desired);
+    wanted = part.wanted;
+    matches = part.matches;
   } else if (kind === "releasing" && record !== undefined) {
     desired = releaseDesired(spec, record);
     vm = noteAll(vm, spec, desired);
   }
-  const cands = candidates(spec, desired, state, vm);
+  const cands = candidates(spec, desired, state, vm, false, matches);
+  // While the room settles, its valves get no mode or setpoint write (R6).
+  const settling = managedPlan?.settling === true;
   const markedDesired = spec.groups.some(
     (gs) => vm.groups[gs.group]?.mark !== undefined && hasDesired(desired, gs.group),
   );
@@ -506,7 +705,9 @@ function runValve(
     action = ask();
   }
   if (canAct && action === undefined) {
-    const pick = cands.find((s) => mayWrite(vm, s.group, nowMs));
+    const pick = cands.find(
+      (s) => !(settling && s.group === "thermostat") && mayWrite(vm, s.group, nowMs),
+    );
     if (pick !== undefined) {
       action = { kind: "publish", valveId, values: pick.values };
       vm = charge(vm, pick.group, nowMs, pick.marked);
@@ -525,7 +726,7 @@ function runValve(
     kind === "managed" &&
     spec.activation === "setpoint" &&
     vm.nudgeDue &&
-    target !== undefined &&
+    scheduled !== undefined &&
     !cands.some((s) => s.group === "schedule") &&
     vm.groups.schedule?.mark === undefined &&
     scheduleHeard(vm, spec, state) &&
@@ -533,7 +734,7 @@ function runValve(
     action === undefined &&
     maySpend(vm, nowMs)
   ) {
-    action = { kind: "publishSetpoint", valveId, celsius: target };
+    action = { kind: "publishSetpoint", valveId, celsius: scheduled };
     vm = { ...spend(vm, nowMs), nudgeDue: false };
   }
 
@@ -577,9 +778,6 @@ function runValve(
   if (vm.feedLostSince !== undefined && nowMs - vm.feedLostSince >= FEED_LOST_AFTER_MS) {
     problems.push(problemFeedLost(valveId));
   }
-  if (kind === "managed" && live === "live" && mode !== undefined && mode !== "auto") {
-    problems.push(problemValveNotAuto(valveId, mode));
-  }
   return {
     vm,
     push,
@@ -588,7 +786,7 @@ function runValve(
     live,
     verified: canRead && live === "live",
     pending: cands.length > 0 || markedDesired,
-    target,
+    target: managedPlan === undefined ? undefined : valveTarget(wanted, scheduled),
     problems,
   };
 }
@@ -615,6 +813,7 @@ function systemProblems(world: World, kinds: ReadonlyMap<string, Membership>): P
     (world.configState === "empty" && recorded);
   if (configUnreadable) problems.push(problemConfigUnreadable());
   if (world.ledger === undefined) problems.push(problemLedgerUnreadable());
+  if (world.thermostats === undefined) problems.push(problemStateUnreadable());
   const house = world.house;
   if (house.kind === "unlinked") problems.push(problemHaLinkRequired());
   if (house.kind === "frozen") problems.push(problemRoomsFrozen(house.reason));
@@ -718,8 +917,11 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
   const stored = world.stored;
   const held = stored?.config.settings.holdWrites === true;
   const config = world.configState === "ok" ? stored?.config : undefined;
+  const thermostats = nextThermostats(world, config, resolved, kinds, nowMs);
   const plans =
-    config === undefined ? new Map<string, RoomPlan>() : planRooms(config, resolved, world, nowMs);
+    config === undefined
+      ? new Map<string, RoomPlan>()
+      : planRooms(config, resolved, world, nowMs, thermostats);
   const roomOf = roomOfValves(resolved);
   const ctx: Context = { world, nowMs, held, config };
 
@@ -830,9 +1032,22 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
       const found = statuses.get(ref.valveId);
       return found === undefined ? [] : [found];
     });
+    const specs = plan.room.valves.flatMap(({ valveId }) => {
+      const spec = kinds.get(valveId) === "managed" ? world.devices.get(valveId)?.spec : undefined;
+      return spec === undefined ? [] : [spec];
+    });
     rooms.set(
       plan.room.id,
-      roomStatus(plan.room, plan.week, plan.temperature, plan.fresh, valveStatuses, world.now),
+      roomStatus(
+        plan.room,
+        plan.week,
+        plan.temperature,
+        plan.fresh,
+        valveStatuses,
+        world.now,
+        plan.thermostat,
+        roomLimits(specs),
+      ),
     );
   }
 
@@ -841,9 +1056,19 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
     for (const valveId of world.house.notInHa) houseProblems.push(problemValveNotInHa(valveId));
   }
 
+  // R20: mode and setpoint writes come after the state is saved, everything else before it.
+  const save: Effect[] =
+    thermostats === undefined || thermostats === world.thermostats
+      ? []
+      : [{ kind: "saveThermostats", state: thermostats }];
   return {
     memory: { valves, rooms: roomMemory },
-    effects: [...saves, ...valveEffects],
+    effects: [
+      ...saves,
+      ...valveEffects.filter((e) => !isThermostatWrite(e)),
+      ...save,
+      ...valveEffects.filter(isThermostatWrite),
+    ],
     rooms,
     problems: unique([
       ...systemProblems(world, kinds),
@@ -852,6 +1077,7 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
       ...valveProblems,
     ]),
     pending,
+    thermostats,
   };
 }
 
@@ -874,14 +1100,18 @@ function currentOf(state: DeviceState, values: SettingValues): SettingValues {
 
 /**
  * The writes `tick` would make for every managed or releasing valve with a spec, ignoring
- * pacing, hold, links and liveness, with pushes assumed sent and each mark satisfied once.
+ * pacing, hold, links and liveness, with pushes assumed sent and each mark satisfied once. Room
+ * states are the current ones after expiry; the settle rule holds as in `tick`.
  */
 export function preview(world: World): readonly PlannedWrite[] {
   const nowMs = world.now.epochMilliseconds;
   const { rooms: resolved, kinds } = membershipsOf(world);
   const config = world.configState === "ok" ? world.stored?.config : undefined;
+  const thermostats = nextThermostats(world, config, resolved, kinds, nowMs);
   const plans =
-    config === undefined ? new Map<string, RoomPlan>() : planRooms(config, resolved, world, nowMs);
+    config === undefined
+      ? new Map<string, RoomPlan>()
+      : planRooms(config, resolved, world, nowMs, thermostats);
   const roomOf = roomOfValves(resolved);
   const writes: PlannedWrite[] = [];
   for (const valveId of [...kinds.keys()].sort()) {
@@ -902,6 +1132,7 @@ export function preview(world: World): readonly PlannedWrite[] {
     );
     for (let round = 0; round < PREVIEW_ROUNDS; round++) {
       let desired: Desired = {};
+      let matches: boolean | undefined;
       if (plan !== undefined) {
         const source = !spec.externalSensor
           ? undefined
@@ -909,11 +1140,18 @@ export function preview(world: World): readonly PlannedWrite[] {
             ? "internal"
             : "external";
         [desired, vm] = managedFor(spec, plan.week, state, source, vm);
+        const part = thermostatPart(spec, plan, fitted(plan.week, spec).days, state, vm, world.now);
+        desired = { ...desired, ...part.desired };
+        vm = noteAll(vm, spec, part.desired);
+        matches = part.matches;
       } else if (record !== undefined) {
         desired = releaseDesired(spec, record);
         vm = noteAll(vm, spec, desired);
       }
-      const first = candidates(spec, desired, state, vm, true)[0];
+      const settling = plan?.settling === true;
+      const first = candidates(spec, desired, state, vm, true, matches).find(
+        (s) => !(settling && s.group === "thermostat"),
+      );
       if (first === undefined) break;
       writes.push({ valveId, values: first.values, current: currentOf(state, first.values) });
       state = { ...state, values: { ...state.values, ...first.values } };

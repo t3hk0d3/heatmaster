@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TRVZB_THERMOSTAT } from "./profiles/sonoff-trvzb.ts";
 import { pushDue, pushed, stopped, trackRoom, wantedSource } from "./feed.ts";
 import { newValveMemory, type RoomMemory } from "./memory.ts";
 import type { ValveSpec } from "./settings.ts";
@@ -31,6 +32,7 @@ const SPEC: ValveSpec = {
   activation: "none",
   externalSensor: true,
   feedWhenOff: false,
+  thermostat: TRVZB_THERMOSTAT,
 };
 
 const NEW = newValveMemory(SPEC, T0);

@@ -38,7 +38,6 @@ export function roomView(over: Partial<RoomView> = {}): RoomView {
     managed: true,
     sync: "in_sync",
     degraded: false,
-    diverged: false,
     hasProblem: false,
     valveIds: [],
     ...over,

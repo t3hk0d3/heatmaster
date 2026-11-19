@@ -30,7 +30,8 @@ export type Profile = Readonly<{
 /**
  * Throws an `Error` when a profile contradicts itself: a spec whose `profile` is not the key, a
  * spec without a binding, `schedule` not first, an `active_group` group without a schedule group
- * to choose, or a frost range whose minimum is above its maximum.
+ * to choose, a frost range whose minimum is above its maximum, or the setpoint nudge (`activation`
+ * `setpoint`), which would write a setpoint outside the `thermostat` group (R26).
  */
 export function validateProfile(profile: Profile): void {
   for (const [transport, spec] of Object.entries(profile.specs)) {
@@ -50,5 +51,7 @@ export function validateProfile(profile: Profile): void {
       throw new Error(`${where}: sensor_source needs an external sensor`);
     if (spec.frostMinTemp > spec.frostMaxTemp)
       throw new Error(`${where}: frostMinTemp is above frostMaxTemp`);
+    if (spec.activation === "setpoint")
+      throw new Error(`${where}: the setpoint activation is not supported`);
   }
 }

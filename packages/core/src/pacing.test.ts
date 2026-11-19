@@ -1,5 +1,6 @@
 import { fc, test as fcTest } from "@fast-check/vitest";
 import { beforeAll, describe, expect, it } from "vitest";
+import { TRV_ZBT_THERMOSTAT } from "./profiles/sonoff-trv-zbt.ts";
 import { START_TOKENS, mark, newValveMemory, noteHeard, type ValveMemory } from "./memory.ts";
 import {
   BUCKET,
@@ -51,9 +52,10 @@ const TRV_ZBT: ValveSpec = {
     groupSpec("active_group", true),
     groupSpec("sensor_source", true),
   ],
-  activation: "setpoint",
+  activation: "none",
   externalSensor: true,
   feedWhenOff: false,
+  thermostat: TRV_ZBT_THERMOSTAT,
 };
 
 /** A new memory with every mark removed. */

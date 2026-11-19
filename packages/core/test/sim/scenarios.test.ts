@@ -5,6 +5,8 @@ import {
   START_TOKENS,
   VALVE_SILENT_AFTER_MS,
   configToRaw,
+  decodeDay,
+  encodeDay,
 } from "../../src/index.ts";
 import { Z2M_DAY_PAYLOAD } from "../../src/profiles/sonoff-codec.ts";
 import { entriesOf, makeConfig, membershipOf } from "../builders.ts";
@@ -21,10 +23,16 @@ import {
   simRoom,
   valveIdOf,
 } from "./driver.ts";
-import { factoryWeek, reported } from "./valve.ts";
+import {
+  TRVZB_AUTO_TAKE_MS,
+  TRVZB_WEEK_TAKE_MS,
+  createSimValve,
+  factoryWeek,
+  reported,
+} from "./valve.ts";
 import type { SimDriver } from "./driver.ts";
 import type { Config, Effect, ProblemKind, Room, SettingKey } from "../../src/index.ts";
-import type { ValveModel } from "./valve.ts";
+import type { DayTexts, SimValve, ValveModel, ValveTruth, ValveWrite } from "./valve.ts";
 
 // Helpers ----------------------------------------------------------------------------------------
 
@@ -1238,6 +1246,113 @@ describe("scenarios", () => {
           expect(lastPayload(sim, b)).toMatchObject({
             system_mode: "auto",
             occupied_heating_setpoint: 22,
+          });
+        });
+      });
+      /** Noon on the builders' Monday. */
+      const NOON_MS = Temporal.ZonedDateTime.from(
+        "2026-11-16T12:00:00+01:00[Europe/Amsterdam]",
+      ).epochMilliseconds;
+      /** The same day on every weekday, as the model's day texts. */
+      const everyDay = (model: ValveModel, day: string): DayTexts => {
+        const points = decodeDay(day);
+        if (points === null) throw new Error(`bad day ${day}`);
+        const text = encodeDay(points, model === "trvzb" ? 6 : 12);
+        return { mon: text, tue: text, wed: text, thu: text, fri: text, sat: text, sun: text };
+      };
+      /** A valve built alone at noon, running `day`, with every report it makes. */
+      const alone = (
+        model: ValveModel,
+        day: string,
+        truth: Readonly<{ mode: ValveTruth["mode"]; setpoint: number }>,
+      ): Readonly<{
+        valve: SimValve;
+        reports: Readonly<{ at: number; payload: Record<string, unknown> }>[];
+      }> => {
+        const reports: { at: number; payload: Record<string, unknown> }[] = [];
+        const group = model === "trvzb" ? 1 : 3;
+        const valve: SimValve = createSimValve({
+          model,
+          nowMs: NOON_MS,
+          schedules: { [group]: everyDay(model, day) },
+          activeGroup: group,
+          ...truth,
+          selfReports: false,
+          onSpeak: (_speech, at) => {
+            reports.push({ at, payload: reported(model, valve.truth()) });
+          },
+        });
+        return { valve, reports };
+      };
+      const write = (over: Partial<ValveWrite>): ValveWrite => ({
+        days: undefined,
+        activeGroup: undefined,
+        select: undefined,
+        frostProtection: undefined,
+        mode: undefined,
+        setpoint: undefined,
+        external: undefined,
+        ...over,
+      });
+      describe("With a TRV-ZBT holding 22 in auto reaching a point of 19", () => {
+        it("it reports auto 19", () => {
+          const { valve, reports } = alone("trv_zbt", "00:00/17 12:30/19", {
+            mode: "auto",
+            setpoint: 22,
+          });
+          valve.advance(NOON_MS + 20 * MINUTE_MS);
+          expect(reports).toEqual([]);
+          valve.advance(NOON_MS + 30 * MINUTE_MS);
+          expect(reports.at(-1)?.payload).toMatchObject({
+            system_mode: "auto",
+            occupied_heating_setpoint: 19,
+          });
+        });
+      });
+      describe("With a TRV-ZBT written auto while in heat 22", () => {
+        it("it reports auto and the value in force at once", () => {
+          const { valve, reports } = alone("trv_zbt", "00:00/17 09:00/19", {
+            mode: "heat",
+            setpoint: 22,
+          });
+          valve.receive({ kind: "write", write: write({ mode: "auto" }) }, NOON_MS);
+          expect(reports).toHaveLength(1);
+          expect(reports[0]).toMatchObject({
+            at: NOON_MS,
+            payload: { system_mode: "auto", occupied_heating_setpoint: 19 },
+          });
+        });
+      });
+      describe("With a TRVZB written auto while in heat 22", () => {
+        it("its echo shows auto 22, and the schedule's value after the measured delay", () => {
+          const { valve, reports } = alone("trvzb", "00:00/17 09:00/19", {
+            mode: "heat",
+            setpoint: 22,
+          });
+          valve.receive({ kind: "write", write: write({ mode: "auto" }) }, NOON_MS);
+          expect(reports.at(-1)?.payload).toMatchObject({
+            system_mode: "auto",
+            occupied_heating_setpoint: 22,
+          });
+          valve.advance(NOON_MS + TRVZB_AUTO_TAKE_MS);
+          expect(reports.at(-1)).toMatchObject({
+            at: NOON_MS + TRVZB_AUTO_TAKE_MS,
+            payload: { system_mode: "auto", occupied_heating_setpoint: 19 },
+          });
+        });
+      });
+      describe("With a TRVZB in auto written a week whose value in force is 21", () => {
+        it("it shows auto 21 about 20 s after the day write", () => {
+          const { valve, reports } = alone("trvzb", "00:00/17", { mode: "auto", setpoint: 17 });
+          const texts = everyDay("trvzb", "00:00/17 09:00/21");
+          valve.receive({ kind: "write", write: write({ days: { group: 1, texts } }) }, NOON_MS);
+          valve.advance(NOON_MS + TRVZB_WEEK_TAKE_MS - 1000);
+          expect(valve.truth().setpoint).toBe(17);
+          valve.advance(NOON_MS + TRVZB_WEEK_TAKE_MS);
+          expect(TRVZB_WEEK_TAKE_MS).toBe(20 * 1000);
+          expect(reports.at(-1)).toMatchObject({
+            at: NOON_MS + TRVZB_WEEK_TAKE_MS,
+            payload: { system_mode: "auto", occupied_heating_setpoint: 21 },
           });
         });
       });

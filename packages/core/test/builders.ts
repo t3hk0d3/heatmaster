@@ -6,6 +6,8 @@ import {
   EMPTY_READINGS,
   EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
+  TRVZB_THERMOSTAT,
+  TRV_ZBT_THERMOSTAT,
   applyEvent,
   memberships,
   roomsOf,
@@ -288,6 +290,7 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
         groupSpec("frost_protection", "acked", true, true),
         groupSpec("thermostat", "acked", true, true),
       ],
+      thermostat: TRVZB_THERMOSTAT,
     };
   }
   return {
@@ -306,6 +309,7 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
       groupSpec("frost_protection", "acked", true, true),
       groupSpec("thermostat", "acked", true, true),
     ],
+    thermostat: TRV_ZBT_THERMOSTAT,
   };
 }
 

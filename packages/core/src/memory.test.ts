@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TRV_ZBT_THERMOSTAT } from "./profiles/sonoff-trv-zbt.ts";
 import {
   START_TOKENS,
   clearMarks,
@@ -42,9 +43,10 @@ function valveSpec(groups: readonly GroupSpec[]): ValveSpec {
     slotCount: 6,
     scheduleGroup: 3,
     groups,
-    activation: "setpoint",
+    activation: "none",
     externalSensor: true,
     feedWhenOff: false,
+    thermostat: TRV_ZBT_THERMOSTAT,
   };
 }
 

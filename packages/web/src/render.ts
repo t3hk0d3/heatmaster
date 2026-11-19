@@ -272,7 +272,6 @@ function renderRoom(
   );
   article.append(facts);
   if (room.degraded) article.append(textElement("p", t("rooms.degraded"), { class: "mark" }));
-  if (room.diverged) article.append(textElement("p", t("rooms.diverged"), { class: "mark" }));
 
   article.append(textElement("h4", t("rooms.valves")));
   const byId = new Map(state.valves.map((valve) => [valve.valveId, valve]));
@@ -457,7 +456,6 @@ const PROBLEM_CODE_PARAMS: Readonly<Record<string, string>> = {
   setting: "group",
   reason: "reason",
   transport: "link",
-  mode: "mode",
   store: "store",
   op: "label_op",
   error: "label_error",

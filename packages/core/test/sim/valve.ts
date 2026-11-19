@@ -1,6 +1,7 @@
-import { WEEKDAYS, decodeDay, encodeDay } from "../../src/index.ts";
+import { WEEKDAYS, activePoint, decodeDay, encodeDay, segmentAt } from "../../src/index.ts";
 import { Z2M_DAY_PAYLOAD, Z2M_KEYS } from "../../src/profiles/sonoff-codec.ts";
-import type { Weekday } from "../../src/index.ts";
+import { BUILDER_NOW } from "../builders.ts";
+import type { ResolvedDay, ResolvedWeek, Weekday } from "../../src/index.ts";
 
 export type ValveModel = "trvzb" | "trv_zbt";
 export type SelectValue = "local_temperature" | "remote_temperature" | "remote_source_offline";
@@ -55,6 +56,8 @@ export type PersonChange = Readonly<{
 export type SimValveOptions = Readonly<{
   model: ValveModel;
   nowMs: number;
+  /** The time zone of the valve's clock; the builders' zone by default. */
+  zone?: string;
   /** The schedule groups the valve holds; defaults to the factory week in each group. */
   schedules?: Readonly<Record<number, DayTexts>>;
   select?: SelectValue;
@@ -99,6 +102,13 @@ export type SimValve = Readonly<{
 export const DEFAULT_SELF_REPORT_MS = 10 * 60 * 1000;
 /** A valve whose feed stopped this long ago falls back to its own sensor. */
 const FEED_FALLBACK_MS = 2 * 60 * 60 * 1000;
+/** A TRVZB in auto takes a newly written week's value in force this long after the write (M1). */
+export const TRVZB_WEEK_TAKE_MS = 20 * 1000;
+/**
+ * A TRVZB written `auto` echoes its old setpoint and takes the schedule's value this long later.
+ * M1 saw it within the second; M14 (Task 1) is to measure it, and this follows that measurement.
+ */
+export const TRVZB_AUTO_TAKE_MS = 1000;
 
 const FACTORY_DAY_TRVZB = "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16";
 
@@ -167,6 +177,11 @@ export function createSimValve(options: SimValveOptions): SimValve {
   let reads = 0;
   let queue: ValveRequest[] = [];
   let late: ValveRequest[] = [];
+  const zone = options.zone ?? BUILDER_NOW.timeZoneId;
+  /** The last instant the valve looked at its schedule's points. */
+  let pointsSeenAt = options.nowMs;
+  /** A TRVZB's pending take of its schedule's value. */
+  let takeAt: number | undefined;
 
   const speak = (speech: Speech, nowMs: number): void => {
     lastSpokeAt = nowMs;
@@ -178,6 +193,68 @@ export function createSimValve(options: SimValveOptions): SimValve {
     schedules[group] = week;
   };
 
+  const zoned = (ms: number): Temporal.ZonedDateTime =>
+    Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(zone);
+
+  /** The day texts of the week the valve runs: its one group, or its active group. */
+  const runningTexts = (): DayTexts | undefined =>
+    schedules[model === "trvzb" ? 1 : state.activeGroup];
+
+  /** The last decoded week, by the texts it came from (a write replaces the texts object). */
+  let decoded: Readonly<{ texts: DayTexts; week: ResolvedWeek | undefined }> | undefined;
+
+  /** The week the valve runs, decoded; undefined when a day does not decode. */
+  const runningWeek = (): ResolvedWeek | undefined => {
+    const texts = runningTexts();
+    if (texts === undefined) return undefined;
+    if (decoded?.texts === texts) return decoded.week;
+    const days = {} as Record<Weekday, ResolvedDay>;
+    let week: ResolvedWeek | undefined = days;
+    for (const day of WEEKDAYS) {
+      const points = decodeDay(texts[day]);
+      if (points === null) week = undefined;
+      else days[day] = points;
+    }
+    decoded = { texts, week };
+    return week;
+  };
+
+  /** The running week's value in force at `nowMs`. */
+  const inForce = (nowMs: number): number | undefined => {
+    const week = runningWeek();
+    return week === undefined ? undefined : activePoint(week, zoned(nowMs)).temperature;
+  };
+
+  /** In auto, the setpoint becomes the running week's value in force; true when it moved. */
+  const takeSchedule = (nowMs: number): boolean => {
+    const value = inForce(nowMs);
+    if (state.mode !== "auto" || value === undefined || value === state.setpoint) return false;
+    state.setpoint = value;
+    return true;
+  };
+
+  /** The running week's first point after `from`. */
+  const pointAfter = (from: number): number | undefined => {
+    const week = runningWeek();
+    return week === undefined ? undefined : segmentAt(week, zoned(from)).nextAt;
+  };
+
+  /** The next point the valve waits for, and the texts it was found in. */
+  let upcoming: Readonly<{ texts: DayTexts | undefined; at: number | undefined }> | undefined;
+
+  /** A point of the running week lies after the last look and at or before `nowMs`. */
+  const pointPassed = (nowMs: number): boolean => {
+    const texts = runningTexts();
+    const known =
+      upcoming !== undefined && upcoming.texts === texts
+        ? upcoming
+        : { texts, at: pointAfter(pointsSeenAt) };
+    pointsSeenAt = nowMs;
+    const passed = known.at !== undefined && known.at <= nowMs;
+    upcoming = passed ? { texts, at: pointAfter(nowMs) } : known;
+    return passed;
+  };
+
   const apply = (request: ValveRequest, nowMs: number): void => {
     if (request.kind === "read") {
       reads++;
@@ -186,11 +263,25 @@ export function createSimValve(options: SimValveOptions): SimValve {
     }
     writes++;
     const w = request.write;
+    const before = inForce(nowMs);
     if (w.days !== undefined) applyDays(model === "trvzb" ? 1 : w.days.group, w.days.texts);
     if (w.activeGroup !== undefined) state.activeGroup = w.activeGroup;
     if (w.select !== undefined) state.select = w.select;
     if (w.frostProtection !== undefined) state.frostProtection = w.frostProtection;
-    if (w.mode !== undefined) state.mode = w.mode;
+    // Measured (M1): a day write that changes the point in force moves a valve in auto to the new
+    // value, a TRV-ZBT at once and a TRVZB about 20 s later.
+    if (w.days !== undefined && state.mode === "auto" && inForce(nowMs) !== before) {
+      if (model === "trvzb") takeAt = nowMs + TRVZB_WEEK_TAKE_MS;
+      else takeSchedule(nowMs);
+    }
+    if (w.mode !== undefined) {
+      const entering = w.mode === "auto" && state.mode !== "auto";
+      state.mode = w.mode;
+      // Measured (M1): `auto` takes the schedule's value in force; the TRVZB's echo still carries
+      // the old setpoint (M14).
+      if (entering && model === "trvzb") takeAt = nowMs + TRVZB_AUTO_TAKE_MS;
+      else if (entering) takeSchedule(nowMs);
+    }
     if (w.setpoint !== undefined) {
       state.setpoint = w.setpoint;
       // Measured: a setpoint written in auto moves the TRVZB to heat; the TRV-ZBT stays in auto.
@@ -272,6 +363,14 @@ export function createSimValve(options: SimValveOptions): SimValve {
     },
     advance(nowMs) {
       if (!awake) return;
+      // In auto the valve follows its own week: a pending take, or each point it passes.
+      const due = takeAt !== undefined && nowMs >= takeAt;
+      if (due) takeAt = undefined;
+      const passed = pointPassed(nowMs);
+      if ((due || passed) && takeSchedule(nowMs)) {
+        speak({ cause: "self", keys: undefined, wroteDays: false }, nowMs);
+        return;
+      }
       if (
         state.select === "remote_temperature" &&
         state.externalAt !== undefined &&

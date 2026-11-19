@@ -56,7 +56,6 @@ function roomView(room: RoomSnapshot, snapshot: Snapshot): RoomView {
     heating: status?.heating,
     sync: status?.sync ?? "unverified",
     degraded: status?.degraded ?? false,
-    diverged: status?.diverged ?? false,
     hasProblem: snapshot.problems.some(concerns),
     valveIds: room.valveIds,
   });

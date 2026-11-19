@@ -12,11 +12,52 @@ import {
   parseGroup,
   selectOption,
 } from "./sonoff-codec.ts";
+import { commonMatch, wantedFor } from "../thermostat-adapter.ts";
 import type { Binding, Profile } from "./base.ts";
 import type { ValveSpec } from "../settings.ts";
+import type { ThermostatSeen, ThermostatWanted } from "../thermostat.ts";
+import type { AdapterContext, ThermostatAdapter } from "../thermostat-adapter.ts";
 
 /** The schedule group Heatmaster owns. Groups 1 and 2 are never written. */
 const OWNED_GROUP = 3;
+
+function holds(values: ReadonlySet<number> | undefined, setpoint: number | undefined): boolean {
+  return values !== undefined && setpoint !== undefined && values.has(setpoint);
+}
+
+/**
+ * In `auto` a scheduled state accepts its own setpoint or any value of its week (the valve takes
+ * its points by itself, early or late), and anything while the week is unknown; any other state
+ * accepts only its own setpoint.
+ */
+function zbtMatches(
+  expected: ThermostatWanted,
+  seen: ThermostatSeen,
+  ctx: AdapterContext,
+): boolean {
+  const common = commonMatch(expected, seen);
+  if (common !== undefined) return common;
+  if (seen.setpoint === expected.setpoint) return true;
+  if (!expected.scheduled) return false;
+  return ctx.weekValues === undefined || holds(ctx.weekValues, seen.setpoint);
+}
+
+/**
+ * The TRV-ZBT keeps a setpoint held in `auto` until its next point (M1), so on its schedule it is
+ * wanted in `auto` with the value in force (R18), or `auto` alone while its week is unconfirmed.
+ * A state that is not scheduled (adopted from a person) also explains a point the valve took at
+ * about the report's time.
+ */
+export const TRV_ZBT_THERMOSTAT: ThermostatAdapter = {
+  wanted: (thermostat, ctx) =>
+    wantedFor(thermostat, { mode: "auto", setpoint: ctx.inForce, scheduled: true }),
+  matches: zbtMatches,
+  explains: (expected, seen, ctx) =>
+    zbtMatches(expected, seen, ctx) ||
+    (commonMatch(expected, seen) === undefined &&
+      !expected.scheduled &&
+      holds(ctx.pointValues, seen.setpoint)),
+};
 
 /**
  * Sonoff TRV-ZBT: three schedule groups of 12 slots, of which Heatmaster owns the third. Its days
@@ -43,6 +84,7 @@ export const TRV_ZBT_SPEC: ValveSpec = {
   activation: "none",
   externalSensor: true,
   feedWhenOff: false,
+  thermostat: TRV_ZBT_THERMOSTAT,
 };
 
 export const TRV_ZBT_BINDING: Binding = {

@@ -169,7 +169,18 @@ export {
   trackRoom,
   wantedSource,
 } from "./feed.ts";
-export { differing, fitted, managedDesired, releaseDesired } from "./desired.ts";
+export {
+  SCHEDULE_SKEW_MS,
+  differing,
+  fitted,
+  frostDesired,
+  managedDesired,
+  releaseDesired,
+  thermostatContext,
+  thermostatDesired,
+  thermostatWanted,
+  weekKey,
+} from "./desired.ts";
 export type { Desired, DesiredValue, Reason } from "./desired.ts";
 export {
   SYSTEM_ID,
@@ -188,6 +199,7 @@ export {
   problemSensorOutOfRange,
   problemSensorStale,
   problemSettingNotHolding,
+  problemStateUnreadable,
   problemPacingUnreadable,
   problemStoreWriteFailed,
   problemTickFailed,
@@ -198,7 +210,6 @@ export {
   problemSensorLabelUnused,
   problemSensorUnlabellable,
   problemTransportUnusable,
-  problemValveNotAuto,
   problemValveNotInHa,
   problemValveOrphan,
   problemValvePending,
@@ -255,7 +266,9 @@ export type { Event, Inbox } from "./events.ts";
 export {
   RELEASE_HOLD_MS,
   RELEASE_STALLED_AFTER_MS,
+  THERMOSTAT_SETTLE_MS,
   candidates,
+  confirmedWeek,
   isObservable,
   preview,
   roomWeek,
@@ -325,8 +338,10 @@ export { acceptUnknownOriginals, reconcile } from "./join.ts";
 export type { Pending, PendingReason, Reconciliation } from "./join.ts";
 export { PROFILES, findProfile, validateProfile } from "./profiles/index.ts";
 export type { Binding, Profile } from "./profiles/index.ts";
-export { TRVZB_SPEC } from "./profiles/sonoff-trvzb.ts";
-export { TRV_ZBT_SPEC } from "./profiles/sonoff-trv-zbt.ts";
+export { TRVZB_SPEC, TRVZB_THERMOSTAT } from "./profiles/sonoff-trvzb.ts";
+export { TRV_ZBT_SPEC, TRV_ZBT_THERMOSTAT } from "./profiles/sonoff-trv-zbt.ts";
+export { commonMatch } from "./thermostat-adapter.ts";
+export type { AdapterContext, ThermostatAdapter } from "./thermostat-adapter.ts";
 export { decodeDay, encodeDay } from "./profiles/sonoff-codec.ts";
 export type {
   ApiError,

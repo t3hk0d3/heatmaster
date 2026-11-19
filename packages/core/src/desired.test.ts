@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { TRV_ZBT_THERMOSTAT } from "./profiles/sonoff-trv-zbt.ts";
+import { TRVZB_THERMOSTAT } from "./profiles/sonoff-trvzb.ts";
 import { points } from "../test/builders.ts";
-import { differing, fitted, managedDesired, releaseDesired, type Desired } from "./desired.ts";
+import {
+  differing,
+  fitted,
+  frostDesired,
+  managedDesired,
+  releaseDesired,
+  thermostatContext,
+  thermostatDesired,
+  thermostatWanted,
+  weekKey,
+  type Desired,
+} from "./desired.ts";
 import { WEEKDAYS } from "./model.ts";
 import { newState, type DeviceState } from "./observation.ts";
 import {
@@ -13,6 +26,7 @@ import {
 import type { ValveRecord } from "./ledger.ts";
 import type { Weekday } from "./model.ts";
 import type { ResolvedDay, ResolvedWeek } from "./schedule.ts";
+import type { SavedWeek } from "./thermostat.ts";
 
 const T0 = Temporal.Instant.from("2026-11-14T09:30:00Z").epochMilliseconds;
 const V1 = "z2m:0x00124b0012345678";
@@ -49,6 +63,7 @@ const TRVZB: ValveSpec = {
   activation: "none",
   externalSensor: true,
   feedWhenOff: false,
+  thermostat: TRVZB_THERMOSTAT,
 };
 
 /** A TRV-ZBT-like spec: 5–30 in 0.5 steps, schedule group 3. */
@@ -67,6 +82,7 @@ const TRV_ZBT: ValveSpec = {
     group("frost_protection", { capture: true }),
     group("thermostat", { capture: true, atomic: true }),
   ],
+  thermostat: TRV_ZBT_THERMOSTAT,
 };
 
 /** No sensor_source group, never fed. */
@@ -356,6 +372,130 @@ describe("desired", () => {
     describe("With an empty Desired", () => {
       it("returns nothing", () => {
         expect(differing({}, undefined)).toEqual([]);
+      });
+    });
+  });
+
+  describe("thermostatContext", () => {
+    const AMS = "Europe/Amsterdam";
+    /** Monday 2026-11-16 at the given wall-clock time in Amsterdam. */
+    const at = (time: string): Temporal.ZonedDateTime =>
+      Temporal.PlainDateTime.from(`2026-11-16T${time}`).toZonedDateTime(AMS);
+    const NOON = at("12:00");
+    /** 17 at night, 19 in the morning, 21 in the evening: 19 is in force at noon. */
+    const WORK = weekOf(points("00:00/17 09:00/19 17:00/21 23:00/17"));
+    const sorted = (values: ReadonlySet<number> | undefined): readonly number[] | undefined =>
+      values === undefined ? undefined : [...values].sort((a, b) => a - b);
+
+    describe("With a week whose value in force is 19 and whose temperatures are 17, 19 and 21", () => {
+      const ctx = thermostatContext(TRVZB, WORK, undefined, weekKey(WORK), undefined, NOON);
+      it("inForce 19, weekValues 17, 19, 21", () => {
+        expect(ctx.inForce).toBe(19);
+        expect(sorted(ctx.weekValues)).toEqual([17, 19, 21]);
+      });
+    });
+    describe("With a week temperature of 34 on a TRV-ZBT", () => {
+      it("weekValues holds 30", () => {
+        const hot = weekOf(points("00:00/17 09:00/34"));
+        const ctx = thermostatContext(TRV_ZBT, hot, undefined, weekKey(hot), undefined, NOON);
+        expect(ctx.weekValues?.has(30)).toBe(true);
+      });
+    });
+    describe("With no week", () => {
+      it("inForce, weekValues and pointValues undefined", () => {
+        const heardAt = NOON.epochMilliseconds;
+        expect(
+          thermostatContext(TRV_ZBT, undefined, undefined, weekKey(WORK), heardAt, NOON),
+        ).toEqual({ inForce: undefined, weekValues: undefined, pointValues: undefined });
+      });
+    });
+    describe("With 08:59 and a point at 09:00 (19 → 21)", () => {
+      it("inForce 21", () => {
+        const week = weekOf(points("00:00/19 09:00/21"));
+        const now = at("08:59");
+        expect(
+          thermostatContext(TRV_ZBT, week, undefined, weekKey(week), undefined, now).inForce,
+        ).toBe(21);
+      });
+    });
+    describe("With the week unconfirmed and the saved week's key equal to the desired week's", () => {
+      const saved: SavedWeek = { key: weekKey(WORK), values: [17, 19, 21] };
+      const ctx = thermostatContext(TRV_ZBT, undefined, saved, weekKey(WORK), undefined, NOON);
+      it("weekValues are the saved values, inForce undefined", () => {
+        expect(sorted(ctx.weekValues)).toEqual([17, 19, 21]);
+        expect(ctx.inForce).toBeUndefined();
+      });
+    });
+    describe("With the week unconfirmed and a different desired week", () => {
+      it("weekValues undefined", () => {
+        const saved: SavedWeek = { key: weekKey(WORK), values: [17, 19, 21] };
+        const other = weekOf(points("00:00/16 07:00/21"));
+        const ctx = thermostatContext(TRV_ZBT, undefined, saved, weekKey(other), undefined, NOON);
+        expect(ctx.weekValues).toBeUndefined();
+      });
+    });
+    describe("With heardAt 06:59:30 and a point at 07:00 (17 → 21)", () => {
+      it("pointValues 17, 21", () => {
+        const week = weekOf(points("00:00/17 07:00/21 22:00/17"));
+        const heardAt = at("06:59:30").epochMilliseconds;
+        const ctx = thermostatContext(TRV_ZBT, week, undefined, weekKey(week), heardAt, NOON);
+        expect(sorted(ctx.pointValues)).toEqual([17, 21]);
+      });
+    });
+  });
+
+  describe("thermostatWanted", () => {
+    describe("For a target of 34 on a TRV-ZBT", () => {
+      it("the setpoint is 30", () => {
+        const override = {
+          kind: "override",
+          target: 34,
+          preset: undefined,
+          rule: "manual",
+          endsAt: undefined,
+          origin: { source: "api", valveId: undefined },
+          since: T0,
+        } as const;
+        const ctx = { inForce: undefined, weekValues: undefined, pointValues: undefined };
+        expect(thermostatWanted(TRV_ZBT, override, ctx).setpoint).toBe(30);
+      });
+    });
+  });
+
+  describe("thermostatDesired", () => {
+    describe("With heat and 22", () => {
+      it("system_mode heat and setpoint 22, reason thermostat", () => {
+        expect(thermostatDesired({ mode: "heat", setpoint: 22, scheduled: false })).toEqual({
+          system_mode: { value: "heat", reason: "thermostat" },
+          setpoint: { value: 22, reason: "thermostat" },
+        });
+      });
+    });
+    describe("With auto and no setpoint", () => {
+      it("system_mode auto only", () => {
+        expect(thermostatDesired({ mode: "auto", setpoint: undefined, scheduled: true })).toEqual({
+          system_mode: { value: "auto", reason: "thermostat" },
+        });
+      });
+    });
+  });
+
+  describe("frostDesired", () => {
+    describe("With frost preset 7 on a TRV-ZBT", () => {
+      it("frost_protection 7, reason frost", () => {
+        expect(frostDesired(TRV_ZBT, 7)).toEqual({
+          frost_protection: { value: 7, reason: "frost" },
+        });
+      });
+    });
+    describe("With frost preset 3 on a TRV-ZBT", () => {
+      it("frost_protection 5", () => {
+        expect(frostDesired(TRV_ZBT, 3).frost_protection?.value).toBe(5);
+      });
+    });
+    describe("With frost preset 3 on a TRVZB", () => {
+      it("frost_protection 4", () => {
+        expect(frostDesired(TRVZB, 3).frost_protection?.value).toBe(4);
       });
     });
   });

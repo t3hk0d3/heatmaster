@@ -3,8 +3,8 @@ import { makeSpec } from "../../test/builders.ts";
 import { PROFILES, findProfile } from "./index.ts";
 import { validateProfile } from "./base.ts";
 import type { Profile } from "./base.ts";
-import { SONOFF_TRV_ZBT, TRV_ZBT_SPEC } from "./sonoff-trv-zbt.ts";
-import { TRVZB_SPEC } from "./sonoff-trvzb.ts";
+import { SONOFF_TRV_ZBT, TRV_ZBT_SPEC, TRV_ZBT_THERMOSTAT } from "./sonoff-trv-zbt.ts";
+import { TRVZB_SPEC, TRVZB_THERMOSTAT } from "./sonoff-trvzb.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const ALL_SPECS = PROFILES.flatMap((p) =>
@@ -82,11 +82,17 @@ describe("profiles index", () => {
         expect([TRVZB_SPEC.frostMinTemp, TRVZB_SPEC.frostMaxTemp]).toEqual([4, 35]);
         expect(tail(TRVZB_SPEC.groups)).toEqual(["frost_protection", "thermostat"]);
       });
+      it("thermostat is TRVZB_THERMOSTAT", () => {
+        expect(TRVZB_SPEC.thermostat).toBe(TRVZB_THERMOSTAT);
+      });
     });
     describe("TRV-ZBT", () => {
       it("frost range 5–15, groups end with frost_protection then thermostat", () => {
         expect([TRV_ZBT_SPEC.frostMinTemp, TRV_ZBT_SPEC.frostMaxTemp]).toEqual([5, 15]);
         expect(tail(TRV_ZBT_SPEC.groups)).toEqual(["frost_protection", "thermostat"]);
+      });
+      it("thermostat is TRV_ZBT_THERMOSTAT", () => {
+        expect(TRV_ZBT_SPEC.thermostat).toBe(TRV_ZBT_THERMOSTAT);
       });
     });
   });
@@ -148,6 +154,13 @@ describe("profiles index", () => {
         expect(() => {
           validateProfile(withSpec({ frostMinTemp: 16, frostMaxTemp: 15 }));
         }).toThrow(/frostMinTemp/);
+      });
+    });
+    describe("With activation setpoint", () => {
+      it("throws", () => {
+        expect(() => {
+          validateProfile(withSpec({ activation: "setpoint" }));
+        }).toThrow(/setpoint activation/);
       });
     });
     describe("With sensor_source and no external sensor", () => {

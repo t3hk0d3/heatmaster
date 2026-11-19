@@ -45,6 +45,7 @@ import type {
   SensorInfo,
   SensorReading,
   StoredConfig,
+  ThermostatState,
   TickResult,
   ValveSpec,
   World,
@@ -146,6 +147,8 @@ export type SimDriver = Readonly<{
   /** Runs `fn` with the world each later tick reads, just before that tick. */
   beforeTick: (fn: (world: World) => void) => void;
   ledger: () => Ledger | undefined;
+  /** The saved thermostat state. */
+  thermostats: () => ThermostatState;
   disk: () => Readonly<{ config: ConfigFile; ledger: LedgerFile }>;
   copy: () => Ledger | undefined;
   // Faults and hooks.
@@ -199,7 +202,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
   const specs = new Map<string, ValveSpec>();
   const bindings = new Map<string, Binding>();
   for (const v of setup.valves) {
-    valves.set(v.valveId, bridge.addValve(v.valveId, { ...v, nowMs: startMs }));
+    valves.set(v.valveId, bridge.addValve(v.valveId, { zone, ...v, nowMs: startMs }));
     const model = v.model;
     const found = findProfile(MODEL_IDS[model], TRANSPORT);
     if (found === undefined) throw new Error(`no profile for ${model}`);
@@ -227,6 +230,8 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     ledger: setup.ledger === undefined ? { state: "lost" } : { state: "ok", ledger: setup.ledger },
   };
   let copy: Ledger | undefined = setup.ledger;
+  /** The saved thermostat state: it survives restarts, as the state file does. */
+  let thermostats: ThermostatState = EMPTY_THERMOSTAT_STATE;
   let copyUnreadable = false;
   let configState: ConfigState = "ok";
   let stored: StoredConfig | undefined;
@@ -322,7 +327,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       memory: inbox.memory,
       buckets: undefined,
       now: nowZoned(),
-      thermostats: EMPTY_THERMOSTAT_STATE,
+      thermostats,
     };
   };
 
@@ -390,6 +395,9 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       case "writeOriginalsCopy":
         copy = effect.ledger;
         copyUnreadable = false;
+        return;
+      case "saveThermostats":
+        thermostats = effect.state;
         return;
       case "publish":
         bridge.write(effect.valveId, bindingOf(effect.valveId).encode(effect.values), nowMs);
@@ -512,6 +520,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       tickHooks.push(fn);
     },
     ledger: () => ledger,
+    thermostats: () => thermostats,
     disk: () => ({ config: disk.config, ledger: disk.ledger }),
     copy: () => copy,
     atNextStep(fault) {

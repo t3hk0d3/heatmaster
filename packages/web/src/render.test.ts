@@ -242,12 +242,6 @@ describe("render", () => {
         expect(text(renderRooms(state, "en", t))).toContain(en["rooms.degraded"]);
       });
     });
-    describe("With a diverged room", () => {
-      it("says so in words", () => {
-        const state = stateView({ rooms: [roomView({ diverged: true })] });
-        expect(text(renderRooms(state, "en", t))).toContain(en["rooms.diverged"]);
-      });
-    });
     describe("With a room named <b>x</b>", () => {
       it("the page shows those characters and holds no b element", () => {
         const state = stateView({ rooms: [roomView({ name: "<b>x</b>" })] });
@@ -777,15 +771,17 @@ describe("render", () => {
         expect(text(renderProblems(state, t))).not.toContain("original settings of 3 valves");
       });
     });
-    describe("With valve_not_auto for a valve in heat", () => {
-      it("the text holds the valve's name and the translated mode", () => {
+    describe("With state_unreadable", () => {
+      it("the text says no mode or setpoint is written", () => {
         const problem = problemView({
-          kind: "valve_not_auto",
-          name: "Hall",
-          data: { mode: "heat" },
+          kind: "state_unreadable",
+          subject: { kind: "system", id: "heatmaster" },
+          name: "heatmaster",
+          data: {},
         });
-        const out = text(renderProblems(stateView({ problems: [problem] }), t));
-        expect(out).toContain("Valve Hall is in heat mode");
+        expect(text(renderProblems(stateView({ problems: [problem] }), t))).toContain(
+          en["problem.state_unreadable"],
+        );
       });
     });
     describe("With store_write_failed for the ledger", () => {

@@ -140,7 +140,6 @@ export const en = {
   "rooms.target": "Target",
   "rooms.sync": "Sync",
   "rooms.degraded": "Degraded: the room has no working temperature sensor",
-  "rooms.diverged": "Diverged: the valves do not agree",
   "rooms.valves": "Valves",
   "rooms.no_valves": "The room has no valves.",
 
@@ -331,8 +330,8 @@ export const en = {
   "problem.sensor_liveness_unobservable":
     "Heatmaster cannot tell whether sensor {name} is still alive",
   "problem.feed_lost": "Valve {name} is not receiving the room temperature",
-  "problem.valve_not_auto":
-    "Valve {name} is in {mode} mode and is not following its schedule. Heatmaster does not change the mode",
+  "problem.state_unreadable":
+    "The saved room states cannot be read. Heatmaster writes no mode or setpoint to any valve until you start over",
   "problem.store_write_failed":
     "Heatmaster could not save {store}. Check the disk; writes to valves may be stopped until the save works",
   "problem.tick_failed":

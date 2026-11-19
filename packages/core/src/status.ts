@@ -2,11 +2,12 @@ import { activePoint } from "./schedule.ts";
 import type { Pending } from "./join.ts";
 import type { LabelOp } from "./labels.ts";
 import type { Membership } from "./ledger.ts";
-import type { Room } from "./model.ts";
+import type { EndRule, Room } from "./model.ts";
 import type { Liveness } from "./observation.ts";
 import type { ResolvedWeek } from "./schedule.ts";
 import type { Group, ValveMode } from "./settings.ts";
 import type { Freshness, RoomTemperature } from "./temperature.ts";
+import type { RoomLimits, Thermostat } from "./thermostat.ts";
 
 /** `area` is a Home Assistant area by its id; `label` is a Home Assistant label by its id. */
 export type SubjectKind = "system" | "room" | "valve" | "sensor" | "area" | "label";
@@ -37,7 +38,7 @@ export type ProblemKind =
   | "sensor_out_of_range"
   | "sensor_liveness_unobservable"
   | "feed_lost"
-  | "valve_not_auto"
+  | "state_unreadable"
   | "store_write_failed"
   | "tick_failed"
   | "sensor_label_unused"
@@ -56,7 +57,10 @@ export type Problem = Readonly<{
 
 export type SyncState = "in_sync" | "pending" | "not_holding" | "unverified" | "held" | "frozen";
 
-/** `mode`, `setpoint`, `running` and `battery` are readings; `target` is the schedule's now. */
+/**
+ * `mode`, `setpoint`, `running` and `battery` are readings; `target` is the setpoint the valve is
+ * wanted at, or its schedule's value now while it is wanted in `auto` without one.
+ */
 export type ValveStatus = Readonly<{
   valveId: string;
   name: string;
@@ -70,7 +74,13 @@ export type ValveStatus = Readonly<{
   battery: number | undefined;
 }>;
 
-/** `nextChangeAt` is an instant in epoch milliseconds. */
+/**
+ * `nextChangeAt` is an instant in epoch milliseconds. `thermostat` undefined: the state file is
+ * unreadable. `target` is the override's target, the schedule's value now on the schedule and
+ * while the state is unreadable, and undefined when the room is off. `mode` is the thermostat's
+ * (R15), or the valves' while the state is unreadable. `limits` undefined: no managed valve has a
+ * spec. `overrideEnd` and `overrideDurationMs` are the room's end settings.
+ */
 export type RoomStatus = Readonly<{
   roomId: string;
   currentTemperature: number | undefined;
@@ -81,7 +91,10 @@ export type RoomStatus = Readonly<{
   heating: boolean | undefined;
   sync: SyncState;
   degraded: boolean;
-  diverged: boolean;
+  thermostat: Thermostat | undefined;
+  limits: RoomLimits | undefined;
+  overrideEnd: EndRule;
+  overrideDurationMs: number;
   valves: readonly ValveStatus[];
 }>;
 
@@ -124,7 +137,15 @@ function worstSync(valves: readonly ValveStatus[]): SyncState {
   );
 }
 
-function roomMode(valves: readonly ValveStatus[]): ValveMode | undefined {
+/** The mode a room's state puts its valves in. */
+const THERMOSTAT_MODE: Readonly<Record<Thermostat["kind"], ValveMode>> = {
+  schedule: "auto",
+  override: "heat",
+  off: "off",
+};
+
+/** The valves' mode: `off` when every valve that shows one is off, otherwise `auto`. */
+function valvesMode(valves: readonly ValveStatus[]): ValveMode | undefined {
   const shown = valves.flatMap((v) => (v.mode === undefined ? [] : [v.mode]));
   if (shown.length === 0) return undefined;
   return shown.every((m) => m === "off") ? "off" : "auto";
@@ -135,6 +156,7 @@ function roomHeating(valves: readonly ValveStatus[]): boolean | undefined {
   return valves.some((v) => v.running === false) ? false : undefined;
 }
 
+/** `thermostat` undefined: the state file is unreadable. */
 export function roomStatus(
   room: Room,
   week: ResolvedWeek,
@@ -142,19 +164,27 @@ export function roomStatus(
   fresh: Freshness,
   valves: readonly ValveStatus[],
   now: Temporal.ZonedDateTime,
+  thermostat: Thermostat | undefined,
+  limits: RoomLimits | undefined,
 ): RoomStatus {
   const point = activePoint(week, now);
+  let target: number | undefined = point.temperature;
+  if (thermostat?.kind === "override") target = thermostat.target;
+  if (thermostat?.kind === "off") target = undefined;
   return {
     roomId: room.id,
     currentTemperature: temperature.value,
-    target: point.temperature,
+    target,
     nextChangeAt: point.nextChangeAt,
     nextTarget: point.nextTemperature,
-    mode: roomMode(valves),
+    mode: thermostat === undefined ? valvesMode(valves) : THERMOSTAT_MODE[thermostat.kind],
     heating: roomHeating(valves),
     sync: worstSync(valves),
     degraded: fresh === "stale" || fresh === "no_sensors",
-    diverged: valves.some((v) => v.mode !== undefined && v.mode !== "auto"),
+    thermostat,
+    limits,
+    overrideEnd: room.overrideEnd,
+    overrideDurationMs: room.overrideDurationMs,
     valves,
   };
 }
@@ -275,8 +305,9 @@ export function problemFeedLost(valveId: string): Problem {
   return problem("feed_lost", "valve", valveId, "warning");
 }
 
-export function problemValveNotAuto(valveId: string, mode: ValveMode): Problem {
-  return problem("valve_not_auto", "valve", valveId, "warning", { mode });
+/** The state file could not be read: no mode or setpoint is written (R10). */
+export function problemStateUnreadable(): Problem {
+  return problem("state_unreadable", "system", SYSTEM_ID, "error");
 }
 
 /** Raised by the runtime, never by `tick`: the saved write budget could not be read. */

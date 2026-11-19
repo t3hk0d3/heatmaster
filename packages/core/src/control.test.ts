@@ -12,8 +12,10 @@ import {
   liveHouse,
   makeManaged,
   makeMembership,
+  makeOriginals,
   makeSpec,
   makeState,
+  makeThermostat,
   makeWorld,
   points,
   settled,
@@ -23,12 +25,14 @@ import {
   RELEASE_HOLD_MS,
   RELEASE_STALLED_AFTER_MS,
   candidates,
+  confirmedWeek,
   isObservable,
   preview,
   tick,
   transportUsable,
 } from "./control.ts";
 import type { DeviceView, Effect, TickResult, World } from "./control.ts";
+import { fitted } from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
@@ -44,7 +48,7 @@ import type { Config, Room, RoomEntry, SensorRef, SetPoint } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
 import { BUCKET, REFILL_MS, charge, chargeAsk, noteDesired } from "./pacing.ts";
-import type { ResolvedDay } from "./schedule.ts";
+import type { ResolvedDay, ResolvedWeek } from "./schedule.ts";
 import { DAY_KEYS, EMPTY_READINGS, groupOf } from "./settings.ts";
 import type {
   Group,
@@ -56,7 +60,8 @@ import type {
 } from "./settings.ts";
 import type { Problem, ProblemKind, ValveStatus } from "./status.ts";
 import type { SensorReading } from "./temperature.ts";
-import { EMPTY_THERMOSTAT_STATE } from "./thermostat.ts";
+import { EMPTY_THERMOSTAT_STATE, SCHEDULE } from "./thermostat.ts";
+import type { Thermostat, ThermostatState } from "./thermostat.ts";
 
 const V = BUILDER_VALVE;
 const SECOND_MS = 1000;
@@ -77,8 +82,15 @@ function sevenDays(day: ResolvedDay): SettingValues {
   return Object.fromEntries(DAY_KEY_LIST.map((key) => [key, day]));
 }
 
-/** What a TRVZB holds when it equals the desired values of a room without sensors. */
-const EQUAL: SettingValues = { ...sevenDays(BUILDER_DAY), sensor_source: "internal" };
+/**
+ * What a TRVZB holds when it equals the desired values of a room without sensors on its schedule:
+ * frost protection 7, auto, and setpoint 17 (a value of the builder week).
+ */
+const EQUAL: SettingValues = {
+  ...sevenDays(BUILDER_DAY),
+  sensor_source: "internal",
+  ...BUILDER_THERMOSTAT,
+};
 /** The same for a TRV-ZBT, active group 3. */
 const EQUAL_ZBT: SettingValues = { ...EQUAL, active_group: 3 };
 
@@ -127,11 +139,6 @@ function withState(world: World, state: DeviceState | undefined, valveId = V): W
 function withValues(world: World, values: SettingValues, valveId = V): World {
   const state = stateOf(world, valveId);
   return withState(world, { ...state, values: { ...state.values, ...values } }, valveId);
-}
-
-function withReadings(world: World, readings: Partial<Readings>, valveId = V): World {
-  const state = stateOf(world, valveId);
-  return withState(world, { ...state, readings: { ...state.readings, ...readings } }, valveId);
 }
 
 function withSpec(world: World, spec: ValveSpec, valveId = V): World {
@@ -476,7 +483,6 @@ const arbState: fc.Arbitrary<DeviceState | undefined> = fc.option(
 const SPECS: readonly ValveSpec[] = [
   makeSpec("trvzb"),
   makeSpec("trv_zbt"),
-  SETPOINT_SPEC,
   unreadable(makeSpec("trv_zbt")),
   { ...makeSpec("trvzb"), feedWhenOff: true },
 ];
@@ -1851,22 +1857,6 @@ describe("control", () => {
         expect(all).not.toContain(V);
       });
     });
-    describe("With a managed, heard valve whose mode is heat or off", () => {
-      it("a valve_not_auto problem naming the mode", () => {
-        for (const mode of ["heat", "off"] as const) {
-          const world = withReadings(equalWorld(), { mode });
-          const found = problemsOf(tick(world), "valve_not_auto");
-          expect(found.map((p) => p.data.mode)).toEqual([mode]);
-        }
-      });
-    });
-    describe("With a managed valve that shows no mode, or a releasing valve in heat", () => {
-      it("no valve_not_auto problem", () => {
-        expect(problemsOf(tick(equalWorld()), "valve_not_auto")).toEqual([]);
-        const releasing = released(withReadings(equalWorld(), { mode: "heat" }));
-        expect(problemsOf(tick(releasing), "valve_not_auto")).toEqual([]);
-      });
-    });
   });
 
   describe("tick — activation", () => {
@@ -1984,10 +1974,10 @@ describe("control", () => {
         const sameInstant = hear(unheard, {}, nowOf(changed));
         expect(valveEffects(tick(sameInstant))).toEqual([]);
       });
-      it("one publishSetpoint with the active set point's temperature once a message is heard after the write", () => {
+      it("once a message is heard after the write, the thermostat group's publish of auto and the active set point's temperature, not a publishSetpoint (R26)", () => {
         const heard = hear(unheard, {}, nowOf(changed) + SECOND_MS);
         expect(valveEffects(tick(heard))).toEqual([
-          { kind: "publishSetpoint", valveId: V, celsius: 21 },
+          { kind: "publish", valveId: V, values: { system_mode: "auto", setpoint: 21 } },
         ]);
       });
     });
@@ -2580,12 +2570,14 @@ describe("control", () => {
       });
     });
     describe("With a TRV-ZBT never heard from", () => {
-      it("lists the seven days with nothing in current, then active_group, then the source", () => {
+      it("lists the seven days with nothing in current, then active_group, the source, the frost protection and auto", () => {
         const world = withState(makeManaged({ model: "trv_zbt" }), undefined);
         expect(preview(world)).toEqual([
           { valveId: V, values: sevenDays(BUILDER_DAY), current: {} },
           { valveId: V, values: { active_group: 3 }, current: {} },
           { valveId: V, values: { sensor_source: "internal" }, current: {} },
+          { valveId: V, values: { frost_protection: 7 }, current: {} },
+          { valveId: V, values: { system_mode: "auto" }, current: {} },
         ]);
       });
     });
@@ -2963,6 +2955,489 @@ describe("control", () => {
           buckets: { stamps: new Map(), fallback: nowOf(base) + BUCKET * REFILL_MS },
         };
         expect(vmOf(tick(world)).tokens).toBe(held.tokens);
+      });
+    });
+  });
+
+  // The room thermostat (plan 3a, Task 5) ------------------------------------------------------
+
+  /** A second valve of the builder room: a TRV-ZBT. */
+  const V2 = "z2m:0x00124b0000000002";
+
+  /** The world with the room's thermostat set. */
+  function withThermostat(world: World, thermostat: Thermostat, roomId = BUILDER_ROOM): World {
+    const state = world.thermostats ?? EMPTY_THERMOSTAT_STATE;
+    const rooms = new Map(state.rooms);
+    rooms.set(roomId, thermostat);
+    return { ...world, thermostats: { ...state, rooms } };
+  }
+
+  /** The resolved week holding `day` on every weekday. */
+  function everyDay(day: ResolvedDay): ResolvedWeek {
+    return { mon: day, tue: day, wed: day, thu: day, fri: day, sat: day, sun: day };
+  }
+
+  /** The thermostat state after the tick, which must be readable. */
+  function stateAfter(result: TickResult): ThermostatState {
+    if (result.thermostats === undefined) throw new Error("the state is unreadable");
+    return result.thermostats;
+  }
+
+  /** An override at 22 made `agoMs` before the world's now, ending in an hour unless told. */
+  function overrideAt(
+    world: World,
+    agoMs: number,
+    over: Parameters<typeof makeThermostat>[0] = {},
+  ) {
+    return makeThermostat({
+      since: nowOf(world) - agoMs,
+      endsAt: nowOf(world) + HOUR_MS,
+      ...over,
+    });
+  }
+
+  /** A settled TRV-ZBT in the builder room showing `EQUAL_ZBT`, on the builder week unless told. */
+  function zbtWorld(day?: ResolvedDay): World {
+    const base = makeManaged({ model: "trv_zbt", state: makeState({ values: EQUAL_ZBT }) });
+    return settled(day === undefined ? base : withWeekDay(base, day));
+  }
+
+  /** The builder room holding the TRVZB `V` and the TRV-ZBT `V2`, both equal, settled. */
+  function pairWorld(sensors: readonly SensorRef[] = []): World {
+    const base = makeManaged({ sensors, state: makeState({ values: EQUAL }) });
+    const placed = withRooms(base, (rooms) =>
+      rooms.map((room) => ({ ...room, valves: [...room.valves, { valveId: V2 }] })),
+    );
+    const ledger = withRecord(placed.ledger ?? EMPTY_LEDGER, {
+      valveId: V2,
+      profile: "sonoff_trv_zbt",
+      adoptedAt: NOW_MS - 24 * HOUR_MS,
+      originals: makeOriginals("trv_zbt"),
+    });
+    const world = withView(
+      { ...placed, ledger },
+      {
+        name: "second",
+        spec: makeSpec("trv_zbt"),
+        usable: true,
+        state: makeState({ values: EQUAL_ZBT }),
+      },
+      V2,
+    );
+    return settled(sensors.length > 0 ? withSensor(world, reading(20)) : world);
+  }
+
+  /** The publishes that carry a mode or a setpoint. */
+  function thermostatWrites(effects: readonly Effect[], valveId?: string): readonly Effect[] {
+    return effects.filter(
+      (e) =>
+        e.kind === "publish" &&
+        (valveId === undefined || e.valveId === valveId) &&
+        ("system_mode" in e.values || "setpoint" in e.values),
+    );
+  }
+
+  function saveIndex(result: TickResult): number {
+    return result.effects.findIndex((e) => e.kind === "saveThermostats");
+  }
+
+  describe("tick", () => {
+    describe("expiry", () => {
+      describe("With an override whose endsAt has passed", () => {
+        const base = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+        const world = withThermostat(
+          base,
+          overrideAt(base, HOUR_MS, { rule: "timer", endsAt: nowOf(base) - MINUTE_MS }),
+        );
+        const result = tick(world);
+        it("the room's thermostat is schedule", () => {
+          expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+          expect(result.rooms.get(BUILDER_ROOM)?.thermostat).toEqual(SCHEDULE);
+        });
+        it("saveThermostats comes before any valve write", () => {
+          const writes = thermostatWrites(result.effects);
+          expect(writes).not.toEqual([]);
+          for (const write of writes) {
+            expect(saveIndex(result)).toBeLessThan(result.effects.indexOf(write));
+          }
+          expect(saveIndex(result)).toBeGreaterThanOrEqual(0);
+        });
+        it("the valves are wanted in auto", () => {
+          expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto" }]);
+        });
+      });
+      describe("With a manual override a week old", () => {
+        it("it stays", () => {
+          const base = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+          const manual = overrideAt(base, 7 * 24 * HOUR_MS, { rule: "manual", endsAt: undefined });
+          const result = tick(withThermostat(base, manual));
+          expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toEqual(manual);
+          expect(saveIndex(result)).toBe(-1);
+        });
+      });
+      describe("With a TRV-ZBT in heat 22 after a timed override ended, its confirmed week at 19 now", () => {
+        it("a publish of system_mode auto and setpoint 19 in one message", () => {
+          const base = withValues(zbtWorld(points("00:00/17 06:30/19 22:00/17")), {
+            system_mode: "heat",
+            setpoint: 22,
+          });
+          const ended = overrideAt(base, HOUR_MS, { rule: "timer", endsAt: nowOf(base) });
+          const result = tick(withThermostat(base, ended));
+          expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto", setpoint: 19 }]);
+        });
+      });
+    });
+
+    describe("desired", () => {
+      describe("With a room on its schedule and a TRVZB in heat", () => {
+        it("a publish of the thermostat group with system_mode auto", () => {
+          const world = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+          expect(publishes(valveEffects(tick(world)))).toEqual([{ system_mode: "auto" }]);
+        });
+      });
+      describe("With a room on its schedule and a TRVZB showing auto 23 after its week was rewritten", () => {
+        it("no thermostat write", () => {
+          const world = withValues(equalWorld(), { system_mode: "auto", setpoint: 23 });
+          expect(thermostatWrites(tick(world).effects)).toEqual([]);
+        });
+      });
+      describe("With a room overridden next_change at 22 and a TRV-ZBT in auto at 22", () => {
+        it("a publish with system_mode heat then setpoint 22, both in one message", () => {
+          const base = withValues(zbtWorld(), { system_mode: "auto", setpoint: 22 });
+          const world = withThermostat(base, overrideAt(base, 10 * MINUTE_MS));
+          const [values] = publishes(valveEffects(tick(world)));
+          expect(values).toEqual({ system_mode: "heat", setpoint: 22 });
+          expect(Object.keys(values ?? {})).toEqual(["system_mode", "setpoint"]);
+        });
+      });
+      describe("With a TRV-ZBT on schedule holding 22 in auto, no value of its week", () => {
+        it("a publish of system_mode auto and the value in force", () => {
+          const world = withValues(zbtWorld(), { system_mode: "auto", setpoint: 22 });
+          expect(publishes(valveEffects(tick(world)))).toEqual([
+            { system_mode: "auto", setpoint: 20 },
+          ]);
+        });
+      });
+      describe("With a room off", () => {
+        it("each valve is wanted off", () => {
+          const base = pairWorld();
+          const result = tick(withThermostat(base, overrideAt(base, MINUTE_MS, { kind: "off" })));
+          expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "off" }]);
+          expect(publishes(valveEffects(result, V2))).toEqual([{ system_mode: "off" }]);
+        });
+      });
+      describe("With the frost protection differing", () => {
+        it("a publish of frost_protection", () => {
+          const world = withValues(equalWorld(), { frost_protection: 10 });
+          expect(publishes(valveEffects(tick(world)))).toEqual([{ frost_protection: 7 }]);
+        });
+      });
+      describe("With thermostats undefined", () => {
+        const base = withValues(equalWorld(), {
+          system_mode: "heat",
+          setpoint: 22,
+          frost_protection: 10,
+        });
+        const world: World = { ...base, thermostats: undefined };
+        const [, effects] = drive(world, 4, 3 * SECOND_MS);
+        it("no publish carries system_mode or setpoint", () => {
+          expect(thermostatWrites(effects)).toEqual([]);
+        });
+        it("frost_protection is still written", () => {
+          expect(publishes(effects)).toEqual([{ frost_protection: 7 }]);
+        });
+        it("problem state_unreadable", () => {
+          expect(problemsOf(tick(world), "state_unreadable")).toHaveLength(1);
+        });
+      });
+      describe("With writes held and an override", () => {
+        it("nothing is published and the thermostat is kept", () => {
+          const base = held(equalWorld());
+          const override = overrideAt(base, MINUTE_MS);
+          const result = tick(withThermostat(base, override));
+          expect(publishes(result.effects)).toEqual([]);
+          expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toEqual(override);
+        });
+      });
+    });
+
+    describe("settle", () => {
+      const settle = (since: (world: World) => number, origin: Thermostat["kind"] = "override") => {
+        const base = pairWorld();
+        const thermostat = makeThermostat({
+          kind: origin === "off" ? "off" : "override",
+          since: since(base),
+          endsAt: nowOf(base) + HOUR_MS,
+        });
+        return tick(withThermostat(base, thermostat));
+      };
+      describe("With a valve-origin override 4 s old", () => {
+        it("no valve of the room gets a thermostat write", () => {
+          const base = pairWorld();
+          const thermostat = overrideAt(base, 4 * SECOND_MS, {
+            origin: { source: "valve", valveId: V },
+          });
+          expect(thermostatWrites(tick(withThermostat(base, thermostat)).effects)).toEqual([]);
+        });
+      });
+      describe("With a climate-origin override 4 s old", () => {
+        it("no valve of the room gets a thermostat write", () => {
+          const base = pairWorld();
+          const thermostat = overrideAt(base, 4 * SECOND_MS, {
+            origin: { source: "climate", valveId: undefined },
+          });
+          expect(thermostatWrites(tick(withThermostat(base, thermostat)).effects)).toEqual([]);
+        });
+      });
+      describe("With an override 11 s old", () => {
+        it("every valve that differs gets the thermostat write", () => {
+          const result = settle((world) => nowOf(world) - 11 * SECOND_MS);
+          expect(publishes(valveEffects(result, V))).toEqual([
+            { system_mode: "heat", setpoint: 22 },
+          ]);
+          expect(publishes(valveEffects(result, V2))).toEqual([
+            { system_mode: "heat", setpoint: 22 },
+          ]);
+        });
+      });
+      describe("With an override whose since is 1 min in the future", () => {
+        it("the thermostat write goes out", () => {
+          const result = settle((world) => nowOf(world) + MINUTE_MS);
+          expect(thermostatWrites(result.effects, V)).toHaveLength(1);
+          expect(thermostatWrites(result.effects, V2)).toHaveLength(1);
+        });
+      });
+      describe("With a resume 1 s old", () => {
+        it("the thermostat write goes out", () => {
+          // A resume puts the room back on its schedule, which has no start to settle from.
+          const base = withValues(pairWorld(), { system_mode: "heat", setpoint: 22 });
+          const result = tick(withThermostat(base, SCHEDULE));
+          expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "auto" }]);
+        });
+      });
+    });
+
+    describe("schedule points", () => {
+      describe("With a TRV-ZBT on schedule showing the next point's value 70 s before Heatmaster's point", () => {
+        it("no thermostat write", () => {
+          // The builder week moves from 17 to 20 at 06:30; the valve's clock runs ahead.
+          const base = zbtWorld();
+          const tuesday = Temporal.ZonedDateTime.from(
+            "2026-11-17T06:28:50+01:00[Europe/Amsterdam]",
+          );
+          const world = withValues(
+            { ...base, now: tuesday },
+            { system_mode: "auto", setpoint: 20 },
+          );
+          expect(thermostatWrites(tick(world).effects)).toEqual([]);
+        });
+      });
+      describe("With a TRV-ZBT on schedule and its week unconfirmed", () => {
+        it("it is wanted in auto alone", () => {
+          const base = withValues(zbtWorld(), { system_mode: "heat", setpoint: 22 });
+          const changed = withWeekDay(base, OTHER_DAY);
+          const first = tick(changed);
+          expect(publishes(valveEffects(first))).toEqual([sevenDays(OTHER_DAY)]);
+          // The new week is written and not heard since.
+          const second = tick(next(changed, first, 3 * SECOND_MS));
+          expect(publishes(valveEffects(second))).toEqual([{ system_mode: "auto" }]);
+        });
+      });
+    });
+
+    describe("release", () => {
+      describe("With a releasing TRV-ZBT captured in auto and showing auto 17", () => {
+        const base = zbtWorld();
+        const ledger = withRecord(EMPTY_LEDGER, {
+          valveId: V,
+          profile: "sonoff_trv_zbt",
+          adoptedAt: NOW_MS - 24 * HOUR_MS,
+          originals: {
+            active_group: 3,
+            sensor_source: "internal",
+            frost_protection: 7,
+            system_mode: "auto",
+            setpoint: 17,
+          },
+        });
+        const world = released({ ...base, ledger });
+        const [, effects] = drive(world, 10, 3 * MINUTE_MS);
+        it("no thermostat candidate, and the release finishes", () => {
+          expect(thermostatWrites(effects)).toEqual([]);
+          const ledgers = effects.flatMap((e) => (e.kind === "saveLedger" ? [e.ledger] : []));
+          expect(ledgers.at(-1)?.records.has(V)).toBe(false);
+        });
+      });
+    });
+
+    describe("effect order", () => {
+      describe("With a push due, a frost write on one valve and a thermostat write on another", () => {
+        it("the push and the frost publish come before saveThermostats, and the thermostat publish after it", () => {
+          // Both valves are fed from the room's sensor.
+          let base = pairWorld([SENSOR]);
+          base = withValues(base, { sensor_source: "external" }, V2);
+          base = withValues(base, { sensor_source: "external", frost_protection: 10 }, V);
+          base = withValues(base, { system_mode: "heat", setpoint: 22 }, V2);
+          base = warmer(base);
+          const ended = overrideAt(base, HOUR_MS, { rule: "timer", endsAt: nowOf(base) });
+          const result = tick(withThermostat(base, ended));
+          const at = (find: (e: Effect) => boolean): number => result.effects.findIndex(find);
+          const push = at((e) => e.kind === "pushTemperature" && e.valveId === V);
+          const frost = at((e) => e.kind === "publish" && "frost_protection" in e.values);
+          const mode = at((e) => e.kind === "publish" && "system_mode" in e.values);
+          expect([push, frost, mode].every((i) => i >= 0)).toBe(true);
+          expect(push).toBeLessThan(saveIndex(result));
+          expect(frost).toBeLessThan(saveIndex(result));
+          expect(mode).toBeGreaterThan(saveIndex(result));
+        });
+      });
+    });
+
+    describe("pruning", () => {
+      const gone = (world: World): World =>
+        withThermostat(world, overrideAt(world, MINUTE_MS), "gone");
+      describe("With a saved thermostat for a room that is no longer resolved", () => {
+        it("saveThermostats without it", () => {
+          const result = tick(gone(equalWorld()));
+          const save = result.effects.find((e) => e.kind === "saveThermostats");
+          expect(save?.kind === "saveThermostats" && save.state.rooms.has("gone")).toBe(false);
+          expect(save).toBeDefined();
+        });
+      });
+      describe("With the house frozen", () => {
+        it("the thermostat is kept", () => {
+          const base = gone(equalWorld());
+          const membership = storedOf(base).membership;
+          const world: World = {
+            ...base,
+            house: { kind: "frozen", membership, reason: "link_down" },
+          };
+          const result = tick(world);
+          expect(stateAfter(result).rooms.has("gone")).toBe(true);
+          expect(saveIndex(result)).toBe(-1);
+        });
+      });
+    });
+
+    describe("saving", () => {
+      describe("With nothing changed", () => {
+        it("no saveThermostats", () => {
+          const base = equalWorld();
+          expect(saveIndex(tick(withThermostat(base, overrideAt(base, MINUTE_MS))))).toBe(-1);
+        });
+      });
+      describe("By default", () => {
+        it("result.thermostats is the state after the tick", () => {
+          const base = equalWorld();
+          const kept = withThermostat(base, overrideAt(base, MINUTE_MS));
+          expect(tick(kept).thermostats).toBe(kept.thermostats);
+          const ended = withThermostat(base, overrideAt(base, HOUR_MS, { endsAt: nowOf(base) }));
+          const result = tick(ended);
+          const save = result.effects.find((e) => e.kind === "saveThermostats");
+          expect(save?.kind === "saveThermostats" ? save.state : undefined).toBe(
+            result.thermostats,
+          );
+          expect(stateAfter(result).rooms.size).toBe(0);
+        });
+      });
+    });
+
+    describe("status", () => {
+      describe("With an override at 22 until 18:00", () => {
+        const base = equalWorld();
+        const until = Temporal.ZonedDateTime.from("2026-11-16T18:00:00+01:00[Europe/Amsterdam]");
+        const override = overrideAt(base, MINUTE_MS, { endsAt: until.epochMilliseconds });
+        const room = tick(withThermostat(base, override)).rooms.get(BUILDER_ROOM);
+        it("the room's thermostat, target 22, limits and end settings are reported", () => {
+          expect(room).toMatchObject({
+            thermostat: override,
+            target: 22,
+            limits: { min: 4, max: 35 },
+            overrideEnd: DEFAULT_SETTINGS.overrideEnd,
+            overrideDurationMs: DEFAULT_SETTINGS.overrideDurationMs,
+          });
+        });
+        it("the room's mode is heat", () => {
+          expect(room?.mode).toBe("heat");
+        });
+      });
+      describe("With the room off", () => {
+        it("the room's target is undefined and its mode off", () => {
+          const base = equalWorld();
+          const off = overrideAt(base, MINUTE_MS, { kind: "off" });
+          const room = tick(withThermostat(base, off)).rooms.get(BUILDER_ROOM);
+          expect(room?.target).toBeUndefined();
+          expect(room?.mode).toBe("off");
+        });
+      });
+      describe("With a TRVZB in heat in a room on its schedule", () => {
+        it("the valve's sync is pending", () => {
+          const world = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+          expect(statusOf(tick(world)).sync).toBe("pending");
+        });
+      });
+    });
+  });
+
+  describe("confirmedWeek (a TRV-ZBT)", () => {
+    const ZBT = makeSpec("trv_zbt");
+    const world = zbtWorld();
+    const week = fitted(everyDay(BUILDER_DAY), ZBT).days;
+    describe("With the schedule written, unmarked and heard since", () => {
+      it("the fitted week", () => {
+        expect(confirmedWeek(ZBT, vmOf(world), stateOf(world), week)).toBe(week);
+      });
+    });
+    describe("With a day write pending", () => {
+      it("undefined", () => {
+        expect(confirmedWeek(ZBT, neverWritten(vmOf(world)), stateOf(world), week)).toBeUndefined();
+      });
+    });
+    describe("With a TRV-ZBT whose schedule was written but not heard since", () => {
+      it("undefined", () => {
+        const unheard = { ...stateOf(world), heardAt: undefined };
+        expect(confirmedWeek(ZBT, vmOf(world), unheard, week)).toBeUndefined();
+      });
+    });
+    describe("With a TRV-ZBT whose observed active_group is 1", () => {
+      it("undefined", () => {
+        const other = stateOf(withValues(world, { active_group: 1 }));
+        expect(confirmedWeek(ZBT, vmOf(world), other, week)).toBeUndefined();
+      });
+    });
+    describe("With the room's week changed in this tick", () => {
+      it("undefined", () => {
+        // Writes are held, so the tick notes the new week and sends nothing.
+        const changed = held(withWeekDay(world, OTHER_DAY));
+        const vm = vmOf(tick(changed));
+        const otherWeek = fitted(everyDay(OTHER_DAY), ZBT).days;
+        expect(confirmedWeek(ZBT, vm, stateOf(changed), otherWeek)).toBeUndefined();
+      });
+    });
+  });
+
+  describe("preview", () => {
+    describe("With a change that joins a room whose TRVZB is in heat", () => {
+      it("the planned writes include system_mode auto and frost_protection for it", () => {
+        const values = {
+          sensor_source: "internal",
+          system_mode: "heat",
+          setpoint: 22,
+          frost_protection: 10,
+        } as const;
+        const joining: World = {
+          ...makeManaged({ state: makeState({ values, heardAgoMs: 0 }) }),
+          ledger: EMPTY_LEDGER,
+        };
+        const reconciled = reconcile(joining);
+        const writes = preview({
+          ...joining,
+          stored: reconciled.stored,
+          ledger: reconciled.ledger,
+        });
+        const planned = writes.filter((w) => w.valveId === V).map((w) => w.values);
+        expect(planned).toContainEqual({ system_mode: "auto" });
+        expect(planned).toContainEqual({ frost_protection: 7 });
       });
     });
   });

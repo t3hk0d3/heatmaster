@@ -38,7 +38,6 @@ export type RoomView = Readonly<{
   heating?: boolean;
   sync: SyncState;
   degraded: boolean;
-  diverged: boolean;
   hasProblem: boolean;
   valveIds: readonly string[];
 }>;

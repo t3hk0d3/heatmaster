@@ -59,7 +59,10 @@ function status(roomId: string, valves: readonly ValveStatus[], over: Partial<Ro
     heating: true,
     sync: "in_sync",
     degraded: false,
-    diverged: false,
+    thermostat: { kind: "schedule" },
+    limits: { min: 4, max: 35 },
+    overrideEnd: "next_change",
+    overrideDurationMs: 2 * 60 * 60 * 1000,
     valves,
     ...over,
   } satisfies RoomStatus;
@@ -148,7 +151,6 @@ describe("views", () => {
             heating: true,
             sync: "in_sync",
             degraded: false,
-            diverged: false,
             hasProblem: false,
             valveIds: [A],
           },
@@ -521,7 +523,7 @@ describe("views", () => {
     });
 
     describe("With a room that has no status yet", () => {
-      it('sync is "unverified", degraded and diverged are false, and valveIds holds the room\'s valves', () => {
+      it('sync is "unverified", degraded is false, and valveIds holds the room\'s valves', () => {
         const [view] = viewOf({ rooms: [room("living", { valveIds: [A, B] })] }).rooms;
         expect(view).toEqual({
           roomId: "living",
@@ -529,7 +531,6 @@ describe("views", () => {
           managed: true,
           sync: "unverified",
           degraded: false,
-          diverged: false,
           hasProblem: false,
           valveIds: [A, B],
         });

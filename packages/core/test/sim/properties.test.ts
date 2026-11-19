@@ -205,6 +205,21 @@ function observe(rig: Rig, hasSwap: boolean, found: (id: Id, text: string) => vo
       if (thermostatKeys.length > 0 && kind !== "managed" && kind !== "releasing") {
         found("mode.managed", `${tag} wrote ${thermostatKeys.join(", ")} on the ${binding}`);
       }
+      // The group is written whole, mode first (R2); a release restores only what was captured,
+      // the setpoint only with a captured heat (R17).
+      if (thermostatKeys.length > 0 && kind === "managed" && thermostatKeys[0] !== Z2M_KEYS.mode) {
+        found("mode.managed", `${tag} wrote a setpoint without the mode`);
+      }
+      if (thermostatKeys.length > 0 && kind === "releasing") {
+        const originals = world.ledger?.records.get(valveId)?.originals ?? {};
+        const restores = (key: string): boolean =>
+          key === Z2M_KEYS.mode
+            ? originals.system_mode !== undefined && originals.system_mode !== null
+            : originals.system_mode === "heat";
+        for (const key of thermostatKeys.filter((k) => !restores(k))) {
+          found("mode.managed", `${tag} wrote ${key} to a releasing valve that did not capture it`);
+        }
+      }
       if (effect.kind === "publish" && kind === "releasing") {
         if (Object.keys(effect.values).some((key) => groupOf(key as SettingKey) === "schedule")) {
           found("release.noDays", `${tag} published a day while releasing`);
@@ -423,6 +438,9 @@ function converge(rig: Rig, found: (id: Id, text: string) => void): void {
     if (model === "trv_zbt" && truth.activeGroup !== 3) {
       found("convergence.values", `${valveId}: active group ${String(truth.activeGroup)}`);
     }
+    // Every room stays on its schedule in these plans, so its valves end in auto.
+    if (truth.mode !== "auto")
+      found("mode.managed", `${valveId}: mode ${truth.mode} after quiesce`);
     const hasSensor = room.sensors.some((s) => sensorId(s).length > 0);
     // A valve that is off is not fed, so Heatmaster leaves its source alone.
     if (hasSensor && truth.mode === "off") continue;
@@ -599,7 +617,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
   describe("mode.managed", () => {
     describe("At every moment", () => {
       propertyTest(
-        "holds over the fault plans: system_mode and occupied_heating_setpoint are written only to valves that are managed or releasing",
+        "holds over the fault plans: system_mode and occupied_heating_setpoint are written only to valves that are managed or releasing, a setpoint only after the mode, to a releasing valve only where its record captured them, and after quiesce every managed valve is in auto",
         ["mode.managed"],
       );
     });
@@ -712,7 +730,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
             .ledger()
             ?.released.find((r) => r.record.valveId === VALVE_IDS[0]);
           expect(released?.record.originals).toMatchObject({ system_mode: "auto", setpoint: 17 });
-          expect(rig.sim.valve(VALVE_IDS[0]).truth()).toMatchObject({ mode: "auto", setpoint: 22 });
+          expect(rig.sim.valve(VALVE_IDS[0]).truth().mode).toBe("auto");
         },
         PLAN_MS,
       );
@@ -832,7 +850,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
   describe("preview", () => {
     describe("Starting from a settled system, with a valid config change and no faults", () => {
       it(
-        "the publishes the valves receive until 30 min pass without one are exactly the change's planned writes, in order per valve",
+        "previewHolds: the publishes the valves receive until 30 min pass without one, mode and frost writes included, are exactly the change's planned writes, in order per valve",
         () => {
           fc.assert(fc.property(changeArbitrary, previewHolds), { seed: SEED, numRuns: NUM_RUNS });
         },
@@ -844,10 +862,18 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
 
 // Preview ------------------------------------------------------------------------------------------
 
+/**
+ * A config change, made while `heat` (the TRVZB, or none) was just set to heat 22 by a person, so
+ * that the planned writes hold mode writes; `frost` is the house frost preset, for frost writes.
+ * The TRV-ZBT is left out of `heat`: the preview cannot know its week is heard after a day write
+ * it plans, so it plans `auto` alone where the tick later sends `auto` with the value in force.
+ */
 type Change = Readonly<{
   placement: Placement;
   schedules: Readonly<{ default: Variant; alt: Variant }>;
   comfort: number;
+  frost: number;
+  heat: Slot | null;
 }>;
 
 const changeArbitrary: fc.Arbitrary<Change> = fc.record({
@@ -860,6 +886,8 @@ const changeArbitrary: fc.Arbitrary<Change> = fc.record({
     alt: fc.constantFrom<Variant>(0, 1, 2),
   }),
   comfort: fc.integer({ min: 36, max: 48 }).map((n) => n / 2),
+  frost: fc.integer({ min: 8, max: 34 }).map((n) => n / 2),
+  heat: fc.constantFrom<Slot | null>(0, null),
 });
 
 function settledSystem(): SimDriver {
@@ -897,7 +925,14 @@ function settledSystem(): SimDriver {
 function previewHolds(change: Change): void {
   const sim = settledSystem();
   const base = modelConfig(change.schedules, false);
-  const config = { ...base, presets: { ...base.presets, comfort: change.comfort } };
+  const config = {
+    ...base,
+    presets: { ...base.presets, comfort: change.comfort, frost: change.frost },
+  };
+  if (change.heat !== null) {
+    sim.valve(VALVE_IDS[change.heat]).person({ mode: "heat", setpoint: 22 }, sim.now());
+    sim.deliver();
+  }
   const before = sim.log().length;
   // The devices move in Home Assistant; the change's preview reconciles over the new house, so
   // it sees the valves the next tick releases.

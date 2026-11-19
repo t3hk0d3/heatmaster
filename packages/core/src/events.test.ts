@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TRV_ZBT_THERMOSTAT } from "./profiles/sonoff-trv-zbt.ts";
 import { applyEvent } from "./events.ts";
 import type { Event, Inbox } from "./events.ts";
 import { VALVE_SILENT_AFTER_MS, newState } from "./observation.ts";
@@ -39,9 +40,10 @@ const SPEC: ValveSpec = {
     groupSpec("active_group", true),
     groupSpec("sensor_source", true),
   ],
-  activation: "setpoint",
+  activation: "none",
   externalSensor: true,
   feedWhenOff: false,
+  thermostat: TRV_ZBT_THERMOSTAT,
 };
 
 const Z1 = "z2m:0x01";

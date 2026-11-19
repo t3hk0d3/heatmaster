@@ -2,6 +2,7 @@ import { WEEKDAYS } from "./model.ts";
 import { daysEqual, normalizeDay } from "./schedule.ts";
 import type { Weekday } from "./model.ts";
 import type { ResolvedDay } from "./schedule.ts";
+import type { ThermostatAdapter } from "./thermostat-adapter.ts";
 
 export type ValveMode = "off" | "auto" | "heat";
 export type SensorSource = "internal" | "external";
@@ -153,7 +154,8 @@ export type GroupSpec = Readonly<{
  * Everything the core needs to know about a valve model on a transport. `groups` is in write
  * order. `scheduleGroup` is the schedule slot Heatmaster owns, `undefined` where the valve has one
  * schedule. `externalSensor` false: never fed a temperature, no `sensor_source` group.
- * `frostMinTemp`–`frostMaxTemp` is the range of its frost protection temperature.
+ * `frostMinTemp`–`frostMaxTemp` is the range of its frost protection temperature. `thermostat`
+ * holds the model's rules for its mode and setpoint (R24).
  */
 export type ValveSpec = Readonly<{
   profile: string;
@@ -169,6 +171,7 @@ export type ValveSpec = Readonly<{
   activation: Activation;
   externalSensor: boolean;
   feedWhenOff: boolean;
+  thermostat: ThermostatAdapter;
 }>;
 
 /** What a valve shows that plan 1 does not own. */

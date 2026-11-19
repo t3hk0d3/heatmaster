@@ -1,13 +1,31 @@
 import { WEEKDAYS } from "./model.ts";
-import { fitWeek } from "./schedule.ts";
+import { roundHalfUp } from "./rounding.ts";
+import { activePoint, fitWeek, normalizeDay } from "./schedule.ts";
 import { DAY_KEYS, SETTING_KEYS, members, valuesEqual } from "./settings.ts";
 import type { ValveRecord } from "./ledger.ts";
 import type { DeviceState } from "./observation.ts";
 import type { FittedWeek, ResolvedWeek } from "./schedule.ts";
 import type { Group, SensorSource, SettingKey, SettingValue, ValveSpec } from "./settings.ts";
+import type { SavedWeek, Thermostat, ThermostatWanted } from "./thermostat.ts";
+import type { AdapterContext } from "./thermostat-adapter.ts";
+
+/**
+ * How far ahead of now a TRV-ZBT's value in force is taken (R18), and how close to a report's time
+ * a point must be to explain it (R23): valve clocks run up to 40 s off (M8).
+ */
+export const SCHEDULE_SKEW_MS = 2 * 60 * 1000;
+
+/** Frost protection temperatures are rounded half up to this step, in °C. */
+const FROST_STEP = 0.5;
 
 export type Reason =
-  "schedule" | "group_ready" | "room_temperature" | "no_room_temperature" | "release";
+  | "schedule"
+  | "group_ready"
+  | "room_temperature"
+  | "no_room_temperature"
+  | "release"
+  | "thermostat"
+  | "frost";
 
 export type DesiredValue = Readonly<{ value: SettingValue; reason: Reason }>;
 
@@ -79,4 +97,101 @@ export function differing(desired: Desired, state: DeviceState | undefined): rea
     const observed = state?.values[key];
     return observed === undefined || !valuesEqual(key, observed, wanted.value);
   });
+}
+
+/** A stable text of the week's days: weeks whose days are `daysEqual` give equal keys. */
+export function weekKey(week: ResolvedWeek): string {
+  const time = (t: Temporal.PlainTime): number => (t.hour * 60 + t.minute) * 60 + t.second;
+  return WEEKDAYS.map((day) =>
+    normalizeDay(week[day])
+      .map((point) => `${String(time(point.time))}/${String(point.temperature)}`)
+      .join(" "),
+  ).join(";");
+}
+
+/** Held in the valve's setpoint range, then rounded half up to its step. */
+function asSetpoint(spec: ValveSpec, celsius: number): number {
+  return roundHalfUp(Math.min(Math.max(celsius, spec.minTemp), spec.maxTemp), spec.tempStep);
+}
+
+function setpointsOf(spec: ValveSpec, temperatures: readonly number[]): ReadonlySet<number> {
+  return new Set(temperatures.map((celsius) => asSetpoint(spec, celsius)));
+}
+
+/** Every temperature in force at some instant within `SCHEDULE_SKEW_MS` of `at`. */
+function temperaturesNear(week: ResolvedWeek, at: number, timeZone: string): readonly number[] {
+  const zoned = (ms: number): Temporal.ZonedDateTime =>
+    Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(timeZone);
+  let point = activePoint(week, zoned(at - SCHEDULE_SKEW_MS));
+  const temperatures = [point.temperature];
+  while (point.nextChangeAt !== undefined && point.nextChangeAt <= at + SCHEDULE_SKEW_MS) {
+    point = activePoint(week, zoned(point.nextChangeAt));
+    temperatures.push(point.temperature);
+  }
+  return temperatures;
+}
+
+/**
+ * What the adapter is told of the valve's week (R18, R23). With a `confirmed` week: `inForce` is
+ * its value `SCHEDULE_SKEW_MS` from now, `weekValues` every temperature of it, and `pointValues`
+ * every temperature in force within `SCHEDULE_SKEW_MS` of `heardAt` (undefined without it).
+ * Without one, while `saved` has the key of the desired week (`fittedKey`), `weekValues` are its
+ * values; otherwise all three are undefined. Every temperature is held in the valve's range and
+ * rounded to its step.
+ */
+export function thermostatContext(
+  spec: ValveSpec,
+  confirmed: ResolvedWeek | undefined,
+  saved: SavedWeek | undefined,
+  fittedKey: string,
+  heardAt: number | undefined,
+  now: Temporal.ZonedDateTime,
+): AdapterContext {
+  if (confirmed === undefined) {
+    return {
+      inForce: undefined,
+      weekValues: saved?.key === fittedKey ? setpointsOf(spec, saved.values) : undefined,
+      pointValues: undefined,
+    };
+  }
+  const ahead = now.add({ milliseconds: SCHEDULE_SKEW_MS });
+  return {
+    inForce: asSetpoint(spec, activePoint(confirmed, ahead).temperature),
+    weekValues: setpointsOf(
+      spec,
+      WEEKDAYS.flatMap((day) => confirmed[day].map((point) => point.temperature)),
+    ),
+    pointValues:
+      heardAt === undefined
+        ? undefined
+        : setpointsOf(spec, temperaturesNear(confirmed, heardAt, now.timeZoneId)),
+  };
+}
+
+/** The adapter's wanted state, its setpoint held in the valve's range and rounded to its step. */
+export function thermostatWanted(
+  spec: ValveSpec,
+  thermostat: Thermostat,
+  ctx: AdapterContext,
+): ThermostatWanted {
+  const wanted = spec.thermostat.wanted(thermostat, ctx);
+  const setpoint = wanted.setpoint === undefined ? undefined : asSetpoint(spec, wanted.setpoint);
+  return { ...wanted, setpoint };
+}
+
+/** `system_mode`, and `setpoint` when the wanted state has one. */
+export function thermostatDesired(wanted: ThermostatWanted): Desired {
+  const desired: Partial<Record<SettingKey, DesiredValue>> = {
+    system_mode: { value: wanted.mode, reason: "thermostat" },
+  };
+  if (wanted.setpoint !== undefined) {
+    desired.setpoint = { value: wanted.setpoint, reason: "thermostat" };
+  }
+  return desired;
+}
+
+/** The room's frost preset, held in the valve's frost range and rounded half up to 0.5. */
+export function frostDesired(spec: ValveSpec, frostPreset: number): Desired {
+  const held = Math.min(Math.max(frostPreset, spec.frostMinTemp), spec.frostMaxTemp);
+  return { frost_protection: { value: roundHalfUp(held, FROST_STEP), reason: "frost" } };
 }

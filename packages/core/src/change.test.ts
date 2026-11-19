@@ -495,7 +495,7 @@ describe("change", () => {
     });
 
     describe("With a schedule edit only", () => {
-      const days = { ...sevenDays(), sensor_source: "internal" as const };
+      const days = { ...sevenDays(), sensor_source: "internal" as const, ...BUILDER_THERMOSTAT };
       const world = current({
         rooms: [room("living", [V1])],
         ledger: ledgerOf(record(V1)),

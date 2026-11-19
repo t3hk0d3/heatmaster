@@ -31,7 +31,6 @@ function room(id: string, extra: Partial<RoomView> = {}): RoomView {
     target: 20,
     sync: "in_sync",
     degraded: false,
-    diverged: false,
     hasProblem: false,
     valveIds: [],
     ...extra,
