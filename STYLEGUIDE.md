@@ -97,6 +97,11 @@ Signatures are written in TypeScript, for example
 No module stores or passes command ids, write results or in-flight records. What a valve shows is
 compared with what is wanted, every tick.
 
+One exception: the room thermostat's valve expectations (plan 3a, `ValveExpectation.sent`) keep the
+mode and setpoint writes Heatmaster sent, with their instants and what the valve showed then, only
+to tell Heatmaster's own doing from a person's change on the valve. No other module stores write
+records.
+
 ## Decisions live in the core
 
 The server collects inputs, calls a core function and executes the effects it returns, in order. It
