@@ -18,6 +18,8 @@ Known follow-ups left after plans 1 and 2 (0.2.0). None blocks daily use. Each l
   names.
 - **Forget transient.** After a stranded valve is forgotten, one tick still sees it in its room as pending
   (`valve_not_observed`) before the membership drops it.
+- **TRVZB timer mode for timed overrides, see M10.** The TRVZB's own timer (`temporary_mode_select: timer`) holds a
+  temperature in `auto` and ends by itself; it could carry timed overrides instead of Heatmaster's own end time.
 
 ## Release process
 

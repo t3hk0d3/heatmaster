@@ -30,6 +30,29 @@ Short list; the sections below hold the measurements. Fixtures: `packages/core/t
 14. **Ranges:** setpoint TRVZB 4–35, TRV-ZBT 5–30. Sensor select values: `local_temperature`, `remote_temperature`, `remote_source_offline`.
 15. **Unexplained writes exist:** something in HA wrote `occupied_heating_setpoint` 17 to both valves at 14:17 and 14:19 UTC (source unknown). Heatmaster must expect outside writes and correct them.
 16. **Not measured (skipped):** writes/`get` to an unpowered valve, rejoin after a short power loss. 24 h announce count: pending until the recording ends (2026-11-16 ~12:05 UTC).
+17. **Echo confirmation (M14):**
+    - the first message after a write has a fresh `last_seen` and the old state; the echo with the new value repeats that `last_seen`;
+    - `last_seen` is truncated to the second, so compare a report against the write time floored to the second;
+    - every mode or setpoint write showed in full within 14.6 s, under `SENT_RETIRE_MS` (60 s).
+18. **Half-applied states (M14).** They last under 1 s; the TRVZB shows the mode first, the TRV-ZBT the setpoint first. On a TRV-ZBT, `{auto, X}` from `heat` can briefly show `heat <schedule value>`.
+19. **TRVZB `heat` falls back (M12, M14).** `heat` without a setpoint, or before the setpoint lands, shows the **last manual heat setpoint**, not the value shown in `auto`. A combined `{heat, X}` can show `heat <last manual>` for up to 14 s.
+20. **Mode writes (M12):**
+    - `auto` takes the schedule's value within 2 s on both models (simulator: about 2 s, not 20 s);
+    - `off` reports setpoint = frost protection;
+    - a TRVZB day write leaves `heat` and `off` unchanged.
+21. **Knob (M11, M12):**
+    - TRVZB: the first click switches to `heat` with the last manual setpoint, and later clicks change it; turning below 4 switches to `off`;
+    - TRV-ZBT: the knob changes the setpoint and the valve stays in `auto` (held); the top button toggles `auto` and `heat`;
+    - reports arrive 2–3 s apart while turning, so wait for a quiet spell before taking the value;
+    - a locked valve (`child_lock: LOCK`) ignores the knob and buttons.
+22. **TRV-ZBT holds (M15).** `{auto, X}` holds X. `auto` again drops it. A day write does not drop it.
+23. **Rejoin (M16):**
+    - both models kept their week;
+    - the TRV-ZBT fell back to `local_temperature` until the next sensor push;
+    - Heatmaster's rejoin re-send can fail mid-rejoin (ZCL error);
+    - whether a valve changes its mode by itself after a rejoin is not settled.
+24. **Outside writers.** The chauffage integration writes `…/set/occupied_heating_setpoint` (likely also the source of item 15). Heatmaster must treat these writes as a person's change.
+25. **TRVZB timer mode (M10).** It works from `auto`, stays in `auto` and ends by itself. The TRVZB has no boost button and no timer at the valve.
 
 ## Restore cards
 
@@ -239,3 +262,80 @@ With the log level at `debug` (set through `bridge/request/options`, restored to
 ## Step 3 restore (2026-11-15, 19:00:32–19:01:27 UTC)
 
 Both valves restored from the restore cards and checked against the next valve reports (fresh `last_seen` 19:01:14 and 19:01:39 UTC): every key on the cards matches. Window valve: active group 1, edit group 1, group 1 week back to the card. Recheck due ~19:31 UTC.
+
+## Room overrides (plan 3a, Task 1, 2026-11-19 to 2026-11-22, UTC)
+
+Script-driven writes through a recorder on `zigbee2mqtt/#`; at-valve steps by the user. Restore cards were taken again at 18:27:26 on 2026-11-19 (both at `heat` 17; frost 7 / 5). Chauffage (an HA integration that writes `…/set/occupied_heating_setpoint`) was paused on mancave for the tests.
+
+### M10: TRVZB timer mode
+
+- One message `{"temporary_mode_select":"timer","timer_mode_target_temp":20,"temporary_mode_duration":2}` from `auto`: `system_mode` stays `auto` and the setpoint shows 20.
+- The timer ends by itself after 2 min (+122 s) and the valve returns to the schedule's value, still in `auto`.
+- Zigbee2MQTT keeps `timer/20/2` cached afterwards.
+- The TRVZB has no boost button and no way to set a timer at the valve. Boost and timer are remote only.
+
+### M11: knob in `auto`
+
+- **TRVZB.** The first click only switches the valve to `heat` and shows its **last manual heat setpoint**. Reports: `heat <auto value>`, then `heat <last manual>`. Later clicks change the setpoint, and the valve stays in `heat`.
+- **TRV-ZBT.** The first click only wakes the screen. Later clicks change the setpoint, and the valve **stays in `auto`**, holding the value (hand icon) as in M15.
+- **TRV-ZBT top button.** The first press switches to `heat` with the last manual heat setpoint; a brief `auto <that value>` shows first. A second press returns to `auto` at the schedule's value; a brief `heat <schedule value>` shows first.
+- **Report timing, both models.** Fast clicks give reports about 2–3 s apart, with the values in between. Clicks 3 s apart give one report each. The value is reported only after the screen's confirmation flash.
+- One continuous TRVZB turn (2026-11-20 00:41) showed `heat`→`auto`→`heat` within 17 s before settling at `heat` 22.5. It is not explained.
+
+### M12: `system_mode` writes and the valves' own controls
+
+- **`auto`** takes the schedule's value in force within 2.0 s on both models (TRVZB 22, TRV-ZBT 19).
+- **`heat`** alone returns to the last manual heat setpoint (17), not to the value shown in `auto`.
+- **`off`** reports setpoint = frost protection (TRVZB 7, TRV-ZBT 5).
+- Every mode write showed in full within 2.0 s.
+- **Knob in `off` (TRVZB).** The screen shows OF and the valve sends no report.
+- **Knob below 4 (TRVZB).** Turning in `heat` below the minimum switches to `off` (screen OF). Near the bottom, reports flipped between `off` and `heat`, and between 4 and 7, for 12 s before settling at `heat` 4. The knob reaches 4, below frost protection 7.
+- **Child lock (TRVZB).** With `LOCK`, every turn or press shows LC; no report and no change.
+- **TRVZB day write in `heat` and in `off`:** the mode is unchanged.
+- **Not measured:** the TRVZB's own min/max clamping of a written setpoint, and either model's own window detection (not triggered).
+
+### M13: `frost_protection_temperature`
+
+- On both models, 8 is written, echoed within 2 s, and returned by a `get`. Restored to 7 / 5.
+- `get` with `""` for `system_mode`, `occupied_heating_setpoint` and `frost_protection_temperature` answers in 0.85–1.8 s: 3 messages each, with a fresh `last_seen`.
+
+### M14: echoes
+
+- **Echo pattern.** The first message after a write has a fresh `last_seen` but the old state. Zigbee2MQTT's echo with the new value follows, carrying the **same** `last_seen`.
+- **`last_seen` resolution.** It is truncated to the second. Once (2026-11-19 19:12:33), the confirming `last_seen` was 0.45 s **before** the write instant.
+- **Half-applied states** last under 1 s. In a combined write from `off`, the TRVZB shows the mode first (`heat 7`, +0.4 s) and the TRV-ZBT the setpoint first (`off 17`, ~0.7 s).
+- **TRV-ZBT `{auto, 21}` from `heat` 17:** a transient `heat 19` (old mode, the schedule's value) shows before `auto 21`.
+- **TRVZB combined `{heat, 20}` from `auto` 22:**
+  - `heat 22` at +0.3 s;
+  - `heat 17` at +0.8 s (the last manual heat setpoint);
+  - `heat 20` only at +14.6 s, in an echo carrying the +0.8 s `last_seen`.
+
+  In batch 2 the same write took 10.1 s.
+- **Slowest write-to-full-show:** 14.6 s. Every write showed in full within 60 s, and no key was lost.
+
+### M15: TRV-ZBT holds
+
+- `auto` + 21 in one message: `auto 21`, held.
+- `auto` written again: the held value is dropped and the schedule's value (19) returns.
+- A setpoint alone in `auto`: held, and the valve stays in `auto`.
+- A day write with the same points: the held value is **not** dropped.
+
+### M16: rejoin
+
+- **TRVZB** (batteries ran flat, 2026-11-20 00:43; new batteries fitted):
+  - four `device_announce` within 70 s; the valve came back in `auto` 18 each time;
+  - at 00:44:15 it switched to `heat` 18 with no write, while the user was handling the valve, so the cause is unclear;
+  - Heatmaster's rejoin handling re-sent the week and `temperature_sensor_select`; the week write failed with a ZCL error;
+  - the valve kept its week (`auto` 22 at the 07:00 point).
+- **TRV-ZBT** (batteries out, 2026-11-20 ~17:25):
+  - silent for ~5.7 min, then `Configuring` and a `device_announce` at 17:30:47;
+  - a queued `set` and `get` landed on return;
+  - reports: `auto 19` (cache), `auto 17`, `heat 17`, `heat 19`, then `auto 19` at 17:31:03 — buttons may have been pressed while refitting, so this is inconclusive;
+  - `temperature_sensor_select` fell to `local_temperature` at 17:31:05; the user's automation set `remote_temperature` again at 17:35:00;
+  - the written week ran afterwards (16 at 22:00 local, 19 at 06:00).
+- A clean, hands-off repeat on both models is postponed by the user.
+
+### Writes from outside the tests
+
+- **Mancave (2026-11-19):** `…/set/occupied_heating_setpoint 17` at 18:44:05 and 18:54:09, 0.75 s after the valve left `off`, switching it from `auto` to `heat` 17. The writer is the chauffage integration.
+- **Window valve (2026-11-22):** the same per-key write at 05:56:22 and 09:57:00.
