@@ -10,6 +10,7 @@ import {
   fail,
   ok,
   planView,
+  problemView,
   roomView,
   stateView,
   valveView,
@@ -48,6 +49,8 @@ function setup(
     importOriginals: vi.fn<ApiClient["importOriginals"]>(() => Promise.resolve(ok(undefined))),
     acceptOriginals: vi.fn<ApiClient["acceptOriginals"]>(() => Promise.resolve(ok(undefined))),
     dismissUpgrade: vi.fn<ApiClient["dismissUpgrade"]>(() => Promise.resolve(ok(undefined))),
+    resume: vi.fn<ApiClient["resume"]>(() => Promise.resolve(ok(undefined))),
+    resetThermostats: vi.fn<ApiClient["resetThermostats"]>(() => Promise.resolve(ok(undefined))),
     ...options.client,
   } satisfies ApiClient;
   const closed = vi.fn();
@@ -535,6 +538,48 @@ describe("app", () => {
         page.emit(roomState());
         page.button("refresh", ID).click();
         expect(page.client.refresh).toHaveBeenCalledWith(ID);
+      });
+    });
+    describe("When resume is pressed", () => {
+      it("calls client.resume with the room id", async () => {
+        const page = setup();
+        await settle();
+        page.emit(
+          stateView({
+            rooms: [roomView({ roomId: "den", thermostat: { kind: "off", rule: "manual" } })],
+          }),
+        );
+        page.root.querySelector<HTMLButtonElement>('button[data-action="resume"]')?.click();
+        await settle();
+        expect(page.client.resume).toHaveBeenCalledWith("den");
+      });
+    });
+    describe("When reset-thermostats is pressed", () => {
+      const unreadable = stateView({
+        problems: [
+          problemView({ kind: "state_unreadable", subject: { kind: "system", id: "system" } }),
+        ],
+      });
+      describe("With confirm accepted", () => {
+        it("calls client.resetThermostats", async () => {
+          const page = setup({ confirm: true });
+          await settle();
+          page.emit(unreadable);
+          page.button("reset-thermostats").click();
+          await settle();
+          expect(page.client.resetThermostats).toHaveBeenCalledOnce();
+        });
+      });
+      describe("With confirm declined", () => {
+        it("calls nothing", async () => {
+          const page = setup({ confirm: false });
+          await settle();
+          page.emit(unreadable);
+          page.button("reset-thermostats").click();
+          await settle();
+          expect(page.confirm).toHaveBeenCalledOnce();
+          expect(page.client.resetThermostats).not.toHaveBeenCalled();
+        });
       });
     });
     describe("When forget is pressed and not confirmed", () => {

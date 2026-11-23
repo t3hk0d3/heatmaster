@@ -248,6 +248,17 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
     if (!halted()) render();
   }
 
+  async function resumeRoom(roomId: string): Promise<void> {
+    report(await run(() => client.resume(roomId)));
+    if (!halted()) render();
+  }
+
+  async function resetThermostats(): Promise<void> {
+    if (!deps.confirm(translator(language)("room.reset_confirm"))) return;
+    report(await run(() => client.resetThermostats()));
+    if (!halted()) render();
+  }
+
   async function dismissUpgrade(): Promise<void> {
     report(await run(() => client.dismissUpgrade()));
     if (!halted()) render();
@@ -307,6 +318,12 @@ export function mount(root: HTMLElement, deps: AppDeps): Readonly<{ stop(): void
         break;
       case "accept-originals":
         void acceptOriginals(valveId);
+        break;
+      case "resume":
+        void resumeRoom(control.dataset.roomId ?? "");
+        break;
+      case "reset-thermostats":
+        void resetThermostats();
         break;
       case "dismiss-upgrade":
         void dismissUpgrade();

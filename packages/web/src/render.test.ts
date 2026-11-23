@@ -1,4 +1,4 @@
-import type { PendingReason, SettingKey, StateView } from "@heatmaster/core";
+import type { PendingReason, RoomView, SettingKey, StateView } from "@heatmaster/core";
 import { describe, expect, it } from "vitest";
 import { edited, loaded, previewed, refused, request } from "./editor.ts";
 import { DICTIONARIES, translator } from "./i18n.ts";
@@ -595,6 +595,99 @@ describe("render", () => {
         const out = renderOtherValves(state, t);
         expect(button(out, "restore")?.dataset.valveId).toBe(ID);
         expect(button(out, "forget")?.dataset.valveId).toBe(ID);
+      });
+    });
+  });
+
+  describe("renderRooms thermostat state", () => {
+    const at = new Date(2026, 10, 23, 18, 0).getTime();
+    const withThermostat = (thermostat: NonNullable<RoomView["thermostat"]>) =>
+      stateView({
+        rooms: [roomView({ roomId: "den", valveIds: [ID], thermostat })],
+        valves: [valveView({ valveId: ID, name: "Кабинет TRV" })],
+      });
+    describe("With a room on its schedule", () => {
+      it("the state line says it follows the schedule and there is no resume button", () => {
+        const out = renderRooms(withThermostat({ kind: "schedule" }), "en", t);
+        expect(out.querySelector(".room-state")?.textContent).toBe(en["room.state.schedule"]);
+        expect(button(out, "resume")).toBeNull();
+      });
+    });
+    describe("With an override at 22 until 18:00 from valve Кабинет TRV", () => {
+      const state = withThermostat({
+        kind: "override",
+        target: 22,
+        rule: "timer",
+        endsAt: at,
+        origin: { source: "valve", valveId: ID },
+      });
+      it("the state line shows 22 °C, 18:00 and the valve's name", () => {
+        const out = text(renderRooms(state, "ru", translator("ru")));
+        expect(out).toContain("22,0 °C");
+        expect(out).toContain("18:00");
+        expect(out).toContain("Кабинет TRV");
+      });
+      it("a resume button carries the room id", () => {
+        expect(button(renderRooms(state, "en", t), "resume")?.dataset.roomId).toBe("den");
+      });
+    });
+    describe("With a manual override", () => {
+      it('the end reads "you cancel"', () => {
+        const out = text(
+          renderRooms(withThermostat({ kind: "override", target: 22, rule: "manual" }), "en", t),
+        );
+        expect(out).toContain("Set to 22.0 °C until you cancel");
+      });
+    });
+    describe("With the room off with rule next_change", () => {
+      it("the state line says off until the next schedule change", () => {
+        const out = renderRooms(withThermostat({ kind: "off", rule: "next_change" }), "en", t);
+        expect(out.querySelector(".room-state")?.textContent).toBe(
+          "Off until the next schedule change",
+        );
+        expect(button(out, "resume")).not.toBeNull();
+      });
+    });
+    describe("With a change made through Home Assistant or this page", () => {
+      it("the origin reads Home Assistant or this page", () => {
+        const climate = withThermostat({
+          kind: "off",
+          rule: "manual",
+          origin: { source: "climate" },
+        });
+        const api = withThermostat({ kind: "off", rule: "manual", origin: { source: "api" } });
+        expect(text(renderRooms(climate, "en", t))).toContain("Changed on Home Assistant");
+        expect(text(renderRooms(api, "en", t))).toContain("Changed on this page");
+      });
+    });
+    describe("With no thermostat key", () => {
+      it("no state line and no resume button", () => {
+        const { thermostat, ...bare } = roomView();
+        expect(thermostat).toBeDefined();
+        const state = stateView({ rooms: [bare] });
+        const out = renderRooms(state, "en", t);
+        expect(out.querySelector(".room-state")).toBeNull();
+        expect(button(out, "resume")).toBeNull();
+      });
+    });
+  });
+
+  describe("renderProblems state_unreadable", () => {
+    describe("With state_unreadable", () => {
+      it("a Start over button is shown", () => {
+        const problem = problemView({
+          kind: "state_unreadable",
+          subject: { kind: "system", id: "system" },
+        });
+        const out = renderProblems(stateView({ problems: [problem] }), t);
+        expect(button(out, "reset-thermostats")?.textContent).toBe(en["room.reset"]);
+      });
+    });
+    describe("With no state_unreadable", () => {
+      it("no Start over button is shown", () => {
+        expect(
+          button(renderProblems(stateView({ problems: [problemView()] }), t), "reset-thermostats"),
+        ).toBeNull();
       });
     });
   });

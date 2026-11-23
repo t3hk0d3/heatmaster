@@ -126,6 +126,29 @@ describe("i18n", () => {
         }
       });
     });
+    describe("The room state texts", () => {
+      it("exist in both languages", () => {
+        const keys = [
+          "room.state.schedule",
+          "room.state.override",
+          "room.state.off",
+          "room.state.origin",
+          "room.end.next_change",
+          "room.end.manual",
+          "room.origin.climate",
+          "room.origin.api",
+          "room.resume",
+          "room.reset",
+          "room.reset_confirm",
+          "error.state_readable",
+        ];
+        for (const language of ["en", "ru"] as const) {
+          for (const key of keys) {
+            expect(Object.hasOwn(DICTIONARIES[language], key), `${language} ${key}`).toBe(true);
+          }
+        }
+      });
+    });
     describe("en and ru", () => {
       it("have the same keys", () => {
         expect(Object.keys(DICTIONARIES.ru).sort()).toEqual(Object.keys(DICTIONARIES.en).sort());

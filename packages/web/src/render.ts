@@ -240,6 +240,50 @@ export function renderConfigUnreadable(state: StateView, t: Translate): HTMLElem
   return box;
 }
 
+/** A time as the page shows it: the viewer's zone, in the page's language. */
+function formatInstant(at: number, language: Language): string {
+  return new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(at),
+  );
+}
+
+function renderRoomState(
+  room: RoomView,
+  state: StateView,
+  language: Language,
+  t: Translate,
+): HTMLElement | undefined {
+  const thermostat = room.thermostat;
+  if (thermostat === undefined) return undefined;
+  if (thermostat.kind === "schedule") {
+    return textElement("p", t("room.state.schedule"), { class: "room-state" });
+  }
+  const end =
+    thermostat.endsAt !== undefined
+      ? formatInstant(thermostat.endsAt, language)
+      : thermostat.rule === "next_change"
+        ? t("room.end.next_change")
+        : t("room.end.manual");
+  const line =
+    thermostat.kind === "off"
+      ? t("room.state.off", { end })
+      : t("room.state.override", { target: formatTemperature(thermostat.target, language), end });
+  const origin = thermostat.origin;
+  const source =
+    origin === undefined
+      ? undefined
+      : origin.source === "valve"
+        ? (state.valves.find((valve) => valve.valveId === origin.valveId)?.name ??
+          origin.valveId ??
+          "")
+        : t(`room.origin.${origin.source}`);
+  return textElement(
+    "p",
+    source === undefined ? line : `${line}. ${t("room.state.origin", { origin: source })}`,
+    { class: "room-state" },
+  );
+}
+
 function renderRoom(
   room: RoomView,
   state: StateView,
@@ -264,6 +308,11 @@ function renderRoom(
       { class: "schedule" },
     ),
   );
+  const stateLine = renderRoomState(room, state, language, t);
+  if (stateLine !== undefined) article.append(stateLine);
+  if (room.thermostat !== undefined && room.thermostat.kind !== "schedule") {
+    article.append(button(t("room.resume"), "resume", { "data-room-id": room.roomId }));
+  }
   const facts = el("dl", {});
   facts.append(
     labelled(t("rooms.temperature"), formatTemperature(room.currentTemperature, language)),
@@ -364,10 +413,9 @@ export function renderHaChanges(state: StateView, language: Language, t: Transla
   const section = el("section", { class: "ha-changes" });
   if (state.haChanges.length === 0) return section;
   section.append(textElement("h2", t("ha_changes.title")), textElement("p", t("ha_changes.hint")));
-  const formatter = new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" });
   const list = el("ul", {});
   for (const change of [...state.haChanges].reverse()) {
-    const time = formatter.format(new Date(change.at));
+    const time = formatInstant(change.at, language);
     const item = el(
       "li",
       { class: "ha-change" },
@@ -504,6 +552,9 @@ export function renderProblems(state: StateView, t: Translate, offerEmpty = fals
       );
     }
     section.append(list);
+  }
+  if (state.problems.some((problem) => problem.kind === "state_unreadable")) {
+    section.append(button(t("room.reset"), "reset-thermostats"));
   }
   if (!state.ledgerReadable) {
     const box = el("div", { class: "originals" });

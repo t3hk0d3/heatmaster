@@ -29,6 +29,10 @@ export type ApiClient = Readonly<{
   acceptOriginals(valveId: string): Promise<Result<void>>;
   /** Hides the report of the conversion from an older configuration. */
   dismissUpgrade(): Promise<Result<void>>;
+  /** Ends a room's override or off and puts it back on its schedule. */
+  resume(roomId: string): Promise<Result<void>>;
+  /** Drops the saved room states a failed read left unusable. */
+  resetThermostats(): Promise<Result<void>>;
 }>;
 
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -54,7 +58,11 @@ function foreignFailure(status: number): Result<never> {
 }
 
 export function createClient(base: string, fetchFn: typeof fetch): ApiClient {
-  async function call<T>(method: "GET" | "POST", path: string, body?: object): Promise<Result<T>> {
+  async function call<T>(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body?: object,
+  ): Promise<Result<T>> {
     let response: Response;
     let text: string;
     try {
@@ -98,5 +106,7 @@ export function createClient(base: string, fetchFn: typeof fetch): ApiClient {
     acceptOriginals: (valveId) =>
       call<undefined>("POST", valvePath(valveId, "accept-originals"), {}),
     dismissUpgrade: () => call<undefined>("POST", "upgrade/dismiss", {}),
+    resume: (roomId) => call<undefined>("DELETE", `rooms/${encodeURIComponent(roomId)}/override`),
+    resetThermostats: () => call<undefined>("POST", "thermostats/reset"),
   };
 }

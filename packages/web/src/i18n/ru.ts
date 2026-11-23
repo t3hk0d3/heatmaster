@@ -48,6 +48,18 @@ export const ru: Dictionary = {
   "rooms.none": "Пока ни в одной зоне Home Assistant нет клапана, поэтому комнат нет.",
   "rooms.unknown": "Комнаты берутся из зон Home Assistant, поэтому без него они неизвестны.",
   "room.schedule": "Расписание: {name}",
+  "room.state.schedule": "По расписанию",
+  "room.state.override": "Установлено {target} до {end}",
+  "room.state.off": "Выключено до {end}",
+  "room.state.origin": "Изменено: {origin}",
+  "room.end.next_change": "следующего изменения по расписанию",
+  "room.end.manual": "отмены",
+  "room.origin.climate": "Home Assistant",
+  "room.origin.api": "эта страница",
+  "room.resume": "Вернуть расписание",
+  "room.reset": "Начать заново",
+  "room.reset_confirm":
+    "Начать заново? Сохранённые состояния комнат будут сброшены, и каждая комната вернётся к своему расписанию.",
   "room.no_schedule": "Расписания нет",
   "room.not_managed": "Не управляется",
   "room.not_managed_hint":

@@ -83,6 +83,26 @@ describe("api", () => {
       });
     });
 
+    describe("resume", () => {
+      it("sends DELETE /api/rooms/<encoded id>/override and returns ok on 204", async () => {
+        const { fetchFn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
+        const result = await createClient("/api/", fetchFn).resume("a b/c");
+        expect([calls[0]?.url, calls[0]?.init?.method]).toEqual([
+          "/api/rooms/a%20b%2Fc/override",
+          "DELETE",
+        ]);
+        expect(result.ok).toBe(true);
+      });
+    });
+
+    describe("resetThermostats", () => {
+      it("sends POST /api/thermostats/reset", async () => {
+        const { fetchFn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
+        await createClient("/api/", fetchFn).resetThermostats();
+        expect([calls[0]?.url, calls[0]?.init?.method]).toEqual(["/api/thermostats/reset", "POST"]);
+      });
+    });
+
     describe("hold(true)", () => {
       it('sends POST to <base>hold with {"on":true}', async () => {
         const { fetchFn, calls } = fakeFetch(() => new Response(null, { status: 204 }));

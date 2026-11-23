@@ -128,6 +128,18 @@ export const en = {
   "rooms.none": "No Home Assistant area holds a valve yet, so there are no rooms.",
   "rooms.unknown": "Rooms come from Home Assistant's areas, so they are not known without it.",
   "room.schedule": "Schedule: {name}",
+  "room.state.schedule": "Following the schedule",
+  "room.state.override": "Set to {target} until {end}",
+  "room.state.off": "Off until {end}",
+  "room.state.origin": "Changed on {origin}",
+  "room.end.next_change": "the next schedule change",
+  "room.end.manual": "you cancel",
+  "room.origin.climate": "Home Assistant",
+  "room.origin.api": "this page",
+  "room.resume": "Resume schedule",
+  "room.reset": "Start over",
+  "room.reset_confirm":
+    "Start over? The saved room states are dropped and every room goes back to its schedule.",
   "room.no_schedule": "No schedule",
   "room.not_managed": "Not managed",
   "room.not_managed_hint":
