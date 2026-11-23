@@ -482,7 +482,7 @@ export const BUILDER_SCHEDULED: ThermostatWanted = {
 
 /**
  * A valve expectation for `BUILDER_ROOM`: unless told otherwise, confirmed at `BUILDER_SCHEDULED`,
- * nothing sent, no saved or previous week. `confirmed: undefined` is a valve being taken over.
+ * nothing sent, no saved, written or previous week. `confirmed: undefined` is a valve being taken over.
  * `makeManaged` saves the room's week with it (`savedWeekOf`).
  */
 export function makeExpectation(
@@ -491,6 +491,7 @@ export function makeExpectation(
     confirmed?: ThermostatWanted | undefined;
     sent?: ValveExpectation["sent"];
     week?: ValveExpectation["week"];
+    written?: ValveExpectation["written"];
     previous?: ValveExpectation["previous"];
   } = {},
 ): ValveExpectation {
@@ -499,6 +500,7 @@ export function makeExpectation(
     confirmed: "confirmed" in options ? options.confirmed : BUILDER_SCHEDULED,
     sent: options.sent ?? [],
     week: options.week,
+    written: options.written,
     previous: options.previous,
   };
 }

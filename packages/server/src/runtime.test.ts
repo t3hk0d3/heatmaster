@@ -5721,6 +5721,7 @@ describe("runtime", () => {
                   },
                 ],
                 week: undefined,
+                written: undefined,
                 previous: undefined,
               },
             ],

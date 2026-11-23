@@ -3853,6 +3853,74 @@ describe("control", () => {
       });
     });
 
+    describe("With a TRV-ZBT whose first week was written but not confirmed and whose next week's day write was lost", () => {
+      // A TRV-ZBT joins with group 1 active, so no week of it is confirmed before group 3 is. Its
+      // first week (18 from 13:00) is written; the room's schedule is then edited to OTHER_DAY
+      // (21 from 07:00 to 23:00), and those seven days are lost.
+      const firstDay = points("00:00/17 06:30/20 13:00/18 22:00/17");
+      const joining = withWeekDay(
+        makeManaged({
+          model: "trv_zbt",
+          state: makeState({ values: { ...EQUAL_ZBT, active_group: 1, setpoint: 20 } }),
+          expectation: null,
+        }),
+        firstDay,
+      );
+      /** Ticks `rounds` times 30 s apart, answering each request unless `lost` says so. */
+      function run(
+        world: World,
+        rounds: number,
+        lost: (values: SettingValues) => boolean,
+      ): [World, Effect[]] {
+        let current = world;
+        const all: Effect[] = [];
+        for (let i = 0; i < rounds; i++) {
+          const result = tick(current);
+          all.push(...result.effects);
+          current = { ...current, memory: result.memory, thermostats: result.thermostats };
+          for (const effect of result.effects) {
+            if (effect.kind !== "publish" && effect.kind !== "refresh") continue;
+            const values = effect.kind === "publish" ? effect.values : {};
+            if (lost(values)) continue;
+            current = hear(current, values, nowOf(current) + SECOND_MS, effect.valveId);
+          }
+          current = later(current, 30 * SECOND_MS);
+        }
+        return [current, all];
+      }
+      const firstDays = sevenDays(firstDay);
+      const isFirstDays = (values: SettingValues): boolean =>
+        JSON.stringify(values) === JSON.stringify(firstDays);
+      // Until its first week goes out, the valve answers what it can: not the group 3 switch.
+      let world = joining;
+      let firstSent = false;
+      for (let i = 0; i < 10 && !firstSent; i++) {
+        const [after, effects] = run(world, 1, (values) => "active_group" in values);
+        world = after;
+        firstSent = effects.some((e) => e.kind === "publish" && isFirstDays(e.values));
+      }
+      const edited = withWeekDay(world, OTHER_DAY);
+      const [settledOn] = run(edited, 20, (values) => "day_mon" in values);
+      const pointAt = Temporal.ZonedDateTime.from("2026-11-16T13:00:30+01:00[Europe/Amsterdam]");
+      const pointHeard = hear(later(settledOn, pointAt.epochMilliseconds - nowOf(settledOn)), {
+        setpoint: 18,
+      });
+      const point = tick(later(pointHeard, SECOND_MS));
+
+      it("its first week went out and group 3 became active", () => {
+        expect(firstSent).toBe(true);
+        expect(stateOf(settledOn).values.active_group).toBe(3);
+      });
+      it("its first week's point is not adopted", () => {
+        expect(stateAfter(point).rooms.has(BUILDER_ROOM)).toBe(false);
+      });
+      it("its first week is its previous week", () => {
+        expect(expectationAfter(point)?.previous?.key).toBe(
+          savedWeekOf(joining, makeSpec("trv_zbt")).key,
+        );
+      });
+    });
+
     describe("With a TRV-ZBT confirmed auto 24 scheduled (recorded), its week confirmed, showing its own point's 21", () => {
       // OTHER_DAY holds 21 from 07:00 to 23:00.
       const base = confirmedAt(withValues(zbtWorld(OTHER_DAY), { setpoint: 21 }), {

@@ -106,14 +106,21 @@ export function savedWeek(
   return scheduledAuto(wanted) && valve.week !== undefined ? valve.week : expectation.week;
 }
 
-/**
- * The expectation with `week` saved. When its key differs from the saved week's, the week it
- * replaces becomes the previous one: the valve may still run it until it shows `week`. `e` itself
- * when the key is the same.
- */
+/** The expectation with `week` saved; `e` itself when its key is the saved week's. */
 export function withWeek(e: ValveExpectation, week: SavedWeek | undefined): ValveExpectation {
-  if (week?.key === e.week?.key) return e;
-  return { ...e, week, previous: e.week ?? e.previous };
+  return week?.key === e.week?.key ? e : { ...e, week };
+}
+
+/**
+ * The expectation once a schedule write of `week` is sent, confirmed or not. When its key differs
+ * from the written week's, the week written before becomes the previous one: the valve may still
+ * run it until it shows `week`. A state saved before the written week was kept has the saved week
+ * stand in for it. `e` itself when the same week is sent again.
+ */
+export function withWritten(e: ValveExpectation, week: SavedWeek): ValveExpectation {
+  if (week.key === e.written?.key) return e;
+  const before = [e.written, e.week].find((w) => w !== undefined && w.key !== week.key);
+  return { ...e, written: week, previous: before ?? e.previous };
 }
 
 /**
@@ -202,13 +209,15 @@ type Judging = Readonly<{
 function judge(valve: JudgedValve, roomId: string): Judging {
   const given = valve.expectation;
   if (given?.roomId !== roomId) {
-    // R3: taken over.
+    // R3: taken over. The weeks written to the valve are facts of the valve, not of its room, and
+    // are kept: one of them may be the week it still runs.
     const expectation = {
       roomId,
       confirmed: undefined,
       sent: [],
       week: undefined,
-      previous: undefined,
+      written: given?.written,
+      previous: given?.previous,
     };
     return { expectation, change: undefined, resend: false };
   }

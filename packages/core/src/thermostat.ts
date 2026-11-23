@@ -88,14 +88,16 @@ export type SavedWeek = Readonly<{ key: string; values: readonly number[] }>;
 /**
  * What a managed valve is expected to show for its room (R3). `confirmed` undefined: the valve is
  * taken over. `sent` is newest first, holds each wanted state at most once and at most
- * `SENT_KEPT` writes. `previous` is the week `week` replaced, kept until the valve shows a point
- * of `week` (a TRV-ZBT's day write can be lost while it still reports, so it may still run it).
+ * `SENT_KEPT` writes. `written` is the week of the last schedule write sent to the valve, confirmed
+ * or not. `previous` is the week written before it, kept until the valve shows a point of its saved
+ * week (a TRV-ZBT's day write can be lost while it still reports, so it may still run that one).
  */
 export type ValveExpectation = Readonly<{
   roomId: string;
   confirmed: ThermostatWanted | undefined;
   sent: readonly SentWrite[];
   week: SavedWeek | undefined;
+  written: SavedWeek | undefined;
   previous: SavedWeek | undefined;
 }>;
 
@@ -292,6 +294,7 @@ function expectationToRaw(expectation: ValveExpectation): Record<string, unknown
       from: { ...optional("mode", write.from.mode), ...optional("setpoint", write.from.setpoint) },
     })),
     ...optional("week", weekToRaw(expectation.week)),
+    ...optional("written", weekToRaw(expectation.written)),
     ...optional("previous", weekToRaw(expectation.previous)),
   };
 }
@@ -446,12 +449,13 @@ function weekFromRaw(value: unknown): SavedWeek {
 }
 
 function expectationFromRaw(value: unknown): ValveExpectation {
-  const obj = objectOf(value, ["room", "sent"], ["confirmed", "week", "previous"]);
+  const obj = objectOf(value, ["room", "sent"], ["confirmed", "week", "written", "previous"]);
   return {
     roomId: text(obj.room),
     confirmed: maybe(obj.confirmed, (raw) => wantedOf(objectOf(raw, WANTED_KEYS, ["setpoint"]))),
     sent: sentListFromRaw(obj.sent),
     week: maybe(obj.week, weekFromRaw),
+    written: maybe(obj.written, weekFromRaw),
     previous: maybe(obj.previous, weekFromRaw),
   };
 }

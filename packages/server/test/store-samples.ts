@@ -187,7 +187,7 @@ export function overrideState(): ThermostatState {
 
 /**
  * Every field the state file holds: an override with a preset from a valve, a room turned off
- * until cancelled, a confirmed valve with a sent write, a saved and a previous week, and a
+ * until cancelled, a confirmed valve with a sent write, a saved, a written and a previous week, and a
  * taken-over valve.
  */
 export function sampleThermostats(): ThermostatState {
@@ -226,12 +226,20 @@ export function sampleThermostats(): ThermostatState {
             },
           ],
           week: { key: "week-key", values: [18, 21] },
+          written: { key: "week-key", values: [18, 21] },
           previous: { key: "old-week-key", values: [17, 20] },
         },
       ],
       [
         "z2m:0x00124b0000000009",
-        { roomId: "office", confirmed: undefined, sent: [], week: undefined, previous: undefined },
+        {
+          roomId: "office",
+          confirmed: undefined,
+          sent: [],
+          week: undefined,
+          written: undefined,
+          previous: undefined,
+        },
       ],
     ]),
   };

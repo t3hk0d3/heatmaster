@@ -1,4 +1,4 @@
-import { adopt, recorded, savedWeek, scheduledAuto, withWeek } from "./adopt.ts";
+import { adopt, recorded, savedWeek, scheduledAuto, withWeek, withWritten } from "./adopt.ts";
 import type { JudgedValve } from "./adopt.ts";
 import {
   differing,
@@ -657,6 +657,12 @@ function usableSavedWeek(
   return otherGroupActive(spec, state) ? undefined : saved;
 }
 
+/** A fitted week as its key and its temperatures, as a valve's expectation keeps it (R23). */
+function savedOf(days: ResolvedWeek): SavedWeek {
+  const values = new Set(WEEKDAYS.flatMap((day) => days[day].map((point) => point.temperature)));
+  return { key: weekKey(days), values: [...values].sort((a, b) => a - b) };
+}
+
 /** A valve that has shown nothing. */
 const NOTHING_SEEN: ThermostatSeen = { mode: undefined, setpoint: undefined };
 
@@ -978,6 +984,7 @@ function runValve(
     action = ask();
   }
   let published = false;
+  let scheduleSent = false;
   if (canAct && action === undefined) {
     const pick = cands.find(
       (s) => !(settling && s.group === "thermostat") && mayWrite(vm, s.group, nowMs),
@@ -986,6 +993,7 @@ function runValve(
       action = { kind: "publish", valveId, values: pick.values };
       vm = charge(vm, pick.group, nowMs, pick.marked);
       published = pick.group === "thermostat";
+      scheduleSent = pick.group === "schedule";
       if (
         kind === "managed" &&
         pick.group === "schedule" &&
@@ -1053,7 +1061,7 @@ function runValve(
   if (vm.feedLostSince !== undefined && nowMs - vm.feedLostSince >= FEED_LOST_AFTER_MS) {
     problems.push(problemFeedLost(valveId));
   }
-  const expectation =
+  const next =
     thermostat === undefined || wanted === undefined
       ? thermostat?.expectation
       : nextExpectation(
@@ -1064,6 +1072,11 @@ function runValve(
           published,
           nowMs,
         );
+  // The week a schedule write carries is kept, so a lost one leaves the week before explained.
+  const expectation =
+    next === undefined || week === undefined || !scheduleSent
+      ? next
+      : withWritten(next, savedOf(week.days));
   return {
     vm,
     expectation,

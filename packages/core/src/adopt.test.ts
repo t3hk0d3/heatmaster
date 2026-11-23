@@ -7,7 +7,7 @@ import {
   makeSpec,
   makeThermostat,
 } from "../test/builders.ts";
-import { adopt, clampThermostatState, withWeek } from "./adopt.ts";
+import { adopt, clampThermostatState, withWeek, withWritten } from "./adopt.ts";
 import type { AdoptInput, Adoption, JudgedValve } from "./adopt.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
 import type { Room } from "./model.ts";
@@ -197,6 +197,7 @@ describe("adopt", () => {
             confirmed: undefined,
             sent: [],
             week: undefined,
+            written: undefined,
             previous: undefined,
           });
         });
@@ -211,7 +212,30 @@ describe("adopt", () => {
             confirmed: undefined,
             sent: [],
             week: undefined,
+            written: undefined,
             previous: undefined,
+          });
+        });
+      });
+      describe("With an expectation kept for another room, holding a written and a previous week", () => {
+        it("the valve is taken over, keeping the weeks written to it", () => {
+          const written = { key: "b", values: [16, 21] };
+          const previous = { key: "a", values: [17, 20] };
+          const other = makeExpectation({
+            roomId: "kitchen",
+            confirmed: heat(23),
+            week: written,
+            written,
+            previous,
+          });
+          const result = adopt(input([valve({ shows: seen("heat", 23), expectation: other })]));
+          expect(expectationOf(result)).toEqual({
+            roomId: BUILDER_ROOM,
+            confirmed: undefined,
+            sent: [],
+            week: undefined,
+            written,
+            previous,
           });
         });
       });
@@ -1052,8 +1076,8 @@ describe("adopt", () => {
           expect(result.resend).toEqual(new Set());
         });
       });
-      describe("With a TRV-ZBT under its old week, sent [auto 21 scheduled], showing auto 21 once its new week is confirmed", () => {
-        it("its saved week is the new one and its previous week the old one", () => {
+      describe("With a TRV-ZBT under its old week, its new week written, sent [auto 21 scheduled], showing auto 21 once its new week is confirmed", () => {
+        it("its saved week is the new one and its previous week stays the old one", () => {
           const result = adopt(
             input([
               valve({
@@ -1064,6 +1088,8 @@ describe("adopt", () => {
                   confirmed: autoAt(20),
                   sent: [sent(autoAt(21), at("10:00"), seen("auto", 20))],
                   week: OLD_WEEK,
+                  written: NEW_WEEK,
+                  previous: OLD_WEEK,
                 }),
                 ctx: weekCtx([16, 21], [21]),
                 week: NEW_WEEK,
@@ -1207,34 +1233,52 @@ describe("adopt", () => {
     const B: SavedWeek = { key: "b", values: [16, 21] };
     const C: SavedWeek = { key: "c", values: [18] };
 
-    describe("With a saved week A and no previous week, given B", () => {
-      it("its week is B and its previous week A", () => {
-        const result = withWeek(makeExpectation({ week: A }), B);
-        expect(result).toMatchObject({ week: B, previous: A });
-      });
-    });
-    describe("With week B and previous week A, given C", () => {
-      it("its week is C and its previous week B", () => {
-        const result = withWeek(makeExpectation({ week: B, previous: A }), C);
-        expect(result).toMatchObject({ week: C, previous: B });
-      });
-    });
-    describe("With week B and previous week A, given A again", () => {
-      it("its week is A and its previous week B", () => {
-        const result = withWeek(makeExpectation({ week: B, previous: A }), A);
-        expect(result).toMatchObject({ week: A, previous: B });
-      });
-    });
-    describe("With no saved week, given B", () => {
-      it("its week is B and it has no previous week", () => {
-        const result = withWeek(makeExpectation(), B);
-        expect(result).toMatchObject({ week: B, previous: undefined });
+    describe("With a saved week A and a previous week C, given B", () => {
+      it("its week is B and its previous week stays C", () => {
+        const result = withWeek(makeExpectation({ week: A, previous: C }), B);
+        expect(result).toMatchObject({ week: B, previous: C });
       });
     });
     describe("With week B, given a week with B's key", () => {
       it("the expectation itself", () => {
         const expectation = makeExpectation({ week: B });
         expect(withWeek(expectation, { key: "b", values: [16, 21] })).toBe(expectation);
+      });
+    });
+  });
+
+  describe("withWritten", () => {
+    const A: SavedWeek = { key: "a", values: [17, 20] };
+    const B: SavedWeek = { key: "b", values: [16, 21] };
+
+    describe("With a written week A, given B", () => {
+      it("its written week is B and its previous week A", () => {
+        const result = withWritten(makeExpectation({ written: A }), B);
+        expect(result).toMatchObject({ written: B, previous: A });
+      });
+    });
+    describe("With no written week and a saved week A, given B (a state saved before 0.3.1)", () => {
+      it("its written week is B and its previous week A", () => {
+        const result = withWritten(makeExpectation({ week: A }), B);
+        expect(result).toMatchObject({ written: B, previous: A });
+      });
+    });
+    describe("With no written and no saved week (a valve being taken over), given A", () => {
+      it("its written week is A and it has no previous week", () => {
+        const result = withWritten(makeExpectation({ confirmed: undefined }), A);
+        expect(result).toMatchObject({ written: A, previous: undefined });
+      });
+    });
+    describe("With no written week, a saved week A and a previous week B, given A", () => {
+      it("its written week is A and its previous week stays B", () => {
+        const result = withWritten(makeExpectation({ week: A, previous: B }), A);
+        expect(result).toMatchObject({ written: A, previous: B });
+      });
+    });
+    describe("With a written week B, given a week with B's key (the week sent again)", () => {
+      it("the expectation itself", () => {
+        const expectation = makeExpectation({ written: B, previous: A });
+        expect(withWritten(expectation, { key: "b", values: [16, 21] })).toBe(expectation);
       });
     });
   });
