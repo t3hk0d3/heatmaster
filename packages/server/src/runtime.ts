@@ -1327,11 +1327,13 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         held: outcome.held,
       });
     }
-    if (outcome.held.length > 0) {
+    // Only a tick holds publishes back: outside one there is no start to go back to, and deleting
+    // a held valve's memory would forget far more than the publish.
+    if (outcome.held.length > 0 && run !== undefined) {
       const valves = new Map(inbox.memory.valves);
       for (const valveId of outcome.held) {
         const current = valves.get(valveId);
-        const start = run?.start.valves.get(valveId);
+        const start = run.start.valves.get(valveId);
         if (current === undefined) continue;
         if (start === undefined) valves.delete(valveId);
         else valves.set(valveId, restoreThermostatGroup(current, start));
