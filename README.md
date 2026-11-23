@@ -227,9 +227,11 @@ room into an override that resuming the schedule clears.
   person's change.
 - **A lost, queued or late TRV-ZBT schedule write.** The valve's days cannot be read back, so a write
   that is lost or late while the valve still reports counts as confirmed, and the valve stays on its
-  old week. Heatmaster keeps the old week until the valve shows a point of the new one: a point of the
-  old week is not taken for a person's change, and the week is written again. Until the valve shows
-  the new week, a TRV-ZBT turned to exactly the old week's value at one of its points is not seen.
+  old week. Heatmaster keeps the week it wrote before until the valve shows a point of the new one: a
+  point of that week is not taken for a person's change, and the week is written again. Until the
+  valve shows the new week, a TRV-ZBT turned to exactly the old week's value at one of its points is
+  not seen. If the write before was lost too, the valve holds an older week, or one Heatmaster never
+  knew, and one of its points can still be taken for a person's change.
 - Heatmaster cannot tell a knob from a write sent through Zigbee2MQTT or Home Assistant. Both show
   as a change made on that valve.
 
