@@ -366,12 +366,16 @@ function originText(room: RoomView, state: StateView): string | null {
   return `valve ${valve?.name ?? origin.valveId ?? ""}`.trimEnd();
 }
 
-/** The part of a room's state message that belongs to its thermostat (R14). */
+/**
+ * The part of a room's state message that belongs to its thermostat (R14). While the thermostat is
+ * unknown (the state file unreadable) the mode is left out: Home Assistant's climate reads a
+ * `null` as the mode "None" and logs it as invalid, and ignores a mode that is missing.
+ */
 function thermostatPayload(room: RoomView, state: StateView): Record<string, unknown> {
   const thermostat = room.thermostat;
   const texts = ENTITY_TEXTS[state.language];
   return {
-    mode: thermostat === undefined ? null : MODES[thermostat.kind],
+    ...(thermostat === undefined ? {} : { mode: MODES[thermostat.kind] }),
     preset: thermostat?.preset ?? "none",
     action: thermostat?.kind === "off" ? "off" : room.heating === true ? "heating" : "idle",
     rule: thermostat?.rule ?? null,

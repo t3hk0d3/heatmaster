@@ -544,7 +544,6 @@ describe("discovery", () => {
           target: 20,
           problem: "OFF",
           sync: "in_sync",
-          mode: null,
           preset: "none",
           action: "idle",
           rule: null,
@@ -555,6 +554,10 @@ describe("discovery", () => {
           schedule: null,
           override_end: null,
         });
+      });
+      it("its message has no mode key, which Home Assistant's climate would take for a mode None", () => {
+        const message = parse(one(view(), roomStateTopic("a"))) as Record<string, unknown>;
+        expect(Object.hasOwn(message, "mode")).toBe(false);
       });
     });
     describe("With a room overridden manual at 22 with preset comfort, heating", () => {
