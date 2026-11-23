@@ -1794,6 +1794,19 @@ describe("scenarios", () => {
         expect(valve.received().writes).toBe(1);
         expect(valve.truth().select).toBe("local_temperature");
       });
+      it("with a filter, lands only the requests it names and keeps the others late", () => {
+        const { sim, id } = one();
+        const valve = sim.valve(id);
+        valve.setPolicy(() => "late");
+        sim.bridge.write(id, { temperature_sensor_select: "local_temperature" }, sim.now());
+        sim.bridge.write(id, { frost_protection_temperature: 9 }, sim.now());
+        valve.flushLate(sim.now(), (request) =>
+          request.kind === "write" ? request.write.frostProtection !== undefined : false,
+        );
+        expect(valve.received().writes).toBe(1);
+        expect(valve.truth().frostProtection).toBe(9);
+        expect(valve.queued()).toBe(1);
+      });
       it("keeps them for the wake-up when the valve sleeps", () => {
         const { sim, id } = one();
         const valve = sim.valve(id);

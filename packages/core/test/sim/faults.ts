@@ -154,19 +154,12 @@ export const BY_HAND: ReadonlySet<Fault["k"]> = new Set(["knob", "button", "pers
 export const NOT_OWN: ReadonlySet<Fault["k"]> = new Set([...BY_HAND, "compete", "swap"]);
 
 /**
- * A write to the TRV-ZBT that is lost, late, or queued (a request queued while the valve is awake
- * waits for a wake-up that may never come). Its days are write-only, so a day write that does not
- * land while the valve still reports counts as confirmed (R23), and the valve's own points of its
- * old week are then judged against the new one. P-own leaves these out: a known limit, in
- * `docs/backlog.md`.
+ * A fault P-own covers. That includes a lost, late or queued day write to the TRV-ZBT: its days
+ * are write-only, so the new week counts as confirmed once the valve speaks, and the points of the
+ * week it still runs are explained by its previous week, which has its schedule written again.
  */
-export function zbtWriteMissed(fault: Fault): boolean {
-  return fault.k === "fate" && fault.valve === 1 && fault.on !== "read";
-}
-
-/** A fault P-own covers. */
 export function ownFault(fault: Fault): boolean {
-  return !NOT_OWN.has(fault.k) && !zbtWriteMissed(fault);
+  return !NOT_OWN.has(fault.k);
 }
 
 /**
@@ -359,6 +352,14 @@ export function faultPlan(
 
 // The rig ----------------------------------------------------------------------------------------
 
+/** A write that carries a mode or a setpoint. */
+export function isThermostatRequest(request: ValveRequest): boolean {
+  return (
+    request.kind === "write" &&
+    (request.write.mode !== undefined || request.write.setpoint !== undefined)
+  );
+}
+
 type FateEntry = Readonly<{
   on: "write" | "read" | "any";
   fate: "lose" | "queue" | "late";
@@ -369,7 +370,10 @@ type Competitor = Readonly<{ what: "select" | "group" | "days"; until: number }>
 
 interface FaultState {
   fates: [FateEntry[], FateEntry[]];
+  /** When the late requests land (at most `LATE_LIMIT_MS` after they were sent). */
   lateAt: [number | undefined, number | undefined];
+  /** When the late mode and setpoint writes land, apart: a late day write stays late. */
+  thermostatLateAt: [number | undefined, number | undefined];
   competitors: [Competitor | undefined, Competitor | undefined];
   linkDown: boolean;
   haDown: boolean;
@@ -519,6 +523,7 @@ export function createRig(start: Initial): Rig {
   const state: FaultState = {
     fates: [[], []],
     lateAt: [undefined, undefined],
+    thermostatLateAt: [undefined, undefined],
     competitors: [undefined, undefined],
     linkDown: false,
     haDown: false,
@@ -553,15 +558,12 @@ export function createRig(start: Initial): Rig {
       const entry = list[i];
       if (entry === undefined) return undefined;
       list.splice(i, 1);
-      const thermostat =
-        request.kind === "write" &&
-        (request.write.mode !== undefined || request.write.setpoint !== undefined);
       // A mode or setpoint write that is late or queued while the valve is awake lands within
       // the next step (THERMOSTAT_LATE_LIMIT_MS); one queued while it sleeps lands at its wake-up,
       // before it speaks.
-      if (thermostat && entry.fate !== "lose" && valve.isAwake()) {
+      if (isThermostatRequest(request) && entry.fate !== "lose" && valve.isAwake()) {
         const due = sim.now() + Math.min(entry.delayMs, THERMOSTAT_LATE_LIMIT_MS);
-        state.lateAt[s] = Math.min(state.lateAt[s] ?? due, due);
+        state.thermostatLateAt[s] = Math.min(state.thermostatLateAt[s] ?? due, due);
         return "late";
       }
       if (entry.fate === "late" && state.lateAt[s] === undefined) {
@@ -626,6 +628,11 @@ export function createRig(start: Initial): Rig {
   const atStart = (): void => {
     const now = sim.now();
     for (const s of SLOTS) {
+      const thermostatDue = state.thermostatLateAt[s];
+      if (thermostatDue !== undefined && now >= thermostatDue) {
+        state.thermostatLateAt[s] = undefined;
+        sim.valve(VALVE_IDS[s]).flushLate(now, isThermostatRequest);
+      }
       const due = state.lateAt[s];
       if (due !== undefined && now >= due) {
         state.lateAt[s] = undefined;
@@ -856,6 +863,7 @@ export function quiesce(sim: SimDriver): void {
     state.fates = [[], []];
     state.competitors = [undefined, undefined];
     state.lateAt = [undefined, undefined];
+    state.thermostatLateAt = [undefined, undefined];
     sim.crashAfterEffects(undefined);
   }
   state?.retry?.();
