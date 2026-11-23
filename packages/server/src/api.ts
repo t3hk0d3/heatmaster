@@ -10,9 +10,14 @@ import type {
   ApiError,
   ApplyRequest,
   ConfigView,
+  EndChoice,
   EventMessage,
+  OffRequest,
+  Origin,
+  OverrideRequest,
   PlanView,
   StateView,
+  ThermostatCommand,
 } from "@heatmaster/core";
 import Fastify from "fastify";
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -50,6 +55,8 @@ export type ApiRuntime = Pick<
   | "dismissUpgrade"
   | "setHold"
   | "diagnostics"
+  | "roomCommand"
+  | "resetThermostats"
 >;
 
 export type ApiDeps = Readonly<{
@@ -140,6 +147,17 @@ function send(reply: FastifyReply, result: Failure): FastifyReply {
 
 const NO_FIELDS = { type: "object", additionalProperties: false, properties: {} } as const;
 
+/** 15 to 1440 whole minutes, in milliseconds. */
+const END_REQUEST = {
+  type: "object",
+  additionalProperties: false,
+  required: ["rule"],
+  properties: {
+    rule: { enum: ["next_change", "timer", "manual"] },
+    durationMs: { type: "integer", minimum: 900000, maximum: 86400000, multipleOf: 60000 },
+  },
+} as const;
+
 const SCHEMAS = {
   apply: {
     type: "object",
@@ -167,6 +185,29 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: { acceptEmpty: { type: "boolean" } },
   },
+  override: {
+    type: "object",
+    additionalProperties: false,
+    oneOf: [{ required: ["target"] }, { required: ["preset"] }],
+    properties: {
+      target: { type: "number", minimum: 0, maximum: 50 },
+      preset: { enum: ["comfort", "eco", "frost", "boost"] },
+      end: { $ref: "#/definitions/end" },
+    },
+    definitions: { end: END_REQUEST },
+  },
+  off: {
+    type: "object",
+    additionalProperties: false,
+    properties: { end: { $ref: "#/definitions/end" } },
+    definitions: { end: END_REQUEST },
+  },
+} as const;
+
+const ROOM_PARAMS = {
+  type: "object",
+  required: ["id"],
+  properties: { id: { type: "string", minLength: 1 } },
 } as const;
 
 const VALVE_PARAMS = {
@@ -234,6 +275,13 @@ function configOf(body: ApplyRequest): ParsedConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return yamlFailure();
   return { ok: true, config: value as Record<string, unknown> };
 }
+
+/** The end a request names; left out, the room's own end applies. */
+function endChoiceOf(end: OverrideRequest["end"]): EndChoice | undefined {
+  return end === undefined ? undefined : { rule: end.rule, durationMs: end.durationMs };
+}
+
+const API_ORIGIN: Origin = { source: "api", valveId: undefined };
 
 function optionsOf(body: ApplyRequest): ApplyOptions {
   return {
@@ -440,6 +488,49 @@ export function buildApi(deps: ApiDeps, logger = false): FastifyInstance {
         return noContent(reply);
       },
     );
+
+    routes.post<{ Params: { id: string }; Body: OverrideRequest }>(
+      "/api/rooms/:id/override",
+      { schema: { params: ROOM_PARAMS, body: SCHEMAS.override } },
+      async (request, reply) => {
+        const { target, preset, end } = request.body;
+        const choice = endChoiceOf(end);
+        // The schema lets exactly one of `target` and `preset` through.
+        const command: ThermostatCommand | undefined =
+          target !== undefined
+            ? { kind: "set_target", celsius: target, end: choice }
+            : preset !== undefined
+              ? { kind: "set_preset", preset, end: choice }
+              : undefined;
+        if (command === undefined) throw new Error("the override schema let neither field through");
+        await runtime.roomCommand(request.params.id, command, API_ORIGIN);
+        return noContent(reply);
+      },
+    );
+
+    routes.delete<{ Params: { id: string } }>(
+      "/api/rooms/:id/override",
+      { schema: { params: ROOM_PARAMS } },
+      async (request, reply) => {
+        await runtime.roomCommand(request.params.id, { kind: "resume" }, API_ORIGIN);
+        return noContent(reply);
+      },
+    );
+
+    routes.post<{ Params: { id: string }; Body: OffRequest }>(
+      "/api/rooms/:id/off",
+      { schema: { params: ROOM_PARAMS, body: SCHEMAS.off } },
+      async (request, reply) => {
+        const end = endChoiceOf(request.body.end);
+        await runtime.roomCommand(request.params.id, { kind: "off", end }, API_ORIGIN);
+        return noContent(reply);
+      },
+    );
+
+    routes.post("/api/thermostats/reset", async (_request, reply) => {
+      await runtime.resetThermostats();
+      return noContent(reply);
+    });
 
     routes.get("/api/diagnostics", () => runtime.diagnostics());
 

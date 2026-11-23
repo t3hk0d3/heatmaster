@@ -324,6 +324,7 @@ export const ru: Dictionary = {
   "error.room_unknown": "Комнаты {roomId} нет.",
   "error.state_unreadable":
     "Сохранённые состояния комнат не удаётся прочитать, поэтому комнаты нельзя изменить. Начните заново, чтобы вернуть все комнаты к их расписаниям.",
+  "error.state_readable": "Сохранённые состояния комнат читаются, начинать заново не нужно.",
   "error.schedule_unknown": "Расписания {scheduleId} нет.",
   "error.config_missing": "Конфигурации ещё нет.",
   "error.ask_limited": "Клапан {valveId} только что получил запрос. Повторите через минуту.",

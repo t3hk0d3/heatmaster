@@ -6,7 +6,7 @@
 import type { UnplacedReason } from "./house.ts";
 import type { PendingReason } from "./join.ts";
 import type { ConfigState, DroppedRoomReason, HaChangeKind, Membership } from "./ledger.ts";
-import type { EndRule } from "./model.ts";
+import type { EndRule, PresetName } from "./model.ts";
 import type { Liveness } from "./observation.ts";
 import type { Evidence, SettingKey, ValveMode } from "./settings.ts";
 import type { ProblemKind, Severity, Subject, SyncState } from "./status.ts";
@@ -16,6 +16,24 @@ export type ApiError = Readonly<{
   code: string;
   message: string;
   data: Readonly<Record<string, unknown>>;
+}>;
+
+/** Where a room change came from; `valveId` is left out unless `source` is `valve`. */
+export type OriginView = Readonly<{ source: "valve" | "climate" | "api"; valveId?: string }>;
+
+/**
+ * A room's state: on its schedule, overridden at `target` (with its `preset`, if it was one) or
+ * off. An override or off ends by `rule`, at `endsAt` (epoch milliseconds; left out: never);
+ * `since` is when it was made.
+ */
+export type ThermostatView = Readonly<{
+  kind: "schedule" | "override" | "off";
+  target?: number;
+  preset?: PresetName;
+  rule?: EndRule;
+  endsAt?: number;
+  origin?: OriginView;
+  since?: number;
 }>;
 
 /**
@@ -40,6 +58,14 @@ export type RoomView = Readonly<{
   degraded: boolean;
   hasProblem: boolean;
   valveIds: readonly string[];
+  /** Left out while the saved room states are unreadable, and while the room's state is unknown. */
+  thermostat?: ThermostatView;
+  /** The temperatures the room's targets are held in; left out when no valve has a spec. */
+  minTemp?: number;
+  maxTemp?: number;
+  /** The room's end settings for a change that names none. */
+  overrideEnd?: EndRule;
+  overrideDurationMs?: number;
 }>;
 
 /**
@@ -134,7 +160,22 @@ export type StateView = Readonly<{
   problems: readonly ProblemView[];
   haChanges: readonly HaChangeView[];
   upgrade?: UpgradeView;
+  /** The config's schedules in config order; empty while the config is unreadable. */
+  schedules: readonly Readonly<{ id: string; name: string }>[];
 }>;
+
+/** How a change ends; `durationMs` (milliseconds) belongs to the `timer` rule. */
+export type EndRequest = Readonly<{ rule: EndRule; durationMs?: number }>;
+
+/** Body of `POST /api/rooms/:id/override`: exactly one of `target` and `preset`. */
+export type OverrideRequest = Readonly<{
+  target?: number;
+  preset?: PresetName;
+  end?: EndRequest;
+}>;
+
+/** Body of `POST /api/rooms/:id/off`. */
+export type OffRequest = Readonly<{ end?: EndRequest }>;
 
 /** `value` is the `describeValue` form, or `null` when the setting could not be read. */
 export type OriginalView = Readonly<{ setting: SettingKey; value: unknown; evidence: Evidence }>;

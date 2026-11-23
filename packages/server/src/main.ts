@@ -54,6 +54,8 @@ function lateRuntime(current: () => HeatmasterRuntime): ApiRuntime {
     dismissUpgrade: () => current().dismissUpgrade(),
     setHold: (on) => current().setHold(on),
     diagnostics: () => current().diagnostics(),
+    roomCommand: (roomId, command, origin) => current().roomCommand(roomId, command, origin),
+    resetThermostats: () => current().resetThermostats(),
   };
 }
 

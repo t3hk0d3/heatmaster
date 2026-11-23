@@ -108,6 +108,7 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
     links: { z2m: true },
     transportFaults: {},
     areaNames: {},
+    schedules: [],
     ...over,
   };
 }
@@ -153,6 +154,11 @@ describe("views", () => {
             degraded: false,
             hasProblem: false,
             valveIds: [A],
+            thermostat: { kind: "schedule" },
+            minTemp: 4,
+            maxTemp: 35,
+            overrideEnd: "next_change",
+            overrideDurationMs: 2 * 60 * 60 * 1000,
           },
         ]);
       });
@@ -284,6 +290,96 @@ describe("views", () => {
         expect(view?.managed).toBe(false);
         expect(Object.hasOwn(view ?? {}, "scheduleId")).toBe(false);
         expect(Object.hasOwn(view ?? {}, "scheduleName")).toBe(false);
+      });
+    });
+
+    describe("With a room overridden at 22 by valve z2m:0x1 until 18:00", () => {
+      const endsAt = Date.UTC(2026, 10, 16, 18, 0, 0);
+      const since = Date.UTC(2026, 10, 16, 16, 0, 0);
+      const overridden = (): Snapshot =>
+        snapshot({
+          rooms: [
+            room("living", {
+              status: status("living", [], {
+                thermostat: {
+                  kind: "override",
+                  target: 22,
+                  preset: undefined,
+                  rule: "next_change",
+                  endsAt,
+                  origin: { source: "valve", valveId: "z2m:0x1" },
+                  since,
+                },
+              }),
+            }),
+          ],
+        });
+
+      it("thermostat holds kind override, target 22, rule, endsAt, origin source valve with valveId", () => {
+        const [view] = stateView(overridden()).rooms;
+        expect(view?.thermostat).toEqual({
+          kind: "override",
+          target: 22,
+          rule: "next_change",
+          endsAt,
+          origin: { source: "valve", valveId: "z2m:0x1" },
+          since,
+        });
+      });
+    });
+
+    describe("With a room on its schedule", () => {
+      it('thermostat is { kind: "schedule" }', () => {
+        const [view] = viewOf({
+          rooms: [room("living", { status: status("living", []) })],
+        }).rooms;
+        expect(view?.thermostat).toEqual({ kind: "schedule" });
+      });
+    });
+
+    describe("With the state unreadable", () => {
+      it("the room has no thermostat key", () => {
+        const [view] = viewOf({
+          rooms: [room("living", { status: status("living", [], { thermostat: undefined }) })],
+        }).rooms;
+        expect(Object.hasOwn(view ?? {}, "thermostat")).toBe(false);
+      });
+    });
+
+    describe("With a room status that has limits and end settings", () => {
+      it("minTemp, maxTemp, overrideEnd and overrideDurationMs come from the room status", () => {
+        const [view] = viewOf({
+          rooms: [
+            room("living", {
+              status: status("living", [], {
+                limits: { min: 5, max: 30 },
+                overrideEnd: "timer",
+                overrideDurationMs: 5400000,
+              }),
+            }),
+          ],
+        }).rooms;
+        expect(view).toMatchObject({
+          minTemp: 5,
+          maxTemp: 30,
+          overrideEnd: "timer",
+          overrideDurationMs: 5400000,
+        });
+      });
+    });
+
+    describe("With two schedules", () => {
+      it("schedules lists both with id and name, in config order", () => {
+        const view = viewOf({
+          schedules: [
+            { id: "weekday", name: "Weekdays" },
+            { id: "away", name: "Away" },
+          ],
+        });
+        expect(view.schedules).toEqual([
+          { id: "weekday", name: "Weekdays" },
+          { id: "away", name: "Away" },
+        ]);
       });
     });
 

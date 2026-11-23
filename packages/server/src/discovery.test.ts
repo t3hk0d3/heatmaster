@@ -65,6 +65,7 @@ function view(extra: Partial<StateView> = {}): StateView {
     pending: [],
     problems: [],
     haChanges: [],
+    schedules: [],
     ...extra,
   };
 }

@@ -232,6 +232,8 @@ export type Snapshot = Readonly<{
   transportFaults: Readonly<Record<string, string>>;
   /** Home Assistant's names of the areas that problems name, by area id; JSON like the rest. */
   areaNames: Readonly<Record<string, string>>;
+  /** The config's schedules in config order; empty while the config is unreadable. */
+  schedules: readonly Readonly<{ id: string; name: string }>[];
 }>;
 
 export type HeatmasterRuntime = Readonly<{
@@ -1720,6 +1722,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       links: linkStates(),
       transportFaults: faults(),
       areaNames,
+      schedules: config.schedules.map(({ id, name }) => ({ id, name })),
     };
   }
 

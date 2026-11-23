@@ -68,6 +68,7 @@ type ErrorCode =
   | "store_locked"
   | "no_originals_copy"
   | "ledger_readable"
+  | "state_readable"
   | "device_unknown"
   | "mqtt_not_connected"
   | "mqtt_timeout"
@@ -400,6 +401,7 @@ export const en = {
   "error.room_unknown": "Room {roomId} does not exist.",
   "error.state_unreadable":
     "The saved room states cannot be read, so rooms cannot be changed. Start over to put every room back on its schedule.",
+  "error.state_readable": "The saved room states can be read, so there is nothing to start over.",
   "error.schedule_unknown": "Schedule {scheduleId} does not exist.",
   "error.config_missing": "There is no configuration yet.",
   "error.ask_limited": "Valve {valveId} was asked a moment ago. Try again in a minute.",

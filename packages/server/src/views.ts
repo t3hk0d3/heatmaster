@@ -15,6 +15,8 @@ import type {
   RoomView,
   SettingKey,
   StateView,
+  Thermostat,
+  ThermostatView,
   UnassignedValveView,
   UpgradeReport,
   UpgradeView,
@@ -31,6 +33,20 @@ function present<T extends object>(fields: { [K in keyof T]: T[K] | undefined })
 
 function byId<T>(id: (item: T) => string): (a: T, b: T) => number {
   return (a, b) => (id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0);
+}
+
+function thermostatView(thermostat: Thermostat): ThermostatView {
+  if (thermostat.kind === "schedule") return { kind: "schedule" };
+  const { kind, rule, endsAt, origin, since } = thermostat;
+  return present<ThermostatView>({
+    kind,
+    target: thermostat.kind === "override" ? thermostat.target : undefined,
+    preset: thermostat.kind === "override" ? thermostat.preset : undefined,
+    rule,
+    endsAt,
+    origin: present({ source: origin.source, valveId: origin.valveId }),
+    since,
+  });
 }
 
 function roomView(room: RoomSnapshot, snapshot: Snapshot): RoomView {
@@ -58,6 +74,11 @@ function roomView(room: RoomSnapshot, snapshot: Snapshot): RoomView {
     degraded: status?.degraded ?? false,
     hasProblem: snapshot.problems.some(concerns),
     valveIds: room.valveIds,
+    thermostat: status?.thermostat === undefined ? undefined : thermostatView(status.thermostat),
+    minTemp: status?.limits?.min,
+    maxTemp: status?.limits?.max,
+    overrideEnd: status?.overrideEnd,
+    overrideDurationMs: status?.overrideDurationMs,
   });
 }
 
@@ -194,6 +215,7 @@ export function stateView(snapshot: Snapshot): StateView {
     problems,
     haChanges: snapshot.haChanges.map(haChangeView),
     upgrade: snapshot.upgrade === undefined ? undefined : upgradeView(snapshot.upgrade),
+    schedules: snapshot.schedules,
   });
 }
 

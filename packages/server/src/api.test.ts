@@ -62,6 +62,7 @@ function snapshotOf(over: Partial<Snapshot> = {}): Snapshot {
     links: { z2m: true },
     transportFaults: {},
     areaNames: {},
+    schedules: [],
     ...over,
   };
 }
@@ -101,6 +102,8 @@ type Stub = Readonly<{
   acceptOriginals: ReturnType<typeof vi.fn<ApiRuntime["acceptOriginals"]>>;
   dismissUpgrade: ReturnType<typeof vi.fn<ApiRuntime["dismissUpgrade"]>>;
   diagnostics: ReturnType<typeof vi.fn<ApiRuntime["diagnostics"]>>;
+  roomCommand: ReturnType<typeof vi.fn<ApiRuntime["roomCommand"]>>;
+  resetThermostats: ReturnType<typeof vi.fn<ApiRuntime["resetThermostats"]>>;
 }>;
 
 function stub(): Stub {
@@ -126,6 +129,8 @@ function stub(): Stub {
   const acceptOriginals = vi.fn<ApiRuntime["acceptOriginals"]>(() => Promise.resolve());
   const dismissUpgrade = vi.fn<ApiRuntime["dismissUpgrade"]>(() => Promise.resolve());
   const diagnostics = vi.fn<ApiRuntime["diagnostics"]>(() => ({ devices: { a: 1 } }));
+  const roomCommand = vi.fn<ApiRuntime["roomCommand"]>(() => Promise.resolve());
+  const resetThermostats = vi.fn<ApiRuntime["resetThermostats"]>(() => Promise.resolve());
   const all = {
     snapshot,
     subscribe,
@@ -141,6 +146,8 @@ function stub(): Stub {
     acceptOriginals,
     dismissUpgrade,
     diagnostics,
+    roomCommand,
+    resetThermostats,
   };
   return {
     runtime: all,
@@ -1025,6 +1032,168 @@ describe("api", () => {
         const response = await post(app, "/api/upgrade/dismiss", {});
         expect(response.statusCode).toBe(204);
         expect(runtime.dismissUpgrade).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe("POST /api/rooms/:id/override", () => {
+    const API = { source: "api", valveId: undefined };
+
+    describe("With { target: 22 }", () => {
+      it("answers 204 and roomCommand got set_target 22, no end, origin api", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/override", { target: 22 });
+        expect(response.statusCode).toBe(204);
+        expect(runtime.roomCommand.mock.calls).toEqual([
+          ["living", { kind: "set_target", celsius: 22, end: undefined }, API],
+        ]);
+      });
+    });
+
+    describe('With { preset: "boost", end: { rule: "manual" } }', () => {
+      it("answers 204 and roomCommand got set_preset boost with end manual", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/override", {
+          preset: "boost",
+          end: { rule: "manual" },
+        });
+        expect(response.statusCode).toBe(204);
+        expect(runtime.roomCommand.mock.calls).toEqual([
+          [
+            "living",
+            { kind: "set_preset", preset: "boost", end: { rule: "manual", durationMs: undefined } },
+            API,
+          ],
+        ]);
+      });
+    });
+
+    describe('With { target: 22, preset: "eco" }', () => {
+      it("answers 400 body_invalid", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/override", {
+          target: 22,
+          preset: "eco",
+        });
+        expect(response.statusCode).toBe(400);
+        expect(errorOf(response).code).toBe("body_invalid");
+        expect(runtime.roomCommand).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('With { target: 22, end: { rule: "timer", durationMs: 600000 } }', () => {
+      it("answers 400 body_invalid", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/override", {
+          target: 22,
+          end: { rule: "timer", durationMs: 600000 },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(errorOf(response).code).toBe("body_invalid");
+        expect(runtime.roomCommand).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('With { target: 22, end: { rule: "timer", durationMs: 5400000 } }', () => {
+      it("answers 204 and roomCommand got set_target 22 with end timer, durationMs 5400000", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/override", {
+          target: 22,
+          end: { rule: "timer", durationMs: 5400000 },
+        });
+        expect(response.statusCode).toBe(204);
+        expect(runtime.roomCommand.mock.calls).toEqual([
+          [
+            "living",
+            { kind: "set_target", celsius: 22, end: { rule: "timer", durationMs: 5400000 } },
+            API,
+          ],
+        ]);
+      });
+    });
+
+    describe('With { target: 22, end: { rule: "timer", durationMs: 5400500 } }', () => {
+      it("answers 400 body_invalid", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/override", {
+          target: 22,
+          end: { rule: "timer", durationMs: 5400500 },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(errorOf(response).code).toBe("body_invalid");
+        expect(runtime.roomCommand).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("With a room the runtime refuses as room_unknown", () => {
+      it("answers 409 room_unknown with data.roomId", async () => {
+        const { app, stub: runtime } = await rig();
+        runtime.roomCommand.mockRejectedValue(
+          new ChangeRefused("room_unknown", { roomId: "attic" }),
+        );
+        const response = await post(app, "/api/rooms/attic/override", { target: 22 });
+        expect(response.statusCode).toBe(409);
+        expect(errorOf(response)).toMatchObject({
+          code: "room_unknown",
+          data: { roomId: "attic" },
+        });
+      });
+    });
+
+    describe("With the state unreadable", () => {
+      it("answers 409 state_unreadable", async () => {
+        const { app, stub: runtime } = await rig();
+        runtime.roomCommand.mockRejectedValue(new ChangeRefused("state_unreadable"));
+        const response = await post(app, "/api/rooms/living/override", { target: 22 });
+        expect(response.statusCode).toBe(409);
+        expect(errorOf(response).code).toBe("state_unreadable");
+      });
+    });
+  });
+
+  describe("DELETE /api/rooms/:id/override", () => {
+    describe("Always", () => {
+      it("answers 204 and roomCommand got resume", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await app.inject({ method: "DELETE", url: "/api/rooms/living/override" });
+        expect(response.statusCode).toBe(204);
+        expect(runtime.roomCommand.mock.calls).toEqual([
+          ["living", { kind: "resume" }, { source: "api", valveId: undefined }],
+        ]);
+      });
+    });
+  });
+
+  describe("POST /api/rooms/:id/off", () => {
+    describe("With {}", () => {
+      it("answers 204 and roomCommand got off with no end", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/rooms/living/off", {});
+        expect(response.statusCode).toBe(204);
+        expect(runtime.roomCommand.mock.calls).toEqual([
+          ["living", { kind: "off", end: undefined }, { source: "api", valveId: undefined }],
+        ]);
+      });
+    });
+  });
+
+  describe("POST /api/thermostats/reset", () => {
+    describe("Always", () => {
+      it("answers 204 and resetThermostats was called", async () => {
+        const { app, stub: runtime } = await rig();
+        const response = await post(app, "/api/thermostats/reset", {});
+        expect(response.statusCode).toBe(204);
+        expect(runtime.resetThermostats).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe("With the state readable", () => {
+      it("answers 409 state_readable", async () => {
+        const { app, stub: runtime } = await rig();
+        runtime.resetThermostats.mockRejectedValue(new HeatmasterError("state_readable"));
+        const response = await post(app, "/api/thermostats/reset", {});
+        expect(response.statusCode).toBe(409);
+        expect(errorOf(response).code).toBe("state_readable");
       });
     });
   });

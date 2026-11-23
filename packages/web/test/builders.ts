@@ -27,6 +27,7 @@ export function stateView(over: Partial<StateView> = {}): StateView {
     pending: [],
     problems: [],
     haChanges: [],
+    schedules: [],
     ...over,
   };
 }
@@ -40,6 +41,11 @@ export function roomView(over: Partial<RoomView> = {}): RoomView {
     degraded: false,
     hasProblem: false,
     valveIds: [],
+    thermostat: { kind: "schedule" },
+    minTemp: 5,
+    maxTemp: 30,
+    overrideEnd: "next_change",
+    overrideDurationMs: 7200000,
     ...over,
   };
 }
