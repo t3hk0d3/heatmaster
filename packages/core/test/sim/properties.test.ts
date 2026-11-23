@@ -1082,6 +1082,29 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
       );
     });
 
+    describe("With the TRV-ZBT's first request lost after it joined, and the schedule edited before its first week was confirmed (seed 1838578502)", () => {
+      const plan: FaultPlan = {
+        initial: { ...initial, intervalMin: 1 },
+        steps: [
+          { k: "place", valve: 1, room: "a" },
+          { k: "fate", valve: 1, on: "any", fate: "lose", delaySeconds: 0, count: 1 },
+          { k: "wait", seconds: 30 },
+          { k: "link", name: "ha", up: false },
+          { k: "edit", schedule: "default", variant: 0 },
+          { k: "wait", seconds: 30 },
+          { k: "wait", seconds: 30 },
+        ],
+        turn: { valve: 0, clicks: 1 },
+      };
+      it(
+        "every property holds",
+        () => {
+          nothingBroken(execute(plan).report);
+        },
+        PLAN_MS,
+      );
+    });
+
     describe("With the schedules edited every 5 min for a day, so that only the tokens can stop the writes", () => {
       const edits: Fault[] = [];
       let dv = 0;
