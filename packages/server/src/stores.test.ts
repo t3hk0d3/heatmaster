@@ -18,7 +18,7 @@ import {
   storedToRaw,
   thermostatStateToRaw,
 } from "@heatmaster/core";
-import type { Ledger } from "@heatmaster/core";
+import type { Ledger, Thermostat, ThermostatState } from "@heatmaster/core";
 import { rejectionOf } from "../test/rejection.ts";
 import { createManualClock } from "../test/manual-clock.ts";
 import {
@@ -1191,12 +1191,29 @@ describe("stores", () => {
           put(stateFile(w), "{ not json");
           expect((await store(w).load()).state).toBe("unreadable");
         });
+        it("its reason is the JSON error", async () => {
+          const w = world();
+          put(stateFile(w), "{ not json");
+          expect((await store(w).load()).reason).toMatch(/^SyntaxError: /);
+        });
       });
       describe("With version 2", () => {
         it("unreadable", async () => {
           const w = world();
           put(stateFile(w), { version: 2, rooms: {}, valves: {} });
           expect((await store(w).load()).state).toBe("unreadable");
+        });
+        it("its reason names the version", async () => {
+          const w = world();
+          put(stateFile(w), { version: 2, rooms: {}, valves: {} });
+          expect((await store(w).load()).reason).toContain("2");
+        });
+      });
+      describe("With a valid file", () => {
+        it("no reason", async () => {
+          const w = world();
+          put(stateFile(w), { version: 1, ...thermostatStateToRaw(overrideState()) });
+          expect((await store(w).load()).reason).toBeUndefined();
         });
       });
       describe('With a room of kind "boost"', () => {
@@ -1211,6 +1228,18 @@ describe("stores", () => {
             rooms: { living_room: { ...living, kind: "boost" } },
           });
           expect((await store(w).load()).state).toBe("unreadable");
+        });
+        it("its reason says the file holds no valid room state", async () => {
+          const w = world();
+          const raw = thermostatStateToRaw(overrideState());
+          const rooms = raw.rooms as Record<string, Record<string, unknown>>;
+          const living = rooms.living_room ?? {};
+          put(stateFile(w), {
+            version: 1,
+            ...raw,
+            rooms: { living_room: { ...living, kind: "boost" } },
+          });
+          expect((await store(w).load()).reason).toBe("the file holds no valid room state");
         });
       });
     });
@@ -1227,6 +1256,22 @@ describe("stores", () => {
           ...thermostatStateToRaw(sampleThermostats()),
         });
         expect(await store(w).load()).toEqual({ state: "ok", thermostats: sampleThermostats() });
+      });
+      describe("With a state holding a non-finite number", () => {
+        it("rejects with a RangeError and the file is unchanged", async () => {
+          const w = world();
+          const saving = store(w);
+          await saving.load();
+          await saving.save(overrideState());
+          const before = readFileSync(stateFile(w), "utf8");
+          const living = overrideState().rooms.get("living_room");
+          const broken: ThermostatState = {
+            rooms: new Map([["living_room", { ...living, target: Number.NaN } as Thermostat]]),
+            valves: new Map(),
+          };
+          expect(await rejectionOf(saving.save(broken))).toBeInstanceOf(RangeError);
+          expect(readFileSync(stateFile(w), "utf8")).toBe(before);
+        });
       });
       describe("While the loaded state is unreadable", () => {
         it("throws StoreLocked state and the file is unchanged", async () => {

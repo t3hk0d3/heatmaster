@@ -99,7 +99,14 @@ export type PacingStore = Readonly<{
  * to `save` until `reset` has set the file aside and saved an empty state.
  */
 export type ThermostatStore = Readonly<{
-  load(): Promise<Readonly<{ state: "ok" | "unreadable"; thermostats: ThermostatState }>>;
+  /** `reason` says why a file is unreadable (its JSON, its version or its content), for the log. */
+  load(): Promise<
+    Readonly<{
+      state: "ok" | "unreadable";
+      thermostats: ThermostatState;
+      reason: string | undefined;
+    }>
+  >;
   save(thermostats: ThermostatState): Promise<void>;
   reset(): Promise<void>;
 }>;
@@ -588,21 +595,22 @@ export function createThermostatStore(dataDir: string, clock: Clock): Thermostat
       const read = await readJson(file);
       if (read.kind === "missing") {
         locked = false;
-        return { state: "ok", thermostats: EMPTY_THERMOSTAT_STATE };
+        return { state: "ok", thermostats: EMPTY_THERMOSTAT_STATE, reason: undefined };
       }
+      let reason = read.kind === "unreadable" ? read.reason : "the file holds no valid room state";
       if (read.kind === "ok") {
         try {
           const thermostats = thermostatsFromFile(read.file);
           if (thermostats !== undefined) {
             locked = false;
-            return { state: "ok", thermostats };
+            return { state: "ok", thermostats, reason: undefined };
           }
-        } catch {
-          // fall through: unreadable
+        } catch (error) {
+          reason = reasonOf(error);
         }
       }
       locked = true;
-      return { state: "unreadable", thermostats: EMPTY_THERMOSTAT_STATE };
+      return { state: "unreadable", thermostats: EMPTY_THERMOSTAT_STATE, reason };
     },
 
     async save(thermostats) {

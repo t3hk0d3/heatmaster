@@ -773,7 +773,8 @@ function execRig(
     remove: () => Promise.resolve(),
   };
   const thermostatStore: ThermostatStore = {
-    load: () => Promise.resolve({ state: "ok", thermostats: EMPTY_THERMOSTAT_STATE }),
+    load: () =>
+      Promise.resolve({ state: "ok", thermostats: EMPTY_THERMOSTAT_STATE, reason: undefined }),
     save: () => step("saveThermostats"),
     reset: () => Promise.resolve(),
   };
@@ -1657,6 +1658,15 @@ describe("runtime", () => {
         await inSyncWith(rig, [A], heatMessage);
         return rig;
       }
+
+      it("the reason is logged at error level", async () => {
+        const rig = await unreadable();
+        expect(rig.logged).toContainEqual({
+          level: "error",
+          message: "the saved room states cannot be read; no mode or setpoint is written",
+          data: { reason: expect.stringMatching(/^SyntaxError: /) as unknown },
+        });
+      });
 
       it("the world's thermostats are undefined and problem state_unreadable shows", async () => {
         const rig = await unreadable();

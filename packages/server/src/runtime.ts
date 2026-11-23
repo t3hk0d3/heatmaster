@@ -1870,7 +1870,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       const state = await deps.thermostatStore.load();
       thermostats = state.state === "ok" ? state.thermostats : undefined;
       if (thermostats === undefined) {
-        log.error("the saved room states cannot be read; no mode or setpoint is written");
+        log.error("the saved room states cannot be read; no mode or setpoint is written", {
+          reason: state.reason,
+        });
       }
       started = true;
       stopping = false;

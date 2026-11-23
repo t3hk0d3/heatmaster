@@ -187,7 +187,8 @@ export function overrideState(): ThermostatState {
 
 /**
  * Every field the state file holds: an override with a preset from a valve, a room turned off
- * until cancelled, a confirmed valve with a sent write and a saved week, and a taken-over valve.
+ * until cancelled, a confirmed valve with a sent write, a saved and a previous week, and a
+ * taken-over valve.
  */
 export function sampleThermostats(): ThermostatState {
   return {
