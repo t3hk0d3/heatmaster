@@ -115,6 +115,7 @@ export const en = {
   "store.config": "the configuration",
   "store.ledger": "the saved original valve settings",
   "store.copy": "the readable copy of the saved original settings",
+  "store.state": "the saved room states",
 
   "group.schedule": "schedule",
   "group.active_group": "active schedule group",

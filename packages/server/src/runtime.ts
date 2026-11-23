@@ -6,6 +6,7 @@
 
 import {
   BUCKET,
+  ChangeRefused,
   EMPTY_CONFIG,
   EMPTY_MEMORY,
   EMPTY_READINGS,
@@ -16,6 +17,7 @@ import {
   VALVE_SILENT_AFTER_MS,
   acceptUnknownOriginals,
   applyEvent,
+  clampThermostatState,
   configToRaw,
   describeValue,
   exportBucket,
@@ -23,6 +25,7 @@ import {
   forgetValve as coreForgetValve,
   importDue,
   importSensors,
+  isThermostatWrite,
   labelProblems,
   ledgerToRaw,
   liveness,
@@ -35,18 +38,21 @@ import {
   problemStoreWriteFailed,
   problemTickFailed,
   resolveRooms,
+  restoreThermostatGroup,
   restoreValve as coreRestoreValve,
   roomsOf,
   sameMembership,
   sensorId,
   storedToRaw,
   strandedValve,
+  thermostatCommand,
   tick,
   transportListed,
   transportOf,
   validateConfig,
   withHaEdit,
   withHold,
+  withRoomChoice,
   withoutUpgradeReport,
 } from "@heatmaster/core";
 import type {
@@ -72,15 +78,19 @@ import type {
   Memory,
   Membership,
   MembershipView,
+  Origin,
   Pending,
   Problem,
   Room,
+  RoomChoice,
   RoomStatus,
   SensorInfo,
   SensorReading,
   SensorRef,
   SettingKey,
   StoredConfig,
+  ThermostatCommand,
+  ThermostatState,
   TickResult,
   UnplacedReason,
   UpgradeReport,
@@ -91,7 +101,13 @@ import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
 import type { HaEvent, HaLink } from "./ha-link.ts";
 import { createLabelSync, sensorInfos, type LabelScope } from "./label-sync.ts";
-import type { ConfigStore, LedgerStore, PacingStamps, PacingStore } from "./stores.ts";
+import type {
+  ConfigStore,
+  LedgerStore,
+  PacingStamps,
+  PacingStore,
+  ThermostatStore,
+} from "./stores.ts";
 import type { DeviceInfo, RawEvent, Transport } from "./transport.ts";
 
 const SECOND_MS = 1000;
@@ -121,6 +137,7 @@ export type RuntimeDeps = Readonly<{
   configStore: ConfigStore;
   ledgerStore: LedgerStore;
   pacingStore: PacingStore;
+  thermostatStore: ThermostatStore;
   transports: Readonly<Record<string, Transport>>;
   ha: HaLink | undefined;
   clock: Clock;
@@ -235,6 +252,19 @@ export type HeatmasterRuntime = Readonly<{
   /** Saves the stored config without its upgrade report; the revision is unchanged. */
   dismissUpgrade(): Promise<void>;
   setHold(on: boolean): Promise<void>;
+  /**
+   * Changes a room's thermostat (`thermostatCommand`) and saves it; then a tick. `ChangeRefused`
+   * propagates; a failed save rejects and leaves the room as it was (R20).
+   */
+  roomCommand(roomId: string, command: ThermostatCommand, origin: Origin): Promise<void>;
+  /** Saves a choice of a room's Home Assistant select (`withRoomChoice`); then a tick. */
+  roomChoice(roomId: string, choice: RoomChoice): Promise<void>;
+  /**
+   * "Start over" (R10): sets an unreadable `state.json` aside and saves an empty state, so every
+   * room follows its schedule and every valve is taken over; then a tick. Refuses with
+   * `state_readable` while the state is readable.
+   */
+  resetThermostats(): Promise<void>;
   diagnostics(): Readonly<Record<string, unknown>>;
   settled(): Promise<void>;
 }>;
@@ -244,20 +274,27 @@ export type HeatmasterRuntime = Readonly<{
 export type EffectContext = Readonly<{
   configStore: ConfigStore;
   ledgerStore: LedgerStore;
+  thermostatStore: ThermostatStore;
   transports: Readonly<Record<string, Transport>>;
   bindingOf: (valveId: string) => Binding | undefined;
   overwriteUnreadable: boolean;
   onLedgerSaved: (ledger: Ledger) => void;
   onConfigSaved: (stored: StoredConfig) => void;
+  onThermostatsSaved: (thermostats: ThermostatState) => void;
   onSent: (valveId: string, what: "refresh" | "publish") => void;
 }>;
 
-type StoreName = "config" | "ledger" | "copy" | "pacing";
+type StoreName = "config" | "ledger" | "copy" | "pacing" | "state";
 
+/**
+ * `unsent` and `unpushed` list the valves whose sends did not go out; `held` the valves whose
+ * mode and setpoint publish was dropped behind a failed save (R20): held, not unsent.
+ */
 export type EffectOutcome = Readonly<{
   error: unknown;
   unsent: readonly string[];
   unpushed: readonly string[];
+  held: readonly string[];
   stores: Readonly<Partial<Record<StoreName, boolean>>>;
 }>;
 
@@ -314,7 +351,8 @@ async function sendValveEffect(effect: ValveEffect, context: EffectContext): Pro
 /**
  * Executes the effects in order, each awaited. A failed save, or a send that fails with
  * `mqtt_not_connected`, drops the rest of the list; any other failure of a valve's effect skips
- * that valve's remaining effects. Never rejects.
+ * that valve's remaining effects. A mode and setpoint publish dropped behind a failed save is
+ * listed as held, not unsent (R20). Never rejects.
  */
 export async function executeEffects(
   effects: readonly Effect[],
@@ -323,9 +361,12 @@ export async function executeEffects(
   let error: unknown;
   let failed = false;
   let dropped = false;
+  /** Whether the rest was dropped by a failed save, not by a lost connection. */
+  let saveFailed = false;
   const skipped = new Set<string>();
   const unsent: string[] = [];
   const unpushed: string[] = [];
+  const held: string[] = [];
   const stores: Partial<Record<StoreName, boolean>> = {};
 
   const fail = (cause: unknown): void => {
@@ -333,7 +374,12 @@ export async function executeEffects(
     failed = true;
   };
   const notOut = (effect: ValveEffect): void => {
-    const list = effect.kind === "pushTemperature" ? unpushed : unsent;
+    const list =
+      effect.kind === "pushTemperature"
+        ? unpushed
+        : saveFailed && isThermostatWrite(effect)
+          ? held
+          : unsent;
     if (!list.includes(effect.valveId)) list.push(effect.valveId);
   };
 
@@ -359,6 +405,7 @@ export async function executeEffects(
             stores[store] = false;
             fail(cause);
             dropped = true;
+            saveFailed = true;
             continue;
           }
           stores[store] = true;
@@ -366,9 +413,21 @@ export async function executeEffects(
           if (effect.kind === "saveConfig") context.onConfigSaved(effect.stored);
           break;
         }
-        case "saveThermostats":
-          // The state store comes with Task 7 of plan 3a; until then the save does nothing.
+        case "saveThermostats": {
+          if (dropped) continue;
+          try {
+            await context.thermostatStore.save(effect.state);
+          } catch (cause) {
+            stores.state = false;
+            fail(cause);
+            dropped = true;
+            saveFailed = true;
+            continue;
+          }
+          stores.state = true;
+          context.onThermostatsSaved(effect.state);
           break;
+        }
         default: {
           if (dropped || skipped.has(effect.valveId)) {
             notOut(effect);
@@ -394,7 +453,7 @@ export async function executeEffects(
       fail(cause);
     }
   }
-  return { error, unsent, unpushed, stores };
+  return { error, unsent, unpushed, held, stores };
 }
 
 // ---- the runtime ---------------------------------------------------------------------------------
@@ -411,7 +470,7 @@ type TickRecord = Readonly<{
 
 type Profiled = Readonly<{ spec: ValveSpec; binding: Binding }>;
 
-const STORE_NAMES: readonly StoreName[] = ["config", "ledger", "copy", "pacing"];
+const STORE_NAMES: readonly StoreName[] = ["config", "ledger", "copy", "pacing", "state"];
 
 function zoneAccepted(zone: string | undefined): zone is string {
   if (zone === undefined || zone === "") return false;
@@ -482,6 +541,11 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
   let followed = new Map<string, ReadonlySet<string>>();
   const warnedTopics = new Set<string>();
   let lastTick: TickRecord | undefined;
+  /**
+   * The room states and valve expectations as last written to `state.json` (R20: a tick's or a
+   * command's state is taken only once saved); undefined while the file cannot be read (R10).
+   */
+  let thermostats: ThermostatState | undefined = EMPTY_THERMOSTAT_STATE;
   const storeFailed: Partial<Record<StoreName, boolean>> = {};
   /**
    * The write budget. `buckets` is what a valve with no memory starts with: the stamps known for
@@ -1008,8 +1072,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       memory: inbox.memory,
       buckets,
       now: Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(zone()),
-      // The state store comes with Task 7 of plan 3a; until then every room is on its schedule.
-      thermostats: EMPTY_THERMOSTAT_STATE,
+      thermostats: thermostats === undefined ? undefined : clampThermostatState(thermostats, nowMs),
     };
   }
 
@@ -1194,6 +1257,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return {
       configStore: deps.configStore,
       ledgerStore: deps.ledgerStore,
+      thermostatStore: deps.thermostatStore,
       transports,
       bindingOf: (valveId) => profileOf(valveId)?.binding,
       overwriteUnreadable,
@@ -1204,24 +1268,39 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         stored = saved;
         configState = "ok";
       },
+      onThermostatsSaved: (saved) => {
+        thermostats = saved;
+      },
       onSent: (valveId, what) => {
         applyCore({ kind: "sent", valveId, what, at: clock.nowMs() }, clock.nowMs());
       },
     };
   }
 
-  /** Executes effects; afterwards the failed-send rule, the stores' state and the queued events. */
+  /** What a tick's effects need besides the effects: see `execute`. */
+  type TickRun = Readonly<{
+    /** Runs before the first effect. */
+    before: () => Promise<void>;
+    /** The memory the tick started from, for the valves whose publish is held. */
+    start: Memory;
+  }>;
+
+  /**
+   * Executes effects; afterwards the held publishes, the failed-send rule, the stores' state and
+   * the queued events. A held valve's `thermostat` group memory and its tokens go back to `start`
+   * (R20); one that had no memory at the start loses its memory, as before the tick.
+   */
   async function execute(
     effects: readonly Effect[],
     overwriteUnreadable: boolean,
-    before?: () => Promise<void>,
+    run?: TickRun,
   ): Promise<EffectOutcome> {
     // Events stay queued until every await of this function is done: one that skipped the
     // queue would be applied before older ones and before the failed-send rule.
     executing = true;
     let outcome: EffectOutcome;
     try {
-      await before?.();
+      await run?.before();
       outcome = await executeEffects(effects, effectContext(overwriteUnreadable));
       if (outcome.stores.ledger === true || outcome.stores.copy === true) {
         copyRecords = await deps.ledgerStore.copyRecords().catch((error: unknown) => {
@@ -1243,7 +1322,19 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         error: errorText(outcome.error),
         unsent: outcome.unsent,
         unpushed: outcome.unpushed,
+        held: outcome.held,
       });
+    }
+    if (outcome.held.length > 0) {
+      const valves = new Map(inbox.memory.valves);
+      for (const valveId of outcome.held) {
+        const current = valves.get(valveId);
+        const start = run?.start.valves.get(valveId);
+        if (current === undefined) continue;
+        if (start === undefined) valves.delete(valveId);
+        else valves.set(valveId, restoreThermostatGroup(current, start));
+      }
+      inbox = { ...inbox, memory: { ...inbox.memory, valves } };
     }
     if (outcome.unsent.length > 0) {
       applyCore({ kind: "resync_requested", valveIds: new Set(outcome.unsent) }, nowMs);
@@ -1344,15 +1435,23 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const result = withoutForcedHold(given, world.stored?.config);
     keepClamped(nowMs);
     inbox = { ...inbox, memory: result.memory };
+    const previousRooms = lastTick?.rooms;
+    // The budget is saved before anything is sent: a crash after a send never loses a charge.
+    const outcome = await execute(result.effects, false, {
+      before: () => savePacing(result.memory, nowMs),
+      start: world.memory,
+    });
+    // R20: the room statuses show the committed state; a state save that failed or was skipped
+    // keeps those of the previous tick.
+    const uncommitted =
+      outcome.stores.state !== true && result.effects.some((e) => e.kind === "saveThermostats");
     lastTick = {
-      rooms: result.rooms,
+      rooms: uncommitted ? (previousRooms ?? new Map()) : result.rooms,
       problems: result.problems,
       pending: result.pending,
       timeZone: world.now.timeZoneId,
       tickedAt: nowMs,
     };
-    // The budget is saved before anything is sent: a crash after a send never loses a charge.
-    const outcome = await execute(result.effects, false, () => savePacing(result.memory, nowMs));
     if (outcome.stores.config === true || outcome.stores.ledger === true) refollow();
     tickError = undefined;
     notify();
@@ -1764,6 +1863,12 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       persisted = unreadable ? undefined : pacing.stamps;
       pacingUnreadableUntil = unreadable ? emptyAt : undefined;
       if (unreadable) log.error("the saved write budget cannot be read; every valve starts empty");
+      // R10: while the room states cannot be read, no mode or setpoint is written.
+      const state = await deps.thermostatStore.load();
+      thermostats = state.state === "ok" ? state.thermostats : undefined;
+      if (thermostats === undefined) {
+        log.error("the saved room states cannot be read; no mode or setpoint is written");
+      }
       started = true;
       stopping = false;
       // The first tick below sees every event that arrives before it begins: none needs a debounce.
@@ -1956,6 +2061,43 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
         else if (on) forcedHold = true;
         await runTick();
         raise(outcome);
+      });
+    },
+
+    roomCommand(roomId, command, origin) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const effects = thermostatCommand(buildWorld(clock.nowMs()), roomId, command, origin);
+        await carryOut(effects, false);
+      });
+    },
+
+    roomChoice(roomId, choice) {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        const current = readableStored();
+        if (current === undefined) throw new ChangeRefused("config_unreadable");
+        const next = withRoomChoice(current, roomId, choice, clock.nowMs());
+        if (next === current) return;
+        const outcome = await execute([{ kind: "saveConfig", stored: next }], false);
+        refollow();
+        await runTick();
+        if (outcome.stores.config === true) mirrorApplied();
+        raise(outcome);
+      });
+    },
+
+    resetThermostats() {
+      if (!started || stopping) return Promise.reject(notStarted());
+      return withLock(async () => {
+        requireStarted();
+        if (thermostats !== undefined) throw new HeatmasterError("state_readable");
+        await deps.thermostatStore.reset();
+        thermostats = EMPTY_THERMOSTAT_STATE;
+        storeFailed.state = false;
+        await runTick();
       });
     },
 

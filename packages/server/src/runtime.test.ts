@@ -7,12 +7,16 @@ import {
   ConfigError,
   EMPTY_CONFIG,
   EMPTY_LEDGER,
+  EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
   REFILL_MS,
   configToRaw,
   findProfile,
   ledgerToRaw,
+  storedFromRaw,
   storedToRaw,
+  THERMOSTAT_SETTLE_MS,
+  thermostatStateToRaw,
   validateConfig,
 } from "@heatmaster/core";
 import type {
@@ -23,9 +27,14 @@ import type {
   HaArea,
   HaSnapshot,
   Ledger,
+  Origin,
   RawConfig,
+  RoomStatus,
   StoredConfig,
+  ThermostatCommand,
+  ThermostatState,
   ValveRecord,
+  World,
 } from "@heatmaster/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createManualClock, type ManualClock } from "../test/manual-clock.ts";
@@ -52,9 +61,11 @@ import {
   createConfigStore,
   createLedgerStore,
   createPacingStore,
+  createThermostatStore,
   type ConfigStore,
   type LedgerStore,
   type PacingStore,
+  type ThermostatStore,
 } from "./stores.ts";
 import type { DeviceInfo } from "./transport.ts";
 
@@ -64,6 +75,8 @@ import type { DeviceInfo } from "./transport.ts";
 const bindingOverrides = new Map<string, Binding>();
 /** While set, core's `tick` throws an Error with this message. */
 const tickFault: { message: string | undefined } = { message: undefined };
+/** Every world core's `tick` was given, oldest first. */
+const tickWorlds: World[] = [];
 
 vi.mock("@heatmaster/core", async (importOriginal) => {
   const core = await importOriginal<typeof import("@heatmaster/core")>();
@@ -75,6 +88,7 @@ vi.mock("@heatmaster/core", async (importOriginal) => {
       return found === undefined || binding === undefined ? found : { ...found, binding };
     },
     tick: (world: Parameters<typeof core.tick>[0]) => {
+      tickWorlds.push(world);
       if (tickFault.message !== undefined) throw new Error(tickFault.message);
       return core.tick(world);
     },
@@ -271,6 +285,8 @@ type Seed = Readonly<{
   releasing?: Readonly<Record<string, number>>;
   ledger?: readonly ValveRecord[] | "unreadable";
   copy?: readonly ValveRecord[];
+  /** The state file: the room states and valve expectations, or one that cannot be read. */
+  state?: ThermostatState | "unreadable";
 }>;
 
 function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
@@ -310,6 +326,14 @@ function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
     );
     writeFileSync(path.join(dataDir, "pacing.json"), JSON.stringify({ version: 1, valves }));
   }
+  if (seed.state === "unreadable") {
+    writeFileSync(path.join(dataDir, "state.json"), "{ not json");
+  } else if (seed.state !== undefined) {
+    writeFileSync(
+      path.join(dataDir, "state.json"),
+      JSON.stringify({ version: 1, ...thermostatStateToRaw(seed.state) }),
+    );
+  }
   if (seed.copy !== undefined) {
     writeFileSync(
       path.join(publicDir, "originals.json"),
@@ -336,7 +360,14 @@ interface StoreControl {
   sendsSoFar: () => number;
   expected: boolean[];
   overwrite: boolean[];
-  fail: { config: number; ledger: number; copy: number; pacing: number };
+  fail: { config: number; ledger: number; copy: number; pacing: number; state: number };
+  /**
+   * The state file's saves ("state.save", "state.fail"), apart from `calls`: ticks save the valve
+   * expectations, which the other stores' checks do not expect.
+   */
+  stateCalls: string[];
+  /** Every state written to state.json, with the sends attempted when it was written. */
+  stateSaves: { state: ThermostatState; sends: number }[];
   /** One entry per save of the pacing file that reached it, with the sends made so far. */
   pacingSaves: number[];
   /** While set, the ledger store's save or copyRecords waits for it; `reached` notes the call. */
@@ -381,6 +412,23 @@ function wrapPacing(store: PacingStore, control: StoreControl): PacingStore {
       await store.save(stamps);
       control.pacingSaves.push(control.sendsSoFar());
     },
+  };
+}
+
+function wrapThermostats(store: ThermostatStore, control: StoreControl): ThermostatStore {
+  return {
+    load: () => store.load(),
+    async save(thermostats) {
+      if (control.fail.state > 0) {
+        control.fail.state -= 1;
+        control.stateCalls.push("state.fail");
+        throw failure();
+      }
+      await store.save(thermostats);
+      control.stateCalls.push("state.save");
+      control.stateSaves.push({ state: thermostats, sends: control.sendsSoFar() });
+    },
+    reset: () => store.reset(),
   };
 }
 
@@ -456,6 +504,7 @@ afterEach(async () => {
   for (const dir of folders.splice(0)) rmSync(dir, { recursive: true, force: true });
   bindingOverrides.clear();
   tickFault.message = undefined;
+  tickWorlds.length = 0;
 });
 
 async function boot(
@@ -487,7 +536,9 @@ async function boot(
     sendsSoFar: () => z2m.attempts().length,
     expected: [],
     overwrite: [],
-    fail: { config: 0, ledger: 0, copy: 0, pacing: 0 },
+    fail: { config: 0, ledger: 0, copy: 0, pacing: 0, state: 0 },
+    stateCalls: [],
+    stateSaves: [],
     pacingSaves: [],
     gates: {},
     reached: [],
@@ -513,6 +564,7 @@ async function boot(
     configStore: wrapConfig(createConfigStore(dataDir, clock), stores),
     ledgerStore: wrapLedger(createLedgerStore({ dataDir, publicDir }, clock, "test"), stores),
     pacingStore: wrapPacing(createPacingStore(dataDir), stores),
+    thermostatStore: wrapThermostats(createThermostatStore(dataDir, clock), stores),
     transports: {
       z2m:
         options.gate === undefined
@@ -720,6 +772,11 @@ function execRig(
     copyRecords: () => Promise.resolve(0),
     remove: () => Promise.resolve(),
   };
+  const thermostatStore: ThermostatStore = {
+    load: () => Promise.resolve({ state: "ok", thermostats: EMPTY_THERMOSTAT_STATE }),
+    save: () => step("saveThermostats"),
+    reset: () => Promise.resolve(),
+  };
   const transport = createStubTransport("z2m");
   const z2m = {
     ...transport,
@@ -736,11 +793,13 @@ function execRig(
   const context: EffectContext = {
     configStore,
     ledgerStore,
+    thermostatStore,
     transports: { z2m },
     bindingOf: (valveId) => (Object.hasOwn(bindings, valveId) ? bindings[valveId] : TRVZB_BINDING),
     overwriteUnreadable: options.overwriteUnreadable ?? false,
     onLedgerSaved: () => order.push("onLedgerSaved"),
     onConfigSaved: () => order.push("onConfigSaved"),
+    onThermostatsSaved: () => order.push("onThermostatsSaved"),
     onSent: (valveId, what) => order.push(`onSent ${valveId} ${what}`),
   };
   return { context, order, publishes, reads, overwrite };
@@ -757,6 +816,76 @@ const APPLY: ApplyOptions = {
 };
 
 const NO_READ: Binding = { ...TRVZB_BINDING, encodeRefresh: () => undefined };
+
+// ---- room thermostats ----------------------------------------------------------------------------
+
+const API: Origin = { source: "api", valveId: undefined };
+
+function setTarget(celsius: number): ThermostatCommand {
+  return { kind: "set_target", celsius, end: undefined };
+}
+
+/** What a TRVZB reports back once it holds the days of `week()`. */
+const DAYS_ECHO: Readonly<Record<string, string>> = Object.fromEntries(
+  ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => [
+    `weekly_schedule_${day}`,
+    "00:00/16 07:00/20 07:00/20 07:00/20 07:00/20 07:00/20",
+  ]),
+);
+
+/** A TRVZB set to heat at `celsius` by hand. */
+function heatMessage(token: string, celsius = 23): Readonly<Record<string, unknown>> {
+  return trvzbMessage(token, "local_temperature", {
+    system_mode: "heat",
+    occupied_heating_setpoint: celsius,
+  });
+}
+
+/** As `inSync`, every message made by `message`. */
+async function inSyncWith(
+  rig: Rig,
+  valves: readonly string[],
+  message: (token: string) => Readonly<Record<string, unknown>>,
+): Promise<void> {
+  for (const step of [1, 2]) {
+    for (const id of valves) rig.say(id, `${id}-${String(step)}`, message(`${id}-${String(step)}`));
+    await rig.advance(1000);
+  }
+  await rig.advance(1000);
+  for (const id of valves) rig.say(id, `${id}-3`, message(`${id}-3`));
+  await rig.advance(1000);
+}
+
+/** The index in the transport's attempts of the first mode or setpoint publish to `valveId`; -1 if none. */
+function firstThermostatWrite(rig: Rig, valveId: string): number {
+  return rig.z2m
+    .attempts()
+    .findIndex(
+      (send) =>
+        send.kind === "publish" &&
+        send.deviceId === valveId &&
+        (Object.hasOwn(send.payload as object, "system_mode") ||
+          Object.hasOwn(send.payload as object, "occupied_heating_setpoint")),
+    );
+}
+
+function stateText(rig: Rig): string {
+  return readFileSync(path.join(rig.dataDir, "state.json"), "utf8");
+}
+
+/** The `rooms` of state.json, as written. */
+function savedRooms(rig: Rig): Record<string, unknown> {
+  return readJson(path.join(rig.dataDir, "state.json")).rooms as Record<string, unknown>;
+}
+
+/** The `valves` of state.json, as written. */
+function savedValves(rig: Rig): Record<string, unknown> {
+  return readJson(path.join(rig.dataDir, "state.json")).valves as Record<string, unknown>;
+}
+
+function roomStatus(rig: Rig, roomId: string): RoomStatus | undefined {
+  return rig.rt.snapshot().rooms.find((room) => room.roomId === roomId)?.status;
+}
 
 describe("runtime", () => {
   describe("executeEffects", () => {
@@ -790,12 +919,13 @@ describe("runtime", () => {
         expect(rig.order.indexOf("onConfigSaved")).toBe(rig.order.indexOf("end saveConfig") + 1);
       });
 
-      it("error is undefined, unsent and unpushed are empty, and stores is { ledger: true, copy: true, config: true }", async () => {
+      it("error is undefined, unsent, unpushed and held are empty, and stores is { ledger: true, copy: true, config: true }", async () => {
         const outcome = await executeEffects(effects, execRig().context);
         expect(outcome).toEqual({
           error: undefined,
           unsent: [],
           unpushed: [],
+          held: [],
           stores: { ledger: true, copy: true, config: true },
         });
       });
@@ -1520,6 +1650,29 @@ describe("runtime", () => {
   });
 
   describe("start", () => {
+    describe("With an unreadable state file", () => {
+      /** Valve A by hand in heat at 23 °C, the state file unreadable. */
+      async function unreadable(): Promise<Rig> {
+        const rig = await boot({ seed: { ...managedSeed([A]), state: "unreadable" } });
+        await inSyncWith(rig, [A], heatMessage);
+        return rig;
+      }
+
+      it("the world's thermostats are undefined and problem state_unreadable shows", async () => {
+        const rig = await unreadable();
+        expect(tickWorlds.length).toBeGreaterThan(0);
+        expect(tickWorlds.every((world) => world.thermostats === undefined)).toBe(true);
+        expect(problemKinds(rig.rt.snapshot())).toContain("state_unreadable");
+      });
+
+      it("no publish carries system_mode or setpoint", async () => {
+        const rig = await unreadable();
+        await rig.advance(10 * MINUTE);
+        expect(sends(rig, A).some((send) => send.kind === "publish")).toBe(true);
+        expect(firstThermostatWrite(rig, A)).toBe(-1);
+      });
+    });
+
     describe("With a config file of version 2", () => {
       const seed: Seed = { configFile: readFileSync(V2_FIXTURE, "utf8") };
 
@@ -5132,6 +5285,441 @@ describe("runtime", () => {
             config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
           });
         });
+      });
+    });
+  });
+
+  describe("roomCommand", () => {
+    describe("With set_target 22 for a managed room", () => {
+      async function overridden(): Promise<Rig> {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await inSync(rig, [A]);
+        await rig.rt.roomCommand("living", setTarget(22), API);
+        // The room settles for THERMOSTAT_SETTLE_MS; the next tick writes the valve.
+        await rig.advance(TICK_INTERVAL_MS);
+        return rig;
+      }
+
+      it("state.json holds the override before the first valve publish", async () => {
+        const rig = await overridden();
+        const first = firstThermostatWrite(rig, A);
+        expect(first).toBeGreaterThanOrEqual(0);
+        expect(rig.z2m.attempts()[first]?.payload).toEqual({
+          system_mode: "heat",
+          occupied_heating_setpoint: 22,
+        });
+        const saved = rig.stores.stateSaves.find(
+          (save) => save.state.rooms.get("living")?.kind === "override",
+        );
+        expect(saved?.sends).toBeLessThanOrEqual(first);
+        expect(savedRooms(rig)).toMatchObject({ living: { kind: "override", target: 22 } });
+      });
+
+      it("the snapshot's room status shows the override", async () => {
+        const rig = await overridden();
+        expect(roomStatus(rig, "living")?.thermostat).toMatchObject({
+          kind: "override",
+          target: 22,
+          origin: API,
+        });
+      });
+    });
+
+    describe("With an unknown room", () => {
+      it("rejects with ChangeRefused room_unknown and nothing is saved", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await inSync(rig, [A]);
+        const saves = rig.stores.stateCalls.length;
+        const error = await rejectionOf(rig.rt.roomCommand("attic", setTarget(22), API));
+        expect(error).toBeInstanceOf(ChangeRefused);
+        expect(codeOf(error)).toBe("room_unknown");
+        expect(rig.stores.stateCalls.length).toBe(saves);
+      });
+    });
+
+    describe("With the state unreadable", () => {
+      it("rejects with ChangeRefused state_unreadable", async () => {
+        const rig = await boot({ seed: { ...managedSeed([A]), state: "unreadable" } });
+        await inSync(rig, [A]);
+        const error = await rejectionOf(rig.rt.roomCommand("living", setTarget(22), API));
+        expect(error).toBeInstanceOf(ChangeRefused);
+        expect(codeOf(error)).toBe("state_unreadable");
+      });
+    });
+
+    describe("With the state save failing", () => {
+      it("rejects, store_write_failed for state shows, no valve is written", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await inSync(rig, [A]);
+        rig.stores.fail.state = 1;
+        const error = await rejectionOf(rig.rt.roomCommand("living", setTarget(22), API));
+        expect(codeOf(error)).toBe("io_failed");
+        expect(rig.rt.snapshot().problems).toContainEqual(
+          expect.objectContaining({ kind: "store_write_failed", data: { store: "state" } }),
+        );
+        await rig.advance(2 * TICK_INTERVAL_MS);
+        expect(firstThermostatWrite(rig, A)).toBe(-1);
+        expect(roomStatus(rig, "living")?.thermostat).toEqual({ kind: "schedule" });
+      });
+    });
+  });
+
+  describe("roomChoice", () => {
+    describe("With override_end manual", () => {
+      async function chosen(): Promise<Rig> {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await rig.rt.roomChoice("living", { kind: "override_end", rule: "manual" });
+        return rig;
+      }
+
+      it("config.json's revision rises and the entry holds manual", async () => {
+        const rig = await chosen();
+        const saved = storedFromRaw(readJson(path.join(rig.dataDir, "config.json")).data);
+        expect(saved.revision).toBe(2);
+        expect(saved.config.rooms.get("living")?.overrideEnd).toBe("manual");
+      });
+
+      it("haChanges lists an override_end item", async () => {
+        const rig = await chosen();
+        expect(rig.rt.snapshot().haChanges.flatMap((change) => change.items)).toContainEqual(
+          expect.objectContaining({ kind: "override_end", areaId: "living", rule: "manual" }),
+        );
+      });
+    });
+
+    describe("With the schedule the room already has", () => {
+      it("no save", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        await rig.rt.roomChoice("living", { kind: "schedule", scheduleId: "main" });
+        expect(rig.stores.calls).toEqual([]);
+        expect(rig.rt.snapshot().revision).toBe(1);
+      });
+    });
+  });
+
+  describe("resetThermostats", () => {
+    describe("With the state unreadable", () => {
+      it("every room follows its schedule and the problem clears", async () => {
+        const rig = await boot({ seed: { ...managedSeed([A]), state: "unreadable" } });
+        await inSync(rig, [A]);
+        expect(problemKinds(rig.rt.snapshot())).toContain("state_unreadable");
+        await rig.rt.resetThermostats();
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("state_unreadable");
+        expect(roomStatus(rig, "living")?.thermostat).toEqual({ kind: "schedule" });
+      });
+    });
+
+    describe("With the state unreadable and a valve in heat 23", () => {
+      it("the valve is written auto in the next tick and nothing is adopted", async () => {
+        const rig = await boot({ seed: { ...managedSeed([A]), state: "unreadable" } });
+        await inSyncWith(rig, [A], heatMessage);
+        expect(firstThermostatWrite(rig, A)).toBe(-1);
+        await rig.rt.resetThermostats();
+        const first = firstThermostatWrite(rig, A);
+        expect(rig.z2m.attempts()[first]?.payload).toEqual({ system_mode: "auto" });
+        expect(savedRooms(rig)).toEqual({});
+        expect(roomStatus(rig, "living")?.thermostat).toEqual({ kind: "schedule" });
+      });
+    });
+
+    describe("With the state readable", () => {
+      it("rejects with HeatmasterError state_readable", async () => {
+        const rig = await boot({ seed: managedSeed([A]) });
+        const error = await rejectionOf(rig.rt.resetThermostats());
+        expect(error).toBeInstanceOf(HeatmasterError);
+        expect(codeOf(error)).toBe("state_readable");
+      });
+    });
+  });
+
+  describe("tick", () => {
+    /** Valves A and B in the living room, in sync, the room on its schedule. */
+    async function twoValves(): Promise<Rig> {
+      const rig = await boot({ devices: [trvzb(A), trvzb(B)], seed: managedSeed([A, B]) });
+      await inSync(rig, [A, B]);
+      return rig;
+    }
+
+    /** Someone sets valve A to heat 23 °C; the debounced tick runs. */
+    async function knob(rig: Rig): Promise<void> {
+      rig.say(A, "a-knob", heatMessage("a-knob"));
+      await rig.advance(1000);
+    }
+
+    describe("With an adopted knob change", () => {
+      it("state.json holds the override before the other valve is written", async () => {
+        const rig = await twoValves();
+        await knob(rig);
+        await rig.advance(TICK_INTERVAL_MS);
+        const first = firstThermostatWrite(rig, B);
+        expect(rig.z2m.attempts()[first]?.payload).toEqual({
+          system_mode: "heat",
+          occupied_heating_setpoint: 23,
+        });
+        const saved = rig.stores.stateSaves.find(
+          (save) => save.state.rooms.get("living")?.kind === "override",
+        );
+        expect(saved?.sends).toBeLessThanOrEqual(first);
+        expect(savedRooms(rig)).toMatchObject({
+          living: { kind: "override", target: 23, origin: { source: "valve", valve_id: A } },
+        });
+      });
+    });
+
+    describe("With the state save failing after an adopted knob change", () => {
+      it("no valve is written and the runtime's thermostats are unchanged", async () => {
+        const rig = await twoValves();
+        const before = stateText(rig);
+        rig.stores.fail.state = 99;
+        await knob(rig);
+        await rig.advance(2 * TICK_INTERVAL_MS);
+        expect(rig.stores.stateCalls).toContain("state.fail");
+        expect(firstThermostatWrite(rig, B)).toBe(-1);
+        expect(stateText(rig)).toBe(before);
+        expect(tickWorlds.at(-1)?.thermostats?.rooms.get("living")).toBeUndefined();
+        expect(roomStatus(rig, "living")?.thermostat).toEqual({ kind: "schedule" });
+      });
+
+      it("the next tick adopts the same change again and saves it before any write", async () => {
+        const rig = await twoValves();
+        rig.stores.fail.state = 1;
+        await knob(rig);
+        expect(rig.stores.stateCalls.at(-1)).toBe("state.fail");
+        await rig.advance(2 * TICK_INTERVAL_MS);
+        const first = firstThermostatWrite(rig, B);
+        expect(rig.z2m.attempts()[first]?.payload).toEqual({
+          system_mode: "heat",
+          occupied_heating_setpoint: 23,
+        });
+        const saved = rig.stores.stateSaves.find(
+          (save) => save.state.rooms.get("living")?.kind === "override",
+        );
+        expect(saved?.sends).toBeLessThanOrEqual(first);
+        expect(savedRooms(rig)).toMatchObject({
+          living: { kind: "override", target: 23, origin: { source: "valve", valve_id: A } },
+        });
+      });
+    });
+
+    /** A in sync and B waiting to join the living room until it is first heard. */
+    async function bWaiting(): Promise<Rig> {
+      const rig = await boot({
+        devices: [trvzb(A), trvzb(B)],
+        house: { living: [A, B] },
+        seed: { config: raw(), ledger: [record(A)] },
+      });
+      await inSync(rig, [A]);
+      expect(rig.rt.snapshot().memberships[B]).toBe("pending");
+      return rig;
+    }
+
+    describe("With the ledger save failing in the tick that adopts a knob change", () => {
+      /** B is heard and A turned in one tick, whose ledger save (B's join) fails. */
+      async function failedJoin(): Promise<Rig & { before: string; sent: number }> {
+        const rig = await bWaiting();
+        const before = stateText(rig);
+        const sent = rig.z2m.attempts().length;
+        rig.stores.fail.ledger = 1;
+        rig.say(B, "b-1");
+        await knob(rig);
+        expect(rig.stores.calls).toContain("ledger.fail");
+        return Object.assign(rig, { before, sent });
+      }
+
+      it("state.json is unchanged and no valve is written", async () => {
+        const rig = await failedJoin();
+        expect(stateText(rig)).toBe(rig.before);
+        expect(rig.z2m.attempts().slice(rig.sent)).toEqual([]);
+      });
+
+      it("the next tick adopts the same change again", async () => {
+        const rig = await failedJoin();
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(rig.rt.snapshot().memberships[B]).toBe("managed");
+        expect(savedRooms(rig)).toMatchObject({
+          living: { kind: "override", target: 23, origin: { source: "valve", valve_id: A } },
+        });
+      });
+    });
+
+    describe("With a valve joining and the state save failing in that tick", () => {
+      it("the next tick still takes the valve over and adopts nothing", async () => {
+        const rig = await bWaiting();
+        rig.stores.fail.state = 1;
+        rig.say(B, "b-1", heatMessage("b-1"));
+        await rig.advance(1000);
+        expect(rig.stores.calls).toContain("ledger.save");
+        expect(rig.stores.stateCalls.at(-1)).toBe("state.fail");
+        expect(rig.rt.snapshot().memberships[B]).toBe("managed");
+        rig.say(B, "b-2", heatMessage("b-2"));
+        await rig.advance(2 * TICK_INTERVAL_MS);
+        expect(savedRooms(rig)).toEqual({});
+        expect(savedValves(rig)[B]).toMatchObject({ room: "living" });
+        expect(roomStatus(rig, "living")?.thermostat).toEqual({ kind: "schedule" });
+        const first = firstThermostatWrite(rig, B);
+        expect(rig.z2m.attempts()[first]?.payload).toEqual({ system_mode: "auto" });
+      });
+    });
+
+    describe("With the state save failing while another valve has a push and a schedule write due", () => {
+      /**
+       * Valve A (living, with a room sensor) and valve B (office) while writes are held: B in sync
+       * and its room overridden at 22, A heard twice, its days not written, the sensor fresh. The
+       * release's tick pushes to A, writes A's days, and its state save (B's write) fails.
+       */
+      async function released(): Promise<
+        Rig & { memoryBefore: Record<string, unknown> | undefined; roomsBefore: unknown }
+      > {
+        const ha = createStubHaLink();
+        const rig = await boot({
+          ha,
+          devices: [trvzb(A), trvzb(B)],
+          seed: {
+            config: raw({
+              rooms: [
+                { valves: [A], sensors: [ROOM_SENSOR] },
+                { id: "office", valves: [B] },
+              ],
+            }),
+            ledger: [record(A, "external"), record(B)],
+          },
+        });
+        await inSync(rig, [B]);
+        rig.say(B, "b-4", trvzbMessage("b-4", "local_temperature", DAYS_ECHO));
+        await rig.rt.setHold(true);
+        rig.say(A, "a-1", trvzbMessage("a-1", "external"));
+        await rig.advance(1000);
+        rig.say(A, "a-2", trvzbMessage("a-2", "external"));
+        await rig.advance(1000);
+        await rig.rt.roomCommand("office", setTarget(22), API);
+        await rig.advance(2 * THERMOSTAT_SETTLE_MS);
+        haSensor(ha, "sensor.living", 19.6, rig.clock.nowMs());
+        const memoryBefore = rig.memory(B);
+        const roomsBefore = rig.rt.snapshot().rooms;
+        rig.stores.fail.state = 99;
+        await rig.rt.setHold(false);
+        return Object.assign(rig, { memoryBefore, roomsBefore });
+      }
+      const pushes = (rig: Rig): number =>
+        sends(rig, A).filter((s) =>
+          Object.hasOwn(s.payload as object, "external_temperature_input"),
+        ).length;
+      const dayWrites = (rig: Rig, valveId: string): number =>
+        sends(rig, valveId).filter((s) =>
+          Object.hasOwn(s.payload as object, "weekly_schedule_monday"),
+        ).length;
+
+      it("the push and the schedule write go out; only mode and setpoint writes are dropped", async () => {
+        const rig = await released();
+        expect(pushes(rig)).toBe(1);
+        expect(dayWrites(rig, A)).toBe(1);
+        expect(firstThermostatWrite(rig, B)).toBe(-1);
+        expect(rig.logged.find((line) => line.message === "an effect failed")?.data).toMatchObject({
+          unsent: [],
+          held: [B],
+        });
+      });
+
+      it("no resync_requested for the held valves, no schedule rewrite, and no setting_not_holding after three ticks", async () => {
+        const rig = await released();
+        rig.say(A, "a-3", trvzbMessage("a-3", "external", DAYS_ECHO));
+        await rig.advance(3 * TICK_INTERVAL_MS);
+        expect(rig.marks(B)).toEqual({});
+        expect(dayWrites(rig, A)).toBe(1);
+        expect(dayWrites(rig, B)).toBe(1);
+        expect(firstThermostatWrite(rig, B)).toBe(-1);
+        expect(problemKinds(rig.rt.snapshot())).not.toContain("setting_not_holding");
+      });
+
+      it("each held valve's tokens are as before the tick", async () => {
+        const rig = await released();
+        const tokensOf = (memory: Record<string, unknown> | undefined): unknown[] => [
+          memory?.tokens,
+          memory?.tokensAt,
+          memory?.lastWriteAt,
+        ];
+        expect(tokensOf(rig.memory(B))).toEqual(tokensOf(rig.memoryBefore));
+        expect((rig.memory(B)?.writes24h as Record<string, number>).thermostat).toBe(0);
+      });
+
+      it("the pushed valve is not pushed again in the next tick", async () => {
+        const rig = await released();
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(pushes(rig)).toBe(1);
+      });
+
+      it("the snapshot shows the state before the failed save", async () => {
+        const rig = await released();
+        expect(rig.rt.snapshot().rooms).toEqual(rig.roomsBefore);
+      });
+    });
+
+    describe("With the ledger save failing in a tick that also publishes a thermostat write", () => {
+      it("the publish is held: no resync_requested and the valve's thermostat tokens are as before", async () => {
+        const rig = await bWaiting();
+        await rig.rt.roomCommand("living", setTarget(22), API);
+        // The ticks already asked for run while the room settles; B's tick is the first after it.
+        await rig.advance(1000);
+        await rig.advance(THERMOSTAT_SETTLE_MS - 2000);
+        const before = rig.memory(A);
+        rig.stores.fail.ledger = 1;
+        rig.say(B, "b-1");
+        await rig.advance(1000);
+        expect(rig.stores.calls).toContain("ledger.fail");
+        expect(firstThermostatWrite(rig, A)).toBe(-1);
+        expect(rig.logged.find((line) => line.message === "an effect failed")?.data).toMatchObject({
+          held: [A],
+        });
+        expect(rig.marks(A)).toEqual({});
+        expect([rig.memory(A)?.tokens, rig.memory(A)?.tokensAt]).toEqual([
+          before?.tokens,
+          before?.tokensAt,
+        ]);
+        expect((rig.memory(A)?.writes24h as Record<string, number>).thermostat).toBe(0);
+      });
+    });
+
+    describe("With a sent write's at and a since later than the clock at start (the clock went back)", () => {
+      it("both are clamped to now in the first tick's world", async () => {
+        const later = T + HOUR;
+        const state: ThermostatState = {
+          rooms: new Map([
+            [
+              "living",
+              {
+                kind: "override",
+                target: 22,
+                preset: undefined,
+                rule: "manual",
+                endsAt: undefined,
+                origin: API,
+                since: later,
+              },
+            ],
+          ]),
+          valves: new Map([
+            [
+              A,
+              {
+                roomId: "living",
+                confirmed: { mode: "auto", setpoint: undefined, scheduled: true },
+                sent: [
+                  {
+                    wanted: { mode: "heat", setpoint: 22, scheduled: false },
+                    at: later,
+                    from: { mode: "auto", setpoint: 17 },
+                  },
+                ],
+                week: undefined,
+              },
+            ],
+          ]),
+        };
+        await boot({ seed: { ...managedSeed([A]), state } });
+        const world = tickWorlds[0];
+        expect(world?.now.epochMilliseconds).toBe(T);
+        expect(world?.thermostats?.rooms.get("living")).toMatchObject({ since: T });
+        expect(world?.thermostats?.valves.get(A)?.sent[0]?.at).toBe(T);
       });
     });
   });

@@ -1,5 +1,11 @@
 import { validateConfig } from "@heatmaster/core";
-import type { Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
+import type {
+  Ledger,
+  StoredConfig,
+  Thermostat,
+  ThermostatState,
+  ValveRecord,
+} from "@heatmaster/core";
 
 const WEEK = [
   {
@@ -161,4 +167,70 @@ export function ledgerWith(count: number): Ledger {
 /** Only released entries. */
 export function releasedOnly(): Ledger {
   return { records: new Map(), released: sampleLedger().released };
+}
+
+/** The living room overridden at 22 °C from the API until 1_700_007_200_000. */
+export const SAMPLE_OVERRIDE: Extract<Thermostat, Readonly<{ kind: "override" }>> = {
+  kind: "override",
+  target: 22,
+  preset: undefined,
+  rule: "timer",
+  endsAt: 1_700_007_200_000,
+  origin: { source: "api", valveId: undefined },
+  since: 1_700_000_000_000,
+};
+
+/** Only the living room's override; no valve expectation. */
+export function overrideState(): ThermostatState {
+  return { rooms: new Map([["living_room", SAMPLE_OVERRIDE]]), valves: new Map() };
+}
+
+/**
+ * Every field the state file holds: an override with a preset from a valve, a room turned off
+ * until cancelled, a confirmed valve with a sent write and a saved week, and a taken-over valve.
+ */
+export function sampleThermostats(): ThermostatState {
+  return {
+    rooms: new Map<string, Thermostat>([
+      [
+        "living_room",
+        {
+          ...SAMPLE_OVERRIDE,
+          preset: "comfort",
+          origin: { source: "valve", valveId: SAMPLE_VALVE },
+        },
+      ],
+      [
+        "office",
+        {
+          kind: "off",
+          rule: "manual",
+          endsAt: undefined,
+          origin: { source: "climate", valveId: undefined },
+          since: 1_700_000_100_000,
+        },
+      ],
+    ]),
+    valves: new Map([
+      [
+        SAMPLE_VALVE,
+        {
+          roomId: "living_room",
+          confirmed: { mode: "auto", setpoint: 18, scheduled: true },
+          sent: [
+            {
+              wanted: { mode: "heat", setpoint: 22, scheduled: false },
+              at: 1_700_000_000_500,
+              from: { mode: "auto", setpoint: 18 },
+            },
+          ],
+          week: { key: "week-key", values: [18, 21] },
+        },
+      ],
+      [
+        "z2m:0x00124b0000000009",
+        { roomId: "office", confirmed: undefined, sent: [], week: undefined },
+      ],
+    ]),
+  };
 }

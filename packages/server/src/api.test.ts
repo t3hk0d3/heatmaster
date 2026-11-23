@@ -23,7 +23,12 @@ import { HeatmasterError } from "./errors.ts";
 import { createMqttClient } from "./mqtt.ts";
 import { API_HOST } from "./options.ts";
 import { createRuntime, type DeviceSnapshot, type Snapshot } from "./runtime.ts";
-import { createConfigStore, createLedgerStore, createPacingStore } from "./stores.ts";
+import {
+  createConfigStore,
+  createLedgerStore,
+  createPacingStore,
+  createThermostatStore,
+} from "./stores.ts";
 import { stateView } from "./views.ts";
 import { buildTransports } from "./z2m.ts";
 
@@ -1366,6 +1371,7 @@ describe("api", () => {
         configStore: createConfigStore(dataDir, clock),
         ledgerStore: createLedgerStore({ dataDir, publicDir }, clock, "test"),
         pacingStore: createPacingStore(dataDir),
+        thermostatStore: createThermostatStore(dataDir, clock),
         transports: buildTransports(mqtt, { baseTopic: "zigbee2mqtt" }),
         ha,
         clock,

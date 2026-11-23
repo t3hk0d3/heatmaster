@@ -210,3 +210,22 @@ export function needsAsk(vm: ValveMemory, spec: ValveSpec, heardAt: number | und
     return heardAt === undefined || heardAt < m.at;
   });
 }
+
+/**
+ * `current` with the `thermostat` group's memory and the token state (`tokens`, `tokensAt`,
+ * `lastWriteAt`) of `start`, for a thermostat publish that was held back behind a failed save
+ * (R20): as if it had never been charged. The rest of `current` (a push sent, other groups) is
+ * kept. A `start` without a thermostat group gives a result without one.
+ */
+export function restoreThermostatGroup(current: ValveMemory, start: ValveMemory): ValveMemory {
+  const groups: Partial<Record<Group, GroupMemory>> = { ...current.groups };
+  if (start.groups.thermostat === undefined) delete groups.thermostat;
+  else groups.thermostat = start.groups.thermostat;
+  return {
+    ...current,
+    groups,
+    tokens: start.tokens,
+    tokensAt: start.tokensAt,
+    lastWriteAt: start.lastWriteAt,
+  };
+}

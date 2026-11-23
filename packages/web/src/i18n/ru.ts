@@ -36,6 +36,7 @@ export const ru: Dictionary = {
   "store.config": "конфигурацию",
   "store.ledger": "сохранённые исходные настройки клапанов",
   "store.copy": "читаемую копию сохранённых исходных настроек",
+  "store.state": "сохранённые состояния комнат",
 
   "group.schedule": "расписание",
   "group.active_group": "активная группа расписания",

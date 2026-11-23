@@ -138,6 +138,7 @@ export {
   needsAsk,
   newValveMemory,
   noteHeard,
+  restoreThermostatGroup,
 } from "./memory.ts";
 export type { GroupMemory, Mark, Memory, RoomMemory, ValveMemory, WriteRecord } from "./memory.ts";
 export {
@@ -270,6 +271,7 @@ export {
   candidates,
   confirmedWeek,
   isObservable,
+  isThermostatWrite,
   preview,
   roomWeek,
   tick,

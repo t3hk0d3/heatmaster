@@ -9,9 +9,11 @@ import {
   needsAsk,
   newValveMemory,
   noteHeard,
+  restoreThermostatGroup,
   type GroupMemory,
   type ValveMemory,
 } from "./memory.ts";
+import { pushed } from "./feed.ts";
 import { charge, chargeAsk } from "./pacing.ts";
 import type { Group, GroupSpec, ValveSpec } from "./settings.ts";
 
@@ -360,6 +362,52 @@ describe("memory", () => {
     describe("With no group marked", () => {
       it("returns false", () => {
         expect(needsAsk(unmarked(), SPEC, undefined)).toBe(false);
+      });
+    });
+  });
+
+  describe("restoreThermostatGroup", () => {
+    const WITH_THERMOSTAT = valveSpec([
+      groupSpec("schedule", false, DAY_MS),
+      groupSpec("thermostat", true, DAY_MS),
+    ]);
+    const start = unmarked(WITH_THERMOSTAT);
+    // In the tick: a push, the schedule marked, then a thermostat write that is held.
+    const ticked = charge(
+      mark(pushed(start, 21, T0 + MINUTE_MS), ["schedule"], T0 + MINUTE_MS),
+      "thermostat",
+      T0 + MINUTE_MS,
+      false,
+    );
+    describe("With a thermostat write charged since the start", () => {
+      const restored = restoreThermostatGroup(ticked, start);
+      it("the thermostat group's memory is the start's", () => {
+        expect(restored.groups.thermostat).toEqual(start.groups.thermostat);
+      });
+      it("tokens, tokensAt and lastWriteAt are the start's", () => {
+        expect(restored.tokens).toBe(start.tokens);
+        expect(restored.tokensAt).toBe(start.tokensAt);
+        expect(restored.lastWriteAt).toBe(start.lastWriteAt);
+      });
+      it("every other group and field is the current one's", () => {
+        expect(restored.groups.schedule).toEqual(ticked.groups.schedule);
+        expect(restored.lastPushAt).toBe(T0 + MINUTE_MS);
+        expect(restored.feedValue).toBe(21);
+        expect({ ...restored, groups: {}, tokens: 0, tokensAt: 0, lastWriteAt: 0 }).toEqual({
+          ...ticked,
+          groups: {},
+          tokens: 0,
+          tokensAt: 0,
+          lastWriteAt: 0,
+        });
+      });
+    });
+    describe("With a start that has no thermostat group", () => {
+      it("the result has no thermostat group", () => {
+        const noThermostat = unmarked(SPEC);
+        const restored = restoreThermostatGroup(ticked, noThermostat);
+        expect(restored.groups.thermostat).toBeUndefined();
+        expect(restored.groups.schedule).toEqual(ticked.groups.schedule);
       });
     });
   });

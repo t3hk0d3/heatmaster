@@ -797,8 +797,11 @@ function valveTarget(
   return wanted.setpoint ?? (wanted.mode === "auto" ? scheduled : undefined);
 }
 
-/** A publish of the `thermostat` group. */
-function isThermostatWrite(effect: Effect): boolean {
+/**
+ * A publish of the `thermostat` group: one that carries a mode or a setpoint. The runtime holds
+ * these, not unsends them, when a save before them failed (R20).
+ */
+export function isThermostatWrite(effect: Effect): boolean {
   return (
     effect.kind === "publish" &&
     Object.keys(effect.values).some((key) => groupOf(key as SettingKey) === "thermostat")

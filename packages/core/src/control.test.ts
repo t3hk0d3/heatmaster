@@ -30,6 +30,7 @@ import {
   candidates,
   confirmedWeek,
   isObservable,
+  isThermostatWrite,
   preview,
   tick,
   transportUsable,
@@ -891,6 +892,25 @@ describe("control", () => {
     describe("With a spec and a state that holds a message", () => {
       it("returns true", () => {
         expect(isObservable({ name: "x", spec, usable: true, state: makeState() })).toBe(true);
+      });
+    });
+  });
+
+  describe("isThermostatWrite", () => {
+    describe("With a publish of system_mode and a setpoint", () => {
+      it("returns true", () => {
+        const values = { system_mode: "heat", setpoint: 22 } as const;
+        expect(isThermostatWrite({ kind: "publish", valveId: "z2m:a", values })).toBe(true);
+      });
+    });
+    describe("With a publish of another group, a push or a refresh", () => {
+      it("returns false", () => {
+        const values = { frost_protection: 7 } as const;
+        expect(isThermostatWrite({ kind: "publish", valveId: "z2m:a", values })).toBe(false);
+        expect(isThermostatWrite({ kind: "pushTemperature", valveId: "z2m:a", celsius: 20 })).toBe(
+          false,
+        );
+        expect(isThermostatWrite({ kind: "refresh", valveId: "z2m:a" })).toBe(false);
       });
     });
   });

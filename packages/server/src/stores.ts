@@ -1,4 +1,7 @@
-/** The config file, the ledger file, the pacing file and the readable copy of the originals. */
+/**
+ * The config file, the ledger file, the pacing file, the state file and the readable copy of the
+ * originals.
+ */
 
 import {
   access,
@@ -14,6 +17,7 @@ import path from "node:path";
 import {
   ConfigError,
   EMPTY_LEDGER,
+  EMPTY_THERMOSTAT_STATE,
   PROFILES,
   SETTING_KEYS,
   groupOf,
@@ -21,10 +25,18 @@ import {
   ledgerToRaw,
   storedFromRaw,
   storedToRaw,
+  thermostatStateFromRaw,
+  thermostatStateToRaw,
   upgradeRawV1,
   upgradeStoredV2,
 } from "@heatmaster/core";
-import type { ConfigState, Ledger, StoredConfig, ValveRecord } from "@heatmaster/core";
+import type {
+  ConfigState,
+  Ledger,
+  StoredConfig,
+  ThermostatState,
+  ValveRecord,
+} from "@heatmaster/core";
 import type { Clock } from "./clock.ts";
 import { consoleErrorLog, HeatmasterError, type ErrorLog } from "./errors.ts";
 
@@ -36,6 +48,7 @@ import { consoleErrorLog, HeatmasterError, type ErrorLog } from "./errors.ts";
 export const CONFIG_FILE_VERSION = 3;
 export const LEDGER_FILE_VERSION = 1;
 export const PACING_FILE_VERSION = 1;
+export const STATE_FILE_VERSION = 1;
 export const COPY_FILE_VERSION = 1;
 /** The readable copy and the four before it. */
 export const COPY_GENERATIONS = 5;
@@ -80,9 +93,20 @@ export type PacingStore = Readonly<{
   save(stamps: PacingStamps): Promise<void>;
 }>;
 
+/**
+ * The room states and valve expectations of `state.json` (plan 3a, R10). `load` never rejects: no
+ * file is an empty state, a file that cannot be read is `unreadable`, and the store then refuses
+ * to `save` until `reset` has set the file aside and saved an empty state.
+ */
+export type ThermostatStore = Readonly<{
+  load(): Promise<Readonly<{ state: "ok" | "unreadable"; thermostats: ThermostatState }>>;
+  save(thermostats: ThermostatState): Promise<void>;
+  reset(): Promise<void>;
+}>;
+
 /** A store that failed to load, or was never loaded, refuses to write. */
 export class StoreLocked extends HeatmasterError {
-  constructor(store: "config" | "ledger") {
+  constructor(store: "config" | "ledger" | "state") {
     super("store_locked", { store });
   }
 }
@@ -131,6 +155,10 @@ export function migratePacingFile(file: File): File {
 
 export function migrateCopyFile(file: File): File {
   return migrateFile(file, COPY_FILE_VERSION);
+}
+
+export function migrateStateFile(file: File): File {
+  return migrateFile(file, STATE_FILE_VERSION);
 }
 
 function errnoCode(error: unknown): string | undefined {
@@ -533,6 +561,60 @@ export function createPacingStore(dataDir: string): PacingStore {
         valves[valveId] = { bucketFullAt: stamps.get(valveId) ?? 0 };
       }
       await writeAtomic(file, render({ version: PACING_FILE_VERSION, valves }));
+    },
+  };
+}
+
+/** The state of a `state.json` document: everything but its `version`, read by the core. */
+function thermostatsFromFile(file: File): ThermostatState | undefined {
+  const document = Object.fromEntries(
+    Object.entries(migrateStateFile(file)).filter(([key]) => key !== "version"),
+  );
+  return thermostatStateFromRaw(document);
+}
+
+export function createThermostatStore(dataDir: string, clock: Clock): ThermostatStore {
+  const file = path.join(dataDir, "state.json");
+  // True until a load found the file readable or missing: an unreadable file is never overwritten.
+  let locked = true;
+
+  async function write(thermostats: ThermostatState): Promise<void> {
+    const document = { version: STATE_FILE_VERSION, ...thermostatStateToRaw(thermostats) };
+    await writeAtomic(file, render(document));
+  }
+
+  return {
+    async load() {
+      const read = await readJson(file);
+      if (read.kind === "missing") {
+        locked = false;
+        return { state: "ok", thermostats: EMPTY_THERMOSTAT_STATE };
+      }
+      if (read.kind === "ok") {
+        try {
+          const thermostats = thermostatsFromFile(read.file);
+          if (thermostats !== undefined) {
+            locked = false;
+            return { state: "ok", thermostats };
+          }
+        } catch {
+          // fall through: unreadable
+        }
+      }
+      locked = true;
+      return { state: "unreadable", thermostats: EMPTY_THERMOSTAT_STATE };
+    },
+
+    async save(thermostats) {
+      if (locked) throw new StoreLocked("state");
+      await write(thermostats);
+    },
+
+    async reset() {
+      // Whatever file is there is kept; a missing one is skipped.
+      await setAside(file, "state", clock);
+      await write(EMPTY_THERMOSTAT_STATE);
+      locked = false;
     },
   };
 }
