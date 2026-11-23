@@ -2,7 +2,7 @@ name: Heatmaster
 slug: heatmaster
 description: Room schedules and weighted room temperatures for Sonoff radiator valves, through Zigbee2MQTT.
 url: https://github.com/t3hk0d3/heatmaster
-version: "0.2.0"
+version: "0.3.0"
 image: ghcr.io/t3hk0d3/heatmaster
 arch:
   - aarch64
