@@ -19,6 +19,7 @@ import {
   makeThermostat,
   makeWorld,
   points,
+  savedWeekOf,
   settled,
   weekOf,
   withExpectation,
@@ -3793,6 +3794,62 @@ describe("control", () => {
         );
         expect(keys.filter((key) => key === newKey)).toHaveLength(1);
         expect(keys.at(-1)).toBe(newKey);
+      });
+    });
+
+    describe("With a TRV-ZBT whose week changed and whose day write was lost", () => {
+      // The old day holds 20 from 06:30 and 18 from 13:00; OTHER_DAY holds 21 from 07:00 to
+      // 23:00. The valve keeps the old day: the seven days written for OTHER_DAY are lost.
+      const oldDay = points("00:00/17 06:30/20 13:00/18 22:00/17");
+      const base = withValues(zbtWorld(oldDay), { setpoint: 20 });
+      // A tick on the old week saves it with the valve's expectation (R22).
+      const onOld = next(base, tick(base), SECOND_MS);
+      const changed = withWeekDay(onOld, OTHER_DAY);
+      const edit = tick(changed);
+      // It speaks a second later, so its new week counts as confirmed (R23).
+      const spoke = hear(next(changed, edit, SECOND_MS), {});
+      const wrote = tick(later(spoke, SECOND_MS));
+      // It takes the auto 21 it is written.
+      const took = hear(next(later(spoke, SECOND_MS), wrote, SECOND_MS), { setpoint: 21 });
+      const confirmed = tick(later(took, SECOND_MS));
+      // At 13:00 it takes its old week's 18.
+      const before = next(later(took, SECOND_MS), confirmed, 0);
+      const pointAt = Temporal.ZonedDateTime.from("2026-11-16T13:00:30+01:00[Europe/Amsterdam]");
+      const pointHeard = hear(later(before, pointAt.epochMilliseconds - nowOf(before)), {
+        setpoint: 18,
+      });
+      const point = tick(later(pointHeard, SECOND_MS));
+      // Three minutes later it speaks again.
+      const asked = hear(next(later(pointHeard, SECOND_MS), point, 3 * MINUTE_MS), {});
+      const resent = tick(later(asked, SECOND_MS));
+
+      it("the days went out and auto 21 was confirmed", () => {
+        expect(publishes(valveEffects(edit))).toEqual([sevenDays(OTHER_DAY)]);
+        expect(publishes(valveEffects(wrote))).toEqual([{ system_mode: "auto", setpoint: 21 }]);
+        expect(expectationAfter(confirmed)?.confirmed).toEqual({
+          mode: "auto",
+          setpoint: 21,
+          scheduled: true,
+        });
+      });
+      it("its old week is saved as its previous week", () => {
+        const zbt = makeSpec("trv_zbt");
+        expect(expectationAfter(confirmed)).toMatchObject({
+          week: savedWeekOf(changed, zbt),
+          previous: savedWeekOf(onOld, zbt),
+        });
+      });
+      it("its old week's point is not adopted", () => {
+        expect(stateAfter(point).rooms.has(BUILDER_ROOM)).toBe(false);
+      });
+      it("the schedule group is written again", () => {
+        expect(vmOf(point).groups.schedule?.mark).toBeDefined();
+        expect(publishes(valveEffects(resent))).toEqual([sevenDays(OTHER_DAY)]);
+      });
+      it("a report heard before the re-sent write does not mark the group again", () => {
+        const after = tick(next(later(asked, SECOND_MS), resent, 30 * SECOND_MS));
+        expect(vmOf(after).groups.schedule?.mark).toEqual(vmOf(resent).groups.schedule?.mark);
+        expect(stateAfter(after).rooms.has(BUILDER_ROOM)).toBe(false);
       });
     });
 

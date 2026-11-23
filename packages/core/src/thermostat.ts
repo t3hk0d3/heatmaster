@@ -88,13 +88,15 @@ export type SavedWeek = Readonly<{ key: string; values: readonly number[] }>;
 /**
  * What a managed valve is expected to show for its room (R3). `confirmed` undefined: the valve is
  * taken over. `sent` is newest first, holds each wanted state at most once and at most
- * `SENT_KEPT` writes.
+ * `SENT_KEPT` writes. `previous` is the week `week` replaced, kept until the valve shows a point
+ * of `week` (a TRV-ZBT's day write can be lost while it still reports, so it may still run it).
  */
 export type ValveExpectation = Readonly<{
   roomId: string;
   confirmed: ThermostatWanted | undefined;
   sent: readonly SentWrite[];
   week: SavedWeek | undefined;
+  previous: SavedWeek | undefined;
 }>;
 
 /** Everything `state.json` holds; `valves` is by valve id. */
@@ -289,13 +291,13 @@ function expectationToRaw(expectation: ValveExpectation): Record<string, unknown
       at: write.at,
       from: { ...optional("mode", write.from.mode), ...optional("setpoint", write.from.setpoint) },
     })),
-    ...optional(
-      "week",
-      expectation.week === undefined
-        ? undefined
-        : { key: expectation.week.key, values: [...expectation.week.values] },
-    ),
+    ...optional("week", weekToRaw(expectation.week)),
+    ...optional("previous", weekToRaw(expectation.previous)),
   };
+}
+
+function weekToRaw(week: SavedWeek | undefined): Record<string, unknown> | undefined {
+  return week === undefined ? undefined : { key: week.key, values: [...week.values] };
 }
 
 /** `{ rooms, valves }` of `state.json`; the store adds `version`. Keys left undefined are left out. */
@@ -424,12 +426,13 @@ function weekFromRaw(value: unknown): SavedWeek {
 }
 
 function expectationFromRaw(value: unknown): ValveExpectation {
-  const obj = objectOf(value, ["room", "sent"], ["confirmed", "week"]);
+  const obj = objectOf(value, ["room", "sent"], ["confirmed", "week", "previous"]);
   return {
     roomId: text(obj.room),
     confirmed: maybe(obj.confirmed, (raw) => wantedOf(objectOf(raw, WANTED_KEYS, ["setpoint"]))),
     sent: sentListFromRaw(obj.sent),
     week: maybe(obj.week, weekFromRaw),
+    previous: maybe(obj.previous, weekFromRaw),
   };
 }
 

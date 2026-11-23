@@ -8,6 +8,7 @@ import {
   frostDesired,
   managedDesired,
   releaseDesired,
+  savedPointValues,
   thermostatContext,
   thermostatDesired,
   thermostatWanted,
@@ -448,6 +449,58 @@ describe("desired", () => {
         const heardAt = at("06:59:30").epochMilliseconds;
         const ctx = thermostatContext(TRV_ZBT, week, undefined, week, heardAt, NOON);
         expect(sorted(ctx.pointValues)).toEqual([17, 21]);
+      });
+    });
+  });
+
+  describe("savedPointValues", () => {
+    const AMS = "Europe/Amsterdam";
+    const at = (time: string): number =>
+      Temporal.PlainDateTime.from(`2026-11-16T${time}`).toZonedDateTime(AMS).epochMilliseconds;
+    const saved = (day: ResolvedDay): SavedWeek => ({ key: weekKey(weekOf(day)), values: [] });
+    const OLD = saved(points("00:00/17 06:30/20 22:00/17"));
+    const NEW = saved(points("00:00/16 07:00/21 23:00/16"));
+    const sorted = (values: ReadonlySet<number> | undefined): readonly number[] | undefined =>
+      values === undefined ? undefined : [...values].sort((a, b) => a - b);
+
+    describe("With a saved week and heardAt 06:29:30, next to its point at 06:30 (17 → 20)", () => {
+      it("17 and 20", () => {
+        expect(sorted(savedPointValues(TRV_ZBT, [OLD], at("06:29:30"), AMS))).toEqual([17, 20]);
+      });
+    });
+    describe("With a saved week and heardAt 12:00, no point near", () => {
+      it("its value in force, 20", () => {
+        expect(sorted(savedPointValues(TRV_ZBT, [OLD], at("12:00:00"), AMS))).toEqual([20]);
+      });
+    });
+    describe("With two saved weeks and heardAt 12:00", () => {
+      it("the values in force of both", () => {
+        expect(sorted(savedPointValues(TRV_ZBT, [OLD, NEW], at("12:00:00"), AMS))).toEqual([
+          20, 21,
+        ]);
+      });
+    });
+    describe("With a saved week holding 34 on a TRV-ZBT", () => {
+      it("30", () => {
+        const hot = saved(points("00:00/34"));
+        expect(sorted(savedPointValues(TRV_ZBT, [hot], at("12:00:00"), AMS))).toEqual([30]);
+      });
+    });
+    describe("With no heardAt", () => {
+      it("undefined", () => {
+        expect(savedPointValues(TRV_ZBT, [OLD], undefined, AMS)).toBeUndefined();
+      });
+    });
+    describe("With no saved week", () => {
+      it("undefined", () => {
+        expect(savedPointValues(TRV_ZBT, [], at("12:00:00"), AMS)).toBeUndefined();
+      });
+    });
+    describe("With a saved key that is no week key", () => {
+      it("it is skipped", () => {
+        const odd: SavedWeek = { key: "not a week", values: [19] };
+        expect(savedPointValues(TRV_ZBT, [odd], at("12:00:00"), AMS)).toBeUndefined();
+        expect(sorted(savedPointValues(TRV_ZBT, [odd, OLD], at("12:00:00"), AMS))).toEqual([20]);
       });
     });
   });

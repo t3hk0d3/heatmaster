@@ -28,6 +28,8 @@ const SECOND_MS = 1000;
  * One managed valve of a room as the tick judges it. `seen` is its current mode and setpoint
  * (undefined where never shown), `heardAt` when it last spoke, `ctx` what its adapter is told of
  * its week, and `week` its confirmed week as a key and values (undefined while unconfirmed).
+ * `previousPoints` are the temperatures in force near `heardAt` in a week the valve may still run
+ * instead of its desired one (`savedPointValues`), undefined when there is none.
  */
 export type JudgedValve = Readonly<{
   valveId: string;
@@ -37,6 +39,7 @@ export type JudgedValve = Readonly<{
   expectation: ValveExpectation | undefined;
   ctx: AdapterContext;
   week: SavedWeek | undefined;
+  previousPoints: ReadonlySet<number> | undefined;
 }>;
 
 /** A report no expected state explains; `before` is the valve's confirmed state before it. */
@@ -57,10 +60,15 @@ export type AdoptInput = Readonly<{
   now: Temporal.ZonedDateTime;
 }>;
 
-/** The room's thermostat and every judged valve's expectation after judging. */
+/**
+ * The room's thermostat and every judged valve's expectation after judging. `resend` holds the
+ * valves whose report shows a point of the week they ran before: their schedule did not land and
+ * is to be written again.
+ */
 export type Adoption = Readonly<{
   thermostat: Thermostat;
   expectations: ReadonlyMap<string, ValveExpectation>;
+  resend: ReadonlySet<string>;
 }>;
 
 /** What a valve shows, as the state it is then expected at: never scheduled, no setpoint when off. */
@@ -96,6 +104,48 @@ export function savedWeek(
   valve: JudgedValve,
 ): SavedWeek | undefined {
   return scheduledAuto(wanted) && valve.week !== undefined ? valve.week : expectation.week;
+}
+
+/**
+ * The expectation with `week` saved. When its key differs from the saved week's, the week it
+ * replaces becomes the previous one: the valve may still run it until it shows `week`. `e` itself
+ * when the key is the same.
+ */
+export function withWeek(e: ValveExpectation, week: SavedWeek | undefined): ValveExpectation {
+  if (week?.key === e.week?.key) return e;
+  return { ...e, week, previous: e.week ?? e.previous };
+}
+
+/**
+ * The report is a point of the week the valve ran before and no expected state explains it: a
+ * scheduled `auto` state is expected and it shows `auto` at a value in force near its `heardAt` in
+ * that week. The new week did not land (a lost, queued or late day write).
+ */
+function previousPoint(valve: JudgedValve, known: readonly ThermostatWanted[]): boolean {
+  const { seen, previousPoints } = valve;
+  return (
+    seen.mode === "auto" &&
+    seen.setpoint !== undefined &&
+    previousPoints?.has(seen.setpoint) === true &&
+    known.some(scheduledAuto)
+  );
+}
+
+/**
+ * The valve shows its saved week: in `auto` at a value of that week in force near its `heardAt`
+ * (`ctx.pointValues`) that is no point of the previous week then and no setpoint Heatmaster
+ * expects (a value it wrote is no sign of the week).
+ */
+function weekShown(valve: JudgedValve, known: readonly ThermostatWanted[]): boolean {
+  const { seen, ctx, previousPoints } = valve;
+  const setpoint = seen.setpoint;
+  return (
+    seen.mode === "auto" &&
+    setpoint !== undefined &&
+    ctx.pointValues?.has(setpoint) === true &&
+    previousPoints?.has(setpoint) !== true &&
+    !known.some((x) => x.setpoint === setpoint)
+  );
 }
 
 /**
@@ -138,19 +188,32 @@ function landing(write: SentWrite, valve: JudgedValve): boolean {
   );
 }
 
-/** Judges one valve: its expectation after the report, and the person's change it shows, if any. */
-function judge(
-  valve: JudgedValve,
-  roomId: string,
-): Readonly<{ expectation: ValveExpectation; change: PersonChange | undefined }> {
+/**
+ * One valve's judging: its expectation after the report, the person's change it shows, if any,
+ * and whether its schedule is to be written again.
+ */
+type Judging = Readonly<{
+  expectation: ValveExpectation;
+  change: PersonChange | undefined;
+  resend: boolean;
+}>;
+
+/** Judges one valve against its expectation (R3, R4). */
+function judge(valve: JudgedValve, roomId: string): Judging {
   const given = valve.expectation;
   if (given?.roomId !== roomId) {
     // R3: taken over.
-    const expectation = { roomId, confirmed: undefined, sent: [], week: undefined };
-    return { expectation, change: undefined };
+    const expectation = {
+      roomId,
+      confirmed: undefined,
+      sent: [],
+      week: undefined,
+      previous: undefined,
+    };
+    return { expectation, change: undefined, resend: false };
   }
   const { seen, heardAt, ctx, spec } = valve;
-  if (seen.mode === undefined) return { expectation: given, change: undefined };
+  if (seen.mode === undefined) return { expectation: given, change: undefined, resend: false };
   const adapter = spec.thermostat;
   let e = given;
   if (heardAt !== undefined) {
@@ -177,29 +240,30 @@ function judge(
     heardAt >= Math.floor(newest.at / SECOND_MS) * SECOND_MS &&
     adapter.matches(newest.wanted, seen, ctx)
   ) {
-    e = {
-      roomId,
-      confirmed: recorded(newest.wanted, valve),
-      sent: [],
-      week: savedWeek(newest.wanted, e, valve),
-    };
+    const confirmed = recorded(newest.wanted, valve);
+    e = withWeek({ ...e, confirmed, sent: [] }, savedWeek(newest.wanted, e, valve));
   }
+  // The valve shows its saved week: the week it ran before is no longer kept.
+  if (e.previous !== undefined && weekShown(valve, known)) e = { ...e, previous: undefined };
   const before = e.confirmed;
   // R4.3: a valve being taken over is not judged.
-  if (before === undefined) return { expectation: e, change: undefined };
+  if (before === undefined) return { expectation: e, change: undefined, resend: false };
   // R4.4, R4.5, R4.5a.
   if (
     known.some((x) => adapter.explains(x, seen, ctx)) ||
     e.sent.some((s) => partial(s, seen)) ||
     e.sent.some((s) => landing(s, valve))
   ) {
-    return { expectation: e, change: undefined };
+    return { expectation: e, change: undefined, resend: false };
   }
+  // A point of the week the valve ran before: its new week did not land, so it is written again.
+  if (previousPoint(valve, known)) return { expectation: e, change: undefined, resend: true };
   // R4.6: a person's change. The saved week is kept: while the valve's week is unconfirmed it
   // still gives the points that explain an adopted `auto` value (R23, R24; fix round 1).
   return {
-    expectation: { roomId, confirmed: asWanted(seen), sent: e.sent, week: e.week },
+    expectation: { ...e, confirmed: asWanted(seen) },
     change: { valveId: valve.valveId, seen, before, heardAt },
+    resend: false,
   };
 }
 
@@ -221,11 +285,13 @@ function newestChange(changes: readonly PersonChange[]): PersonChange | undefine
 /**
  * Judges every valve of a room against its expectation (R3, R4) and adopts the newest person's
  * change as the room's state (R5), keeping the thermostat itself when the result equals it (R21).
- * Valves are judged in valve-id order.
+ * A report showing a point of the week a valve ran before is no change: that valve's schedule is
+ * to be written again. Valves are judged in valve-id order.
  */
 export function adopt(input: AdoptInput): Adoption {
   const expectations = new Map<string, ValveExpectation>();
   const changes: PersonChange[] = [];
+  const resend = new Set<string>();
   const valves = [...input.valves].sort((a, b) =>
     a.valveId < b.valveId ? -1 : a.valveId > b.valveId ? 1 : 0,
   );
@@ -233,13 +299,15 @@ export function adopt(input: AdoptInput): Adoption {
     const judged = judge(valve, input.room.id);
     expectations.set(valve.valveId, judged.expectation);
     if (judged.change !== undefined) changes.push(judged.change);
+    if (judged.resend) resend.add(valve.valveId);
   }
   const change = newestChange(changes);
-  if (change === undefined) return { thermostat: input.thermostat, expectations };
+  if (change === undefined) return { thermostat: input.thermostat, expectations, resend };
   const next = personThermostat(input.thermostat, change, input);
   return {
     thermostat: sameThermostat(next, input.thermostat) ? input.thermostat : next,
     expectations,
+    resend,
   };
 }
 

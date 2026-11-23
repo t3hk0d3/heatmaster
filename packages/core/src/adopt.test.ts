@@ -7,7 +7,7 @@ import {
   makeSpec,
   makeThermostat,
 } from "../test/builders.ts";
-import { adopt, clampThermostatState } from "./adopt.ts";
+import { adopt, clampThermostatState, withWeek } from "./adopt.ts";
 import type { AdoptInput, Adoption, JudgedValve } from "./adopt.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
 import type { Room } from "./model.ts";
@@ -17,6 +17,7 @@ import type { AdapterContext } from "./thermostat-adapter.ts";
 import { SCHEDULE, defaultEnd, endsAt } from "./thermostat-rules.ts";
 import type {
   RoomLimits,
+  SavedWeek,
   SentWrite,
   Thermostat,
   ThermostatSeen,
@@ -125,6 +126,8 @@ function valve(options: {
   heardAt?: number | undefined;
   expectation?: ValveExpectation | undefined;
   ctx?: AdapterContext;
+  week?: SavedWeek | undefined;
+  previousPoints?: readonly number[];
 }): JudgedValve {
   return {
     valveId: options.valveId ?? V,
@@ -134,7 +137,9 @@ function valve(options: {
     expectation:
       "expectation" in options ? options.expectation : makeExpectation({ confirmed: AUTO }),
     ctx: options.ctx ?? NO_WEEK,
-    week: undefined,
+    week: options.week,
+    previousPoints:
+      options.previousPoints === undefined ? undefined : new Set(options.previousPoints),
   };
 }
 
@@ -192,6 +197,7 @@ describe("adopt", () => {
             confirmed: undefined,
             sent: [],
             week: undefined,
+            previous: undefined,
           });
         });
       });
@@ -205,6 +211,7 @@ describe("adopt", () => {
             confirmed: undefined,
             sent: [],
             week: undefined,
+            previous: undefined,
           });
         });
       });
@@ -967,6 +974,165 @@ describe("adopt", () => {
       });
     });
 
+    describe("a lost day write", () => {
+      // The valve's old week holds 17 and 20, its new week 16 and 21.
+      const OLD_WEEK: SavedWeek = { key: "old", values: [17, 20] };
+      const NEW_WEEK: SavedWeek = { key: "new", values: [16, 21] };
+      /** Confirmed auto 21 under its new week, its old week kept as the previous one. */
+      const underNew = makeExpectation({
+        confirmed: autoAt(21),
+        week: NEW_WEEK,
+        previous: OLD_WEEK,
+      });
+
+      describe("With a TRV-ZBT whose week changed and whose day write was lost, showing auto 20, its old week's point at heardAt", () => {
+        const result = adopt(
+          input([
+            valve({
+              model: "trv_zbt",
+              shows: seen("auto", 20),
+              expectation: underNew,
+              ctx: weekCtx([16, 21], [21]),
+              previousPoints: [20],
+            }),
+          ]),
+        );
+        it("its old week's point is not adopted", () => {
+          expect(result.thermostat).toBe(SCHEDULE);
+        });
+        it("the schedule group is written again", () => {
+          expect(result.resend).toEqual(new Set([V]));
+        });
+        it("its expectation is unchanged", () => {
+          expect(expectationOf(result)).toBe(underNew);
+        });
+      });
+      describe("With that valve showing auto 24, a value of neither week", () => {
+        const result = adopt(
+          input([
+            valve({
+              model: "trv_zbt",
+              shows: seen("auto", 24),
+              expectation: underNew,
+              ctx: weekCtx([16, 21], [21]),
+              previousPoints: [20],
+            }),
+          ]),
+        );
+        it("an override at 24", () => {
+          expect(result.thermostat).toEqual(byValve(24));
+        });
+        it("the schedule group is not written again", () => {
+          expect(result.resend).toEqual(new Set());
+        });
+      });
+      describe("With a TRV-ZBT confirmed heat 22 in an override, showing auto 20, its old week's point at heardAt", () => {
+        const result = adopt(
+          input(
+            [
+              valve({
+                model: "trv_zbt",
+                shows: seen("auto", 20),
+                expectation: makeExpectation({
+                  confirmed: heat(22),
+                  week: NEW_WEEK,
+                  previous: OLD_WEEK,
+                }),
+                ctx: weekCtx([16, 21], [21]),
+                previousPoints: [20],
+              }),
+            ],
+            apiOverride(22),
+          ),
+        );
+        it("the room goes back to its schedule (auto pressed at the valve)", () => {
+          expect(result.thermostat).toBe(SCHEDULE);
+        });
+        it("the schedule group is not written again", () => {
+          expect(result.resend).toEqual(new Set());
+        });
+      });
+      describe("With a TRV-ZBT under its old week, sent [auto 21 scheduled], showing auto 21 once its new week is confirmed", () => {
+        it("its saved week is the new one and its previous week the old one", () => {
+          const result = adopt(
+            input([
+              valve({
+                model: "trv_zbt",
+                shows: seen("auto", 21),
+                heardAt: at("10:00:02"),
+                expectation: makeExpectation({
+                  confirmed: autoAt(20),
+                  sent: [sent(autoAt(21), at("10:00"), seen("auto", 20))],
+                  week: OLD_WEEK,
+                }),
+                ctx: weekCtx([16, 21], [21]),
+                week: NEW_WEEK,
+              }),
+            ]),
+          );
+          expect(expectationOf(result)).toMatchObject({
+            confirmed: autoAt(21),
+            week: NEW_WEEK,
+            previous: OLD_WEEK,
+          });
+        });
+      });
+
+      describe("the previous week", () => {
+        describe("With a TRV-ZBT whose previous week is kept, showing auto 16, a point only its new week has at heardAt", () => {
+          const result = adopt(
+            input([
+              valve({
+                model: "trv_zbt",
+                shows: seen("auto", 16),
+                expectation: underNew,
+                ctx: weekCtx([16, 21], [16, 21]),
+                previousPoints: [17],
+              }),
+            ]),
+          );
+          it("its previous week is dropped", () => {
+            expect(expectationOf(result)).toEqual({ ...underNew, previous: undefined });
+          });
+          it("nothing is adopted", () => {
+            expect(result.thermostat).toBe(SCHEDULE);
+          });
+        });
+        describe("With that valve showing auto 21, the value Heatmaster wrote", () => {
+          it("its previous week is kept", () => {
+            const result = adopt(
+              input([
+                valve({
+                  model: "trv_zbt",
+                  shows: seen("auto", 21),
+                  expectation: underNew,
+                  ctx: weekCtx([16, 21], [21]),
+                  previousPoints: [20],
+                }),
+              ]),
+            );
+            expect(expectationOf(result)).toBe(underNew);
+          });
+        });
+        describe("With that valve showing auto 16 at a point its old week has too", () => {
+          it("its previous week is kept", () => {
+            const result = adopt(
+              input([
+                valve({
+                  model: "trv_zbt",
+                  shows: seen("auto", 16),
+                  expectation: underNew,
+                  ctx: weekCtx([16, 21], [16]),
+                  previousPoints: [16, 17],
+                }),
+              ]),
+            );
+            expect(expectationOf(result)).toBe(underNew);
+          });
+        });
+      });
+    });
+
     describe("several valves", () => {
       describe("With two valves differing, heard 5 s apart", () => {
         const result = adopt(
@@ -1032,6 +1198,43 @@ describe("adopt", () => {
           }
           expect(thermostat).toEqual(byValve(21, V, now));
         });
+      });
+    });
+  });
+
+  describe("withWeek", () => {
+    const A: SavedWeek = { key: "a", values: [17, 20] };
+    const B: SavedWeek = { key: "b", values: [16, 21] };
+    const C: SavedWeek = { key: "c", values: [18] };
+
+    describe("With a saved week A and no previous week, given B", () => {
+      it("its week is B and its previous week A", () => {
+        const result = withWeek(makeExpectation({ week: A }), B);
+        expect(result).toMatchObject({ week: B, previous: A });
+      });
+    });
+    describe("With week B and previous week A, given C", () => {
+      it("its week is C and its previous week B", () => {
+        const result = withWeek(makeExpectation({ week: B, previous: A }), C);
+        expect(result).toMatchObject({ week: C, previous: B });
+      });
+    });
+    describe("With week B and previous week A, given A again", () => {
+      it("its week is A and its previous week B", () => {
+        const result = withWeek(makeExpectation({ week: B, previous: A }), A);
+        expect(result).toMatchObject({ week: A, previous: B });
+      });
+    });
+    describe("With no saved week, given B", () => {
+      it("its week is B and it has no previous week", () => {
+        const result = withWeek(makeExpectation(), B);
+        expect(result).toMatchObject({ week: B, previous: undefined });
+      });
+    });
+    describe("With week B, given a week with B's key", () => {
+      it("the expectation itself", () => {
+        const expectation = makeExpectation({ week: B });
+        expect(withWeek(expectation, { key: "b", values: [16, 21] })).toBe(expectation);
       });
     });
   });

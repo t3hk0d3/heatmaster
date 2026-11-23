@@ -600,7 +600,7 @@ describe("thermostat", () => {
   });
 
   describe("thermostatStateToRaw / thermostatStateFromRaw", () => {
-    describe("With an override from a valve, an off from the api, a valve confirmed auto scheduled with a saved week and one sent heat 22, and a taken-over valve", () => {
+    describe("With an override from a valve, an off from the api, a valve confirmed auto scheduled with a saved week, a previous week and one sent heat 22, and a taken-over valve", () => {
       it("they round-trip", () => {
         const confirmed: ValveExpectation = {
           roomId: BUILDER_ROOM,
@@ -613,12 +613,14 @@ describe("thermostat", () => {
             },
           ],
           week: { key: "week-key", values: [17, 20] },
+          previous: { key: "old-key", values: [16, 21] },
         };
         const takenOver: ValveExpectation = {
           roomId: "bedroom",
           confirmed: undefined,
           sent: [],
           week: undefined,
+          previous: undefined,
         };
         const state: ThermostatState = {
           rooms: new Map<string, Thermostat>([

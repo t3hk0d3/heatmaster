@@ -225,11 +225,12 @@ export function sampleThermostats(): ThermostatState {
             },
           ],
           week: { key: "week-key", values: [18, 21] },
+          previous: { key: "old-week-key", values: [17, 20] },
         },
       ],
       [
         "z2m:0x00124b0000000009",
-        { roomId: "office", confirmed: undefined, sent: [], week: undefined },
+        { roomId: "office", confirmed: undefined, sent: [], week: undefined, previous: undefined },
       ],
     ]),
   };

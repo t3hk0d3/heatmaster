@@ -1,10 +1,11 @@
 import { WEEKDAYS } from "./model.ts";
+import type { Weekday } from "./model.ts";
 import { roundHalfUp } from "./rounding.ts";
 import { activePoint, fitWeek, normalizeDay } from "./schedule.ts";
 import { DAY_KEYS, SETTING_KEYS, members, valuesEqual } from "./settings.ts";
 import type { ValveRecord } from "./ledger.ts";
 import type { DeviceState } from "./observation.ts";
-import type { FittedWeek, ResolvedWeek } from "./schedule.ts";
+import type { FittedWeek, ResolvedDay, ResolvedPoint, ResolvedWeek } from "./schedule.ts";
 import type { Group, SensorSource, SettingKey, SettingValue, ValveSpec } from "./settings.ts";
 import type { SavedWeek, Thermostat, ThermostatWanted } from "./thermostat.ts";
 import type { AdapterContext } from "./thermostat-adapter.ts";
@@ -109,6 +110,35 @@ export function weekKey(week: ResolvedWeek): string {
   ).join(";");
 }
 
+/** The week a `weekKey` text describes, or undefined when the text is not one. */
+function weekOfKey(key: string): ResolvedWeek | undefined {
+  const texts = key.split(";");
+  if (texts.length !== WEEKDAYS.length) return undefined;
+  const week: Partial<Record<Weekday, ResolvedDay>> = {};
+  for (const [i, weekday] of WEEKDAYS.entries()) {
+    const day: ResolvedPoint[] = [];
+    for (const text of (texts[i] ?? "").split(" ")) {
+      const [seconds, temperature] = text.split("/").map(Number);
+      const valid =
+        seconds !== undefined &&
+        temperature !== undefined &&
+        Number.isInteger(seconds) &&
+        seconds >= 0 &&
+        seconds < 24 * 60 * 60 &&
+        Number.isFinite(temperature);
+      if (!valid) return undefined;
+      const time = Temporal.PlainTime.from({
+        hour: Math.floor(seconds / 3600),
+        minute: Math.floor(seconds / 60) % 60,
+        second: seconds % 60,
+      });
+      day.push({ time, temperature });
+    }
+    week[weekday] = day;
+  }
+  return week as ResolvedWeek;
+}
+
 /** Held in the valve's setpoint range, then rounded half up to its step. */
 function asSetpoint(spec: ValveSpec, celsius: number): number {
   return roundHalfUp(Math.min(Math.max(celsius, spec.minTemp), spec.maxTemp), spec.tempStep);
@@ -170,6 +200,30 @@ export function thermostatContext(
     ),
     pointValues: points(confirmed),
   };
+}
+
+/**
+ * Every temperature in force at some instant within `SCHEDULE_SKEW_MS` of `heardAt` in any of
+ * `weeks`, saved weeks the valve may still run (R23, a lost day write): read back from their keys,
+ * held in the valve's range and rounded to its step. Undefined without `heardAt` or without a week
+ * whose key is a `weekKey` text.
+ */
+export function savedPointValues(
+  spec: ValveSpec,
+  weeks: readonly SavedWeek[],
+  heardAt: number | undefined,
+  timeZone: string,
+): ReadonlySet<number> | undefined {
+  if (heardAt === undefined) return undefined;
+  const resolved = weeks.flatMap((saved) => {
+    const week = weekOfKey(saved.key);
+    return week === undefined ? [] : [week];
+  });
+  if (resolved.length === 0) return undefined;
+  return setpointsOf(
+    spec,
+    resolved.flatMap((week) => temperaturesNear(week, heardAt, timeZone)),
+  );
 }
 
 /** The adapter's wanted state, its setpoint held in the valve's range and rounded to its step. */
