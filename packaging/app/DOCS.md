@@ -1,7 +1,7 @@
 # Heatmaster
 
 Heatmaster runs room schedules and weighted room temperatures on Sonoff radiator valves through
-Zigbee2MQTT, and since 0.3.0 each room is one thermostat with temporary changes. The full documentation is in the repository README:
+Zigbee2MQTT; since 0.3.0 each room is one thermostat. The full documentation is in the README:
 
 - [What it is and what it needs](https://github.com/t3hk0d3/heatmaster#what-heatmaster-is)
 - [Rooms come from Home Assistant](https://github.com/t3hk0d3/heatmaster#rooms-come-from-home-assistant)

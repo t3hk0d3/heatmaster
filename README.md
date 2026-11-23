@@ -9,9 +9,8 @@ own web page and in Home Assistant.
 Heatmaster runs the week's schedule on each valve itself (onboard) and feeds each valve a weighted
 room temperature taken from the room's sensors in Home Assistant. Since 0.3.0 each room is also one
 thermostat, and Heatmaster sets the valves' mode (see [The room thermostat](#the-room-thermostat)).
-Every problem it detects is
-shown on its page and as Home Assistant entities. It runs as a Home Assistant app (add-on) or as a
-plain container.
+Every problem it detects is shown on its page and as Home Assistant entities. It runs as a Home
+Assistant app (add-on) or as a plain container.
 
 **Home Assistant decides which rooms exist and which valves are in them.** Heatmaster's config
 keeps what Home Assistant has no notion of: the schedules, which schedule a room uses, its sensors
@@ -160,11 +159,11 @@ Each room's device in Home Assistant gets, with MQTT discovery:
 - **`climate.heatmaster_<room id>`** ("Thermostat"). Its `current_temperature` is the room's
   temperature and its `temperature` the current target. `hvac_mode` is `auto` on the schedule,
   `heat` in an override and `off` when off. Setting `auto` resumes the schedule, `off` turns the room
-  off, and `heat` starts an override at the current target. Setting a temperature or a preset
-  (`comfort`, `eco`, `frost`, `boost`; `none` when there is none) starts an override with the
-  room's end rule; `boost` lasts 30 minutes. The range is the room's, in steps of 0.5 °C. Its
-  attributes are `rule`, `ends_at`, `origin` (a valve's name, `climate` or `api`), `next_change_at`
-  and `next_target`.
+  off, and `heat` starts an override at the schedule's current value (an override already running
+  is left as it is). Setting a temperature or a preset (`comfort`, `eco`, `frost`, `boost`; `none`
+  when there is none) starts an override with the room's end rule; `boost` lasts 30 minutes. The
+  range is the room's, in steps of 0.5 °C. Its attributes are `rule`, `ends_at`, `origin` (a
+  valve's name, `climate` or `api`), `next_change_at` and `next_target`.
 - **`select.heatmaster_<room id>_override_end`** ("Override ends"): "Next schedule change", "For a
   set time" or "Until cancelled". It sets the room's end rule, which is a change of the config
   (a new revision), so choosing it just before setting a temperature picks the rule for that
@@ -187,8 +186,8 @@ still waiting for its confirmation explains is a person's change, and becomes th
 - mode `heat` with no new setpoint: an override at the room's current target.
 
 If several valves change in one tick, the newest report wins. A write that never matches is a
-communication failure, not a person's change: it is retried, and a "setting not holding" problem is
-shown. Heatmaster never undoes a change made on a valve or in Home Assistant.
+communication failure, not a person's change: it is retried, and the problem "Valve {name} does not
+keep its {setting}" is shown. Heatmaster never undoes a change made on a valve or in Home Assistant.
 
 The two models behave differently, so the rules differ:
 
@@ -208,7 +207,9 @@ dragged, costs each valve one write. A return to the schedule is written at once
 A write that fails on one valve does not stop the others. A valve that cannot be reached gets the
 room's state when it next reports, and the room shows as not in sync until then.
 
-**Known limits.** These are the cases Heatmaster cannot tell from its own writes:
+**Known limits.** These are the cases Heatmaster cannot tell from its own writes. They are rare.
+Each either misses a change made on a valve, or takes a Heatmaster write for one, which puts the
+room into an override that resuming the schedule clears.
 
 - A TRV-ZBT on its schedule turned to a value of its own week changes only that valve until its next
   point. Turned while a changed week is not yet confirmed on it, it is set back once the week is
@@ -225,10 +226,10 @@ room's state when it next reports, and the room shows as not in sync until then.
 - A combined write whose setpoint is lost just as the valve passes a schedule point is taken for a
   person's change.
 - **A lost, queued or late TRV-ZBT schedule write.** The valve's days cannot be read back, so a write
-  that is lost or late while the valve still reports counts as confirmed. The valve then stays on its
-  old week while Heatmaster takes the new one. The next point of the old week, if its value is not in
-  the new week, is taken for a person's change: the room goes into an override at that value until its
-  end rule ends it. Resuming the schedule puts it right.
+  that is lost or late while the valve still reports counts as confirmed, and the valve stays on its
+  old week. Heatmaster keeps the old week until the valve shows a point of the new one: a point of the
+  old week is not taken for a person's change, and the week is written again. Until the valve shows
+  the new week, a TRV-ZBT turned to exactly the old week's value at one of its points is not seen.
 - Heatmaster cannot tell a knob from a write sent through Zigbee2MQTT or Home Assistant. Both show
   as a change made on that valve.
 
