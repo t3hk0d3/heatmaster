@@ -514,7 +514,9 @@ function describeState(t: Thermostat): string {
 /**
  * What the room's thermostat becomes after a turn that left the valve showing `truth`, or
  * undefined where a known limit of the spec leaves it unseen: a TRV-ZBT on its schedule turned to
- * a value of its week, or while its desired week is not confirmed on it.
+ * a value of its week, or while its desired week is not confirmed on it. A TRV-ZBT put in `auto`
+ * from another mode while the room is not on its schedule takes the room back to it, as
+ * `personThermostat` does.
  */
 function expectedAfter(sim: SimDriver, turn: TurnMade): Thermostat | undefined {
   const valveId = VALVE_IDS[turn.valve];
@@ -540,6 +542,13 @@ function expectedAfter(sim: SimDriver, turn: TurnMade): Thermostat | undefined {
     return { kind: "off", rule: "manual", endsAt: undefined, origin, since: 0 };
   }
   const current = thermostatOf(sim, room.id);
+  if (
+    truth.mode === "auto" &&
+    current.kind !== "schedule" &&
+    expectation.confirmed.mode !== "auto"
+  ) {
+    return SCHEDULE;
+  }
   if (truth.mode === "auto" && turn.valve === 1 && current.kind === "schedule") {
     const days = fitted(week, view.spec).days;
     const values = WEEKDAYS.flatMap((day) => days[day].map((p) => p.temperature));
