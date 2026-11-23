@@ -10,6 +10,7 @@ import {
   arbConfig,
   entriesOf,
   liveHouse,
+  makeExpectation,
   makeManaged,
   makeMembership,
   makeOriginals,
@@ -20,10 +21,12 @@ import {
   points,
   settled,
   weekOf,
+  withExpectation,
 } from "../test/builders.ts";
 import {
   RELEASE_HOLD_MS,
   RELEASE_STALLED_AFTER_MS,
+  THERMOSTAT_SETTLE_MS,
   candidates,
   confirmedWeek,
   isObservable,
@@ -32,7 +35,7 @@ import {
   transportUsable,
 } from "./control.ts";
 import type { DeviceView, Effect, TickResult, World } from "./control.ts";
-import { fitted } from "./desired.ts";
+import { fitted, weekKey } from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
@@ -41,7 +44,7 @@ import type { AreaMembership, HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import { EMPTY_LEDGER, FRESH_STORED, memberships, withRecord } from "./ledger.ts";
 import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
-import { START_TOKENS, mark, newValveMemory } from "./memory.ts";
+import { EMPTY_MEMORY, START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
 import type { Config, Room, RoomEntry, SensorRef, SetPoint } from "./model.ts";
@@ -60,8 +63,18 @@ import type {
 } from "./settings.ts";
 import type { Problem, ProblemKind, ValveStatus } from "./status.ts";
 import type { SensorReading } from "./temperature.ts";
-import { EMPTY_THERMOSTAT_STATE, SCHEDULE } from "./thermostat.ts";
-import type { Thermostat, ThermostatState } from "./thermostat.ts";
+import {
+  EMPTY_THERMOSTAT_STATE,
+  SCHEDULE,
+  SENT_RETIRE_MS,
+  thermostatCommand,
+} from "./thermostat.ts";
+import type {
+  Thermostat,
+  ThermostatState,
+  ThermostatWanted,
+  ValveExpectation,
+} from "./thermostat.ts";
 
 const V = BUILDER_VALVE;
 const SECOND_MS = 1000;
@@ -108,9 +121,9 @@ function later(world: World, ms: number): World {
   return { ...world, now: atTime(nowOf(world) + ms) };
 }
 
-/** The world after `result`, `ms` later. */
+/** The world after `result`, `ms` later, with the tick's memory and thermostat state. */
 function next(world: World, result: TickResult, ms: number): World {
-  return later({ ...world, memory: result.memory }, ms);
+  return later({ ...world, memory: result.memory, thermostats: result.thermostats }, ms);
 }
 
 function viewOf(world: World, valveId = V): DeviceView {
@@ -203,9 +216,12 @@ function reconciledKinds(world: World): ReadonlyMap<string, Membership> {
   return kindsIn({ ...world, stored: reconciled.stored, ledger: reconciled.ledger });
 }
 
-/** The valve leaves its room and is put in `releasing`, ordered at `orderedAt`. */
+/**
+ * The valve leaves its room and is put in `releasing`, ordered at `orderedAt`. Its expectation is
+ * gone, as the tick that saw the release dropped it (R16).
+ */
 function released(world: World, orderedAt = nowOf(world), valveId = V): World {
-  const removed = withRooms(world, (rooms) =>
+  const removed = withRooms(withExpectation(world, undefined, valveId), (rooms) =>
     rooms.map((room) => ({ ...room, valves: room.valves.filter((v) => v.valveId !== valveId) })),
   );
   const stored = storedOf(removed);
@@ -287,7 +303,7 @@ function drive(world: World, rounds: number, stepMs: number): [World, Effect[]] 
   for (let i = 0; i < rounds; i++) {
     const result = tick(current);
     all.push(...result.effects);
-    current = { ...current, memory: result.memory };
+    current = { ...current, memory: result.memory, thermostats: result.thermostats };
     for (const effect of result.effects) {
       if (effect.kind === "publish" || effect.kind === "refresh") {
         const values = effect.kind === "publish" ? effect.values : {};
@@ -670,7 +686,7 @@ function runAll(world: World, steps: readonly number[]): readonly [World, TickRe
   for (const step of steps) {
     const result = tick(current);
     out.push([current, result]);
-    current = { ...current, memory: result.memory };
+    current = { ...current, memory: result.memory, thermostats: result.thermostats };
     for (const effect of result.effects) {
       if (effect.kind !== "publish" && effect.kind !== "refresh") continue;
       const values = effect.kind === "publish" ? effect.values : {};
@@ -1964,7 +1980,7 @@ describe("control", () => {
       );
       const changed = withWeekDay(base, OTHER_DAY);
       const first = tick(changed);
-      const unheard = later({ ...changed, memory: first.memory }, 3 * SECOND_MS);
+      const unheard = next(changed, first, 3 * SECOND_MS);
       it("no publishSetpoint before a heard message follows the write", () => {
         expect(publishes(valveEffects(first))).toEqual([sevenDays(OTHER_DAY)]);
         expect(vmOf(first).nudgeDue).toBe(true);
@@ -2705,7 +2721,7 @@ describe("control", () => {
     const joining = (
       values: SettingValues = { sensor_source: "internal", ...BUILDER_THERMOSTAT },
     ): World => ({
-      ...makeManaged({ state: makeState({ values, heardAgoMs: 0 }) }),
+      ...makeManaged({ state: makeState({ values, heardAgoMs: 0 }), expectation: null }),
       ledger: EMPTY_LEDGER,
     });
     /** Adds V2 to the builder room: a TRVZB without a record that has sent no message. */
@@ -2964,6 +2980,27 @@ describe("control", () => {
   /** A second valve of the builder room: a TRV-ZBT. */
   const V2 = "z2m:0x00124b0000000002";
 
+  /** Heat at 22, as an override at 22 wants it. */
+  const HEAT_22: ThermostatWanted = { mode: "heat", setpoint: 22, scheduled: false };
+
+  /**
+   * The world with the valve's expectation confirmed at `wanted`, its saved week kept: what an
+   * earlier tick left when the valve showed it (an override that has since ended, a held value).
+   */
+  function confirmedAt(world: World, wanted: ThermostatWanted, valveId = V): World {
+    const week = world.thermostats?.valves.get(valveId)?.week;
+    return withExpectation(world, makeExpectation({ confirmed: wanted, week }), valveId);
+  }
+
+  /** The valve shows heat 22 and is confirmed there, as in an override at 22. */
+  function overridden(world: World, valveId = V): World {
+    return confirmedAt(
+      withValues(world, { system_mode: "heat", setpoint: 22 }, valveId),
+      HEAT_22,
+      valveId,
+    );
+  }
+
   /** The world with the room's thermostat set. */
   function withThermostat(world: World, thermostat: Thermostat, roomId = BUILDER_ROOM): World {
     const state = world.thermostats ?? EMPTY_THERMOSTAT_STATE;
@@ -3044,7 +3081,10 @@ describe("control", () => {
   describe("tick", () => {
     describe("expiry", () => {
       describe("With an override whose endsAt has passed", () => {
-        const base = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+        const base = confirmedAt(
+          withValues(equalWorld(), { system_mode: "heat", setpoint: 22 }),
+          HEAT_22,
+        );
         const world = withThermostat(
           base,
           overrideAt(base, HOUR_MS, { rule: "timer", endsAt: nowOf(base) - MINUTE_MS }),
@@ -3068,7 +3108,10 @@ describe("control", () => {
       });
       describe("With a manual override a week old", () => {
         it("it stays", () => {
-          const base = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+          const base = confirmedAt(
+            withValues(equalWorld(), { system_mode: "heat", setpoint: 22 }),
+            HEAT_22,
+          );
           const manual = overrideAt(base, 7 * 24 * HOUR_MS, { rule: "manual", endsAt: undefined });
           const result = tick(withThermostat(base, manual));
           expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toEqual(manual);
@@ -3077,10 +3120,13 @@ describe("control", () => {
       });
       describe("With a TRV-ZBT in heat 22 after a timed override ended, its confirmed week at 19 now", () => {
         it("a publish of system_mode auto and setpoint 19 in one message", () => {
-          const base = withValues(zbtWorld(points("00:00/17 06:30/19 22:00/17")), {
-            system_mode: "heat",
-            setpoint: 22,
-          });
+          const base = confirmedAt(
+            withValues(zbtWorld(points("00:00/17 06:30/19 22:00/17")), {
+              system_mode: "heat",
+              setpoint: 22,
+            }),
+            HEAT_22,
+          );
           const ended = overrideAt(base, HOUR_MS, { rule: "timer", endsAt: nowOf(base) });
           const result = tick(withThermostat(base, ended));
           expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto", setpoint: 19 }]);
@@ -3091,7 +3137,11 @@ describe("control", () => {
     describe("desired", () => {
       describe("With a room on its schedule and a TRVZB in heat", () => {
         it("a publish of the thermostat group with system_mode auto", () => {
-          const world = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+          // The override that put it there has ended.
+          const world = confirmedAt(
+            withValues(equalWorld(), { system_mode: "heat", setpoint: 22 }),
+            HEAT_22,
+          );
           expect(publishes(valveEffects(tick(world)))).toEqual([{ system_mode: "auto" }]);
         });
       });
@@ -3112,7 +3162,12 @@ describe("control", () => {
       });
       describe("With a TRV-ZBT on schedule holding 22 in auto, no value of its week", () => {
         it("a publish of system_mode auto and the value in force", () => {
-          const world = withValues(zbtWorld(), { system_mode: "auto", setpoint: 22 });
+          // The held value was recorded while the week was unconfirmed (R22 a).
+          const world = confirmedAt(withValues(zbtWorld(), { system_mode: "auto", setpoint: 22 }), {
+            mode: "auto",
+            setpoint: 22,
+            scheduled: true,
+          });
           expect(publishes(valveEffects(tick(world)))).toEqual([
             { system_mode: "auto", setpoint: 20 },
           ]);
@@ -3210,7 +3265,8 @@ describe("control", () => {
       describe("With a resume 1 s old", () => {
         it("the thermostat write goes out", () => {
           // A resume puts the room back on its schedule, which has no start to settle from.
-          const base = withValues(pairWorld(), { system_mode: "heat", setpoint: 22 });
+          const shown = withValues(pairWorld(), { system_mode: "heat", setpoint: 22 });
+          const base = confirmedAt(shown, HEAT_22);
           const result = tick(withThermostat(base, SCHEDULE));
           expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "auto" }]);
         });
@@ -3234,7 +3290,10 @@ describe("control", () => {
       });
       describe("With a TRV-ZBT on schedule and its week unconfirmed", () => {
         it("it is wanted in auto alone", () => {
-          const base = withValues(zbtWorld(), { system_mode: "heat", setpoint: 22 });
+          const base = confirmedAt(
+            withValues(zbtWorld(), { system_mode: "heat", setpoint: 22 }),
+            HEAT_22,
+          );
           const changed = withWeekDay(base, OTHER_DAY);
           const first = tick(changed);
           expect(publishes(valveEffects(first))).toEqual([sevenDays(OTHER_DAY)]);
@@ -3278,6 +3337,7 @@ describe("control", () => {
           base = withValues(base, { sensor_source: "external" }, V2);
           base = withValues(base, { sensor_source: "external", frost_protection: 10 }, V);
           base = withValues(base, { system_mode: "heat", setpoint: 22 }, V2);
+          base = confirmedAt(base, HEAT_22, V2);
           base = warmer(base);
           const ended = overrideAt(base, HOUR_MS, { rule: "timer", endsAt: nowOf(base) });
           const result = tick(withThermostat(base, ended));
@@ -3322,13 +3382,13 @@ describe("control", () => {
     describe("saving", () => {
       describe("With nothing changed", () => {
         it("no saveThermostats", () => {
-          const base = equalWorld();
+          const base = overridden(equalWorld());
           expect(saveIndex(tick(withThermostat(base, overrideAt(base, MINUTE_MS))))).toBe(-1);
         });
       });
       describe("By default", () => {
         it("result.thermostats is the state after the tick", () => {
-          const base = equalWorld();
+          const base = overridden(equalWorld());
           const kept = withThermostat(base, overrideAt(base, MINUTE_MS));
           expect(tick(kept).thermostats).toBe(kept.thermostats);
           const ended = withThermostat(base, overrideAt(base, HOUR_MS, { endsAt: nowOf(base) }));
@@ -3372,9 +3432,442 @@ describe("control", () => {
       });
       describe("With a TRVZB in heat in a room on its schedule", () => {
         it("the valve's sync is pending", () => {
-          const world = withValues(equalWorld(), { system_mode: "heat", setpoint: 22 });
+          const world = confirmedAt(
+            withValues(equalWorld(), { system_mode: "heat", setpoint: 22 }),
+            HEAT_22,
+          );
           expect(statusOf(tick(world)).sync).toBe("pending");
         });
+      });
+    });
+  });
+
+  // Expectations and adoption (plan 3a, Task 6) ------------------------------------------------
+
+  /** A valve that is in no room and has no record. */
+  const STRAY = "z2m:0x00124b00000000ff";
+
+  /** The valve's expectation in the tick's saved state. */
+  function expectationAfter(result: TickResult, valveId = V): ValveExpectation | undefined {
+    return stateAfter(result).valves.get(valveId);
+  }
+
+  /** The state of the tick's `saveThermostats`, which must be there. */
+  function savedState(result: TickResult): ThermostatState {
+    const save = result.effects.find((e) => e.kind === "saveThermostats");
+    if (save?.kind !== "saveThermostats") throw new Error("expected saveThermostats");
+    return save.state;
+  }
+
+  /** Every thermostat publish of the tick comes after its `saveThermostats`. */
+  function savedBeforeWrites(result: TickResult): boolean {
+    const save = saveIndex(result);
+    return (
+      save >= 0 &&
+      thermostatWrites(result.effects).every((write) => result.effects.indexOf(write) > save)
+    );
+  }
+
+  /** The house frozen on its saved membership, Home Assistant down. */
+  function frozen(world: World): World {
+    return {
+      ...world,
+      house: { kind: "frozen", membership: storedOf(world).membership, reason: "link_down" },
+    };
+  }
+
+  /** The world as the application finds it after a start: no memory. */
+  function restarted(world: World): World {
+    return { ...world, memory: EMPTY_MEMORY };
+  }
+
+  const AUTO_ON_SCHEDULE: ThermostatWanted = { mode: "auto", setpoint: undefined, scheduled: true };
+
+  describe("tick", () => {
+    describe("With thermostats undefined and a valve that differs", () => {
+      const world: World = {
+        ...withValues(equalWorld(), { system_mode: "heat", setpoint: 22 }),
+        thermostats: undefined,
+      };
+      const result = tick(world);
+      it("nothing is judged and no expectation changes", () => {
+        expect(result.thermostats).toBeUndefined();
+        expect(saveIndex(result)).toBe(-1);
+      });
+      it("no thermostat write", () => {
+        expect(thermostatWrites(result.effects)).toEqual([]);
+      });
+    });
+
+    describe("With the house frozen (Home Assistant down) and a knob turned on a TRVZB", () => {
+      const base = frozen(withExpectation(pairWorld(), makeExpectation(), STRAY));
+      const world = hear(base, { system_mode: "heat", setpoint: 23 });
+      const result = tick(world);
+      it("an override is adopted and saved before any write to the room's valves", () => {
+        expect(savedState(result).rooms.get(BUILDER_ROOM)).toMatchObject({
+          kind: "override",
+          target: 23,
+          origin: { source: "valve", valveId: V },
+        });
+        expect(savedBeforeWrites(result)).toBe(true);
+      });
+      it("nothing is pruned", () => {
+        expect(savedState(result).valves.has(STRAY)).toBe(true);
+      });
+    });
+
+    describe("With a page command applied while the house is frozen", () => {
+      it("the writes it causes join sent, and nothing is adopted once the house is live", () => {
+        const base = frozen(equalWorld());
+        const [save] = thermostatCommand(
+          base,
+          BUILDER_ROOM,
+          { kind: "set_target", celsius: 23, end: undefined },
+          { source: "api", valveId: undefined },
+        );
+        if (save?.kind !== "saveThermostats") throw new Error("expected saveThermostats");
+        const commanded = later({ ...base, thermostats: save.state }, THERMOSTAT_SETTLE_MS);
+        const written = tick(commanded);
+        expect(publishes(valveEffects(written))).toEqual([{ system_mode: "heat", setpoint: 23 }]);
+        expect(expectationAfter(written)?.sent[0]?.wanted).toEqual({
+          mode: "heat",
+          setpoint: 23,
+          scheduled: false,
+        });
+        // The TRVZB shows the mode first, at its last manual setpoint; Home Assistant is back.
+        const shown = hear(next(commanded, written, SECOND_MS), { system_mode: "heat" });
+        const live = { ...shown, house: liveHouse(roomsOf("ok", storedOf(shown), shown.house)) };
+        const result = tick(later(live, SECOND_MS));
+        expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toEqual(
+          save.state.rooms.get(BUILDER_ROOM),
+        );
+      });
+    });
+
+    describe("With a valve whose sent write is unconfirmed 60 s after it was sent and not heard since", () => {
+      it("it gets one refresh, and no second one for that write", () => {
+        const base = equalWorld();
+        const world = withThermostat(base, overrideAt(base, MINUTE_MS));
+        const sent = tick(world);
+        expect(thermostatWrites(sent.effects)).toHaveLength(1);
+        const due = tick(next(world, sent, SENT_RETIRE_MS + SECOND_MS));
+        expect(valveEffects(due)).toEqual([{ kind: "refresh", valveId: V }]);
+        const after = tick(next(world, due, SENT_RETIRE_MS + 30 * SECOND_MS));
+        expect(valveEffects(after).filter((e) => e.kind === "refresh")).toEqual([]);
+      });
+    });
+
+    describe("With a person's change on one of two valves", () => {
+      const world = hear(pairWorld(), { system_mode: "heat", setpoint: 23 });
+      const first = tick(world);
+      it("saveThermostats with the override and both expectations comes first", () => {
+        const state = savedState(first);
+        expect(state.rooms.get(BUILDER_ROOM)).toMatchObject({ kind: "override", target: 23 });
+        expect(state.valves.get(V)?.confirmed).toEqual({
+          mode: "heat",
+          setpoint: 23,
+          scheduled: false,
+        });
+        expect(state.valves.has(V2)).toBe(true);
+        expect(savedBeforeWrites(first)).toBe(true);
+      });
+      it("neither valve is written before THERMOSTAT_SETTLE_MS, the other one after", () => {
+        expect(thermostatWrites(first.effects)).toEqual([]);
+        const settling = tick(next(world, first, THERMOSTAT_SETTLE_MS - SECOND_MS));
+        expect(thermostatWrites(settling.effects)).toEqual([]);
+        const settled = tick(next(world, first, THERMOSTAT_SETTLE_MS));
+        expect(publishes(valveEffects(settled, V2))).toEqual([
+          { system_mode: "heat", setpoint: 23 },
+        ]);
+        expect(thermostatWrites(settled.effects, V)).toEqual([]);
+      });
+    });
+
+    describe("With a release in progress for a valve of the room", () => {
+      it("its reports are not judged and its expectation is dropped", () => {
+        const base = equalWorld();
+        const kept = base.thermostats?.valves.get(V);
+        const releasing = withExpectation(released(base), kept);
+        const result = tick(hear(releasing, { system_mode: "heat", setpoint: 23 }));
+        const state = savedState(result);
+        expect(state.valves.has(V)).toBe(false);
+        expect(state.rooms.has(BUILDER_ROOM)).toBe(false);
+      });
+    });
+
+    describe("With a valve managed again after its release had begun, showing the release's heat 23", () => {
+      it("nothing is adopted and it is written auto", () => {
+        const world = readded(
+          withValues(released(equalWorld()), { system_mode: "heat", setpoint: 23 }),
+        );
+        const result = tick(world);
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(expectationAfter(result)?.roomId).toBe(BUILDER_ROOM);
+        expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto" }]);
+      });
+    });
+
+    describe("With a valve that moved to another room", () => {
+      it("it is taken over and written what its new room wants", () => {
+        const base = equalWorld();
+        const moved = withRooms(base, (rooms) => [
+          ...rooms.map((room) => ({ ...room, valves: [] })),
+          ...rooms.map((room) => ({ ...room, id: "kitchen", name: "Kitchen" })),
+        ]);
+        const world = withThermostat(moved, overrideAt(moved, MINUTE_MS), "kitchen");
+        const result = tick(world);
+        expect(expectationAfter(result)?.roomId).toBe("kitchen");
+        expect(stateAfter(result).rooms.get("kitchen")).toEqual(
+          world.thermostats?.rooms.get("kitchen"),
+        );
+        expect(publishes(valveEffects(result))).toEqual([{ system_mode: "heat", setpoint: 22 }]);
+      });
+    });
+
+    describe('With a valve joined through "accept unknown originals" (a record, no expectation)', () => {
+      it("it is taken over: nothing is adopted and it is written auto", () => {
+        const world = withExpectation(
+          withValues(equalWorld(), { system_mode: "heat", setpoint: 23 }),
+          undefined,
+        );
+        const result = tick(world);
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(expectationAfter(result)).toMatchObject({
+          roomId: BUILDER_ROOM,
+          confirmed: undefined,
+        });
+        expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto" }]);
+      });
+    });
+
+    describe("With no state file (the first start of 0.3.0) and a valve in heat 17", () => {
+      it("nothing is adopted and it is written auto", () => {
+        const base = withValues(equalWorld(), { system_mode: "heat", setpoint: 17 });
+        const result = tick({ ...base, thermostats: EMPTY_THERMOSTAT_STATE });
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto" }]);
+      });
+    });
+
+    describe("With a restart, an expectation confirmed auto and a cached report heat 22 (a knob turned while Heatmaster was down)", () => {
+      it("an override at 22 is saved before any write to the room's valves", () => {
+        const base = pairWorld();
+        const cached = withState(
+          base,
+          makeState({
+            values: { ...EQUAL, system_mode: "heat", setpoint: 22 },
+            nowMs: nowOf(base),
+          }),
+        );
+        const result = tick(restarted(cached));
+        expect(savedState(result).rooms.get(BUILDER_ROOM)).toMatchObject({
+          kind: "override",
+          target: 22,
+        });
+        expect(savedBeforeWrites(result)).toBe(true);
+      });
+    });
+
+    describe("With a restart after an override ended while Heatmaster was down, confirmed heat 22 and the valve at heat 22", () => {
+      it("nothing is adopted and the valve is written auto", () => {
+        const base = overridden(equalWorld());
+        const ended = overrideAt(base, 3 * HOUR_MS, {
+          rule: "timer",
+          endsAt: nowOf(base) - HOUR_MS,
+        });
+        const world = restarted(withThermostat(base, ended));
+        const [last, effects] = drive(world, 6, 30 * SECOND_MS);
+        expect(last.thermostats?.rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(publishes(effects.filter((e) => "valveId" in e && e.valveId === V))).toContainEqual({
+          system_mode: "auto",
+        });
+      });
+    });
+
+    describe("With a restart after a timed override ended on a TRV-ZBT, its week unconfirmed at the start", () => {
+      it("nothing is adopted, then or once the week is confirmed", () => {
+        const base = overridden(zbtWorld());
+        const ended = overrideAt(base, 3 * HOUR_MS, {
+          rule: "timer",
+          endsAt: nowOf(base) - HOUR_MS,
+        });
+        const world = restarted(withThermostat(base, ended));
+        const [last, effects] = drive(world, 10, 30 * SECOND_MS);
+        const saves = effects.flatMap((e) => (e.kind === "saveThermostats" ? [e.state] : []));
+        expect(saves.some((state) => state.rooms.has(BUILDER_ROOM))).toBe(false);
+        expect(last.thermostats?.rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(stateOf(last).values.system_mode).toBe("auto");
+      });
+    });
+
+    describe("With a TRV-ZBT confirmed auto 19 scheduled, week values undefined, showing auto 24, the desired week changed", () => {
+      const base = confirmedAt(
+        withValues(zbtWorld(points("00:00/17 06:30/19 22:00/17")), {
+          system_mode: "auto",
+          setpoint: 24,
+        }),
+        { mode: "auto", setpoint: 19, scheduled: true },
+      );
+      const changed = withWeekDay(base, OTHER_DAY);
+      const first = tick(changed);
+      it("its confirmed state becomes auto 24 scheduled", () => {
+        expect(stateAfter(first).rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(expectationAfter(first)?.confirmed).toEqual({
+          mode: "auto",
+          setpoint: 24,
+          scheduled: true,
+        });
+      });
+      it("once the week is confirmed it is written auto with the value in force", () => {
+        expect(publishes(valveEffects(first))).toEqual([sevenDays(OTHER_DAY)]);
+        const heard = hear(next(changed, first, 3 * SECOND_MS), sevenDays(OTHER_DAY));
+        const result = tick(later(heard, SECOND_MS));
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+        // OTHER_DAY holds 21 from 07:00 to 23:00.
+        expect(publishes(valveEffects(result))).toEqual([{ system_mode: "auto", setpoint: 21 }]);
+      });
+    });
+
+    describe("With a TRV-ZBT on schedule passing its own points", () => {
+      it("no saveThermostats", () => {
+        const base = zbtWorld();
+        const evening = (time: string): Temporal.ZonedDateTime =>
+          Temporal.ZonedDateTime.from(`2026-11-17T${time}+01:00[Europe/Amsterdam]`);
+        let world = withValues({ ...base, now: evening("21:58:00") }, { setpoint: 20 });
+        const before = tick(world);
+        world = hear(next(world, before, 2 * MINUTE_MS), { setpoint: 17 });
+        const after = tick(later(world, 30 * SECOND_MS));
+        expect(saveIndex(before)).toBe(-1);
+        expect(saveIndex(after)).toBe(-1);
+        expect(thermostatWrites([...before.effects, ...after.effects])).toEqual([]);
+      });
+    });
+
+    describe("With a TRV-ZBT confirmed auto 19 scheduled and no saved week, once its week is confirmed, showing auto 19", () => {
+      const day = points("00:00/17 06:30/19 22:00/17");
+      const base = zbtWorld(day);
+      const world = withExpectation(
+        withValues(base, { setpoint: 19 }),
+        makeExpectation({ confirmed: { mode: "auto", setpoint: 19, scheduled: true } }),
+      );
+      const result = tick(world);
+      it("its week is saved with the week's key and values, and saveThermostats follows", () => {
+        const week = fitted(everyDay(day), makeSpec("trv_zbt")).days;
+        expect(savedState(result).valves.get(V)?.week).toEqual({
+          key: weekKey(week),
+          values: [17, 19],
+        });
+      });
+      it("no thermostat write", () => {
+        expect(thermostatWrites(result.effects)).toEqual([]);
+      });
+    });
+
+    describe("With a TRV-ZBT whose week edit was just confirmed on the valve", () => {
+      it("its saved week carries the new key, saved once", () => {
+        const changed = withWeekDay(zbtWorld(), OTHER_DAY);
+        const [, effects] = drive(changed, 8, 30 * SECOND_MS);
+        const newKey = weekKey(fitted(everyDay(OTHER_DAY), makeSpec("trv_zbt")).days);
+        const keys = effects.flatMap((e) =>
+          e.kind === "saveThermostats" ? [e.state.valves.get(V)?.week?.key] : [],
+        );
+        expect(keys.filter((key) => key === newKey)).toHaveLength(1);
+        expect(keys.at(-1)).toBe(newKey);
+      });
+    });
+
+    describe("With a TRV-ZBT confirmed auto 24 scheduled (recorded), its week confirmed, showing its own point's 21", () => {
+      // OTHER_DAY holds 21 from 07:00 to 23:00.
+      const base = confirmedAt(withValues(zbtWorld(OTHER_DAY), { setpoint: 21 }), {
+        mode: "auto",
+        setpoint: 24,
+        scheduled: true,
+      });
+      const first = tick(base);
+      it("its confirmed state becomes auto 21 scheduled and no write goes out", () => {
+        expect(expectationAfter(first)?.confirmed).toEqual({
+          mode: "auto",
+          setpoint: 21,
+          scheduled: true,
+        });
+        expect(thermostatWrites(first.effects)).toEqual([]);
+      });
+      it("a later report auto 24 is a person's change", () => {
+        const turned = hear(next(base, first, MINUTE_MS), { setpoint: 24 });
+        const result = tick(later(turned, SECOND_MS));
+        expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toMatchObject({
+          kind: "override",
+          target: 24,
+        });
+      });
+    });
+
+    describe("With a TRV-ZBT with a saved week, its week unconfirmed and another group seen active, showing auto 24", () => {
+      it("nothing is adopted", () => {
+        const world = hear(zbtWorld(), { active_group: 1, setpoint: 24 });
+        const result = tick(world);
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+      });
+    });
+
+    describe("With a sent write", () => {
+      it("its from is what the valve showed in the tick it was published", () => {
+        const base = equalWorld();
+        const result = tick(withThermostat(base, overrideAt(base, MINUTE_MS)));
+        expect(expectationAfter(result)?.sent[0]?.from).toEqual({ mode: "auto", setpoint: 17 });
+      });
+    });
+
+    describe("With a thermostat publish to a valve", () => {
+      const base = equalWorld();
+      const result = tick(withThermostat(base, overrideAt(base, MINUTE_MS)));
+      it("the wanted state is first in its sent list", () => {
+        expect(expectationAfter(result)?.sent[0]).toMatchObject({
+          wanted: { mode: "heat", setpoint: 22, scheduled: false },
+          at: nowOf(base),
+        });
+      });
+      it("saveThermostats comes before the publish", () => {
+        expect(thermostatWrites(result.effects)).toHaveLength(1);
+        expect(savedBeforeWrites(result)).toBe(true);
+      });
+    });
+
+    describe("With the same wanted state written again after a backoff", () => {
+      it("sent holds it once", () => {
+        const base = equalWorld();
+        let world = withThermostat(base, overrideAt(base, MINUTE_MS));
+        let writes = 0;
+        // Long enough for the backoff and a token to come back.
+        for (let i = 0; i < 90; i++) {
+          const result = tick(world);
+          writes += thermostatWrites(result.effects).length;
+          world = next(world, result, 30 * SECOND_MS);
+        }
+        expect(writes).toBeGreaterThanOrEqual(2);
+        const sent = world.thermostats?.valves.get(V)?.sent ?? [];
+        expect(sent.filter((s) => s.wanted.mode === "heat")).toHaveLength(1);
+      });
+    });
+
+    describe("With a valve already matching a new wanted state", () => {
+      it("its confirmed state is the wanted one and no write goes out", () => {
+        const result = tick(withExpectation(equalWorld(), undefined));
+        expect(expectationAfter(result)?.confirmed).toEqual(AUTO_ON_SCHEDULE);
+        expect(thermostatWrites(result.effects)).toEqual([]);
+      });
+    });
+
+    describe("With a stray valve's expectation and the house live", () => {
+      it("it is dropped from the saved state", () => {
+        const world = withExpectation(equalWorld(), makeExpectation(), STRAY);
+        expect(savedState(tick(world)).valves.has(STRAY)).toBe(false);
+      });
+    });
+
+    describe("With nothing changed", () => {
+      it("no saveThermostats", () => {
+        expect(saveIndex(tick(equalWorld()))).toBe(-1);
       });
     });
   });

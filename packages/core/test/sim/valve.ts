@@ -30,6 +30,11 @@ export type Speech = Readonly<{
   /** The payload keys a read asked for; `undefined` means the valve reports everything it owns. */
   keys: readonly string[] | undefined;
   wroteDays: boolean;
+  /**
+   * Zigbee2MQTT's echo of a write: it repeats the `last_seen` of the valve's message before it
+   * (M14), so it does not count as the valve speaking.
+   */
+  echo?: boolean;
 }>;
 
 /** The valve's own state: the one the tests may look at. */
@@ -65,6 +70,15 @@ export type SimValveOptions = Readonly<{
   mode?: ValveTruth["mode"];
   setpoint?: number;
   frostProtection?: number;
+  /** The last setpoint set in `heat`, which `heat` without a setpoint returns to (M12). */
+  manualSetpoint?: number;
+  /** How far the valve's clock runs ahead of the house's (negative: behind); 0 by default. */
+  clockOffsetMs?: number;
+  /**
+   * Each key of a combined mode and setpoint write is reported in its own message, the second this
+   * long after the first (M7); the model's measured lags by default.
+   */
+  keyLagMs?: number;
   selfReports?: boolean;
   selfReportMs?: number;
   onSpeak: (speech: Speech, nowMs: number) => void;
@@ -87,6 +101,14 @@ export type SimValve = Readonly<{
   advance: (nowMs: number) => void;
   /** A person at the valve, or through a tool the bridge does not see. The valve reports. */
   person: (change: PersonChange, nowMs: number) => void;
+  /**
+   * A person turns the knob by `clicks` steps of 0.5 °C (M11): a TRVZB's first click leaves `auto`
+   * for `heat` at its last manual setpoint, and below 4 °C it is off; a TRV-ZBT's setpoint moves and
+   * its mode stays. The valve reports once the turn is confirmed. A valve that is off ignores it.
+   */
+  knob: (clicks: number, nowMs: number) => void;
+  /** A TRV-ZBT's top button: `auto` to `heat` at the last manual setpoint, `heat` to `auto` (M11). */
+  button: (nowMs: number) => void;
   /** Resets what a new battery resets, drops the queue, and reports. */
   batterySwap: (nowMs: number) => void;
   setSelfReports: (on: boolean, intervalMs?: number) => void;
@@ -104,11 +126,22 @@ export const DEFAULT_SELF_REPORT_MS = 10 * 60 * 1000;
 const FEED_FALLBACK_MS = 2 * 60 * 60 * 1000;
 /** A TRVZB in auto takes a newly written week's value in force this long after the write (M1). */
 export const TRVZB_WEEK_TAKE_MS = 20 * 1000;
+/** A TRVZB written `auto` echoes its old setpoint and takes the schedule's value about 2 s later (M12). */
+export const TRVZB_AUTO_TAKE_MS = 2 * 1000;
+/** A TRVZB sent `heat` from another mode shows its last manual setpoint this long after (M14). */
+export const TRVZB_MANUAL_SHOW_MS = 0.8 * 1000;
+/** A TRVZB sent `heat` and a setpoint in one message shows the setpoint at most this late (M14). */
+export const TRVZB_SETPOINT_LAG_MS = 14.6 * 1000;
+/** A TRV-ZBT sent `heat` and a setpoint shows the setpoint first, the mode this much later (M14). */
+export const ZBT_MODE_LAG_MS = 0.7 * 1000;
 /**
- * A TRVZB written `auto` echoes its old setpoint and takes the schedule's value this long later.
- * M1 saw it within the second; M14 (Task 1) is to measure it, and this follows that measurement.
+ * A TRV-ZBT sent `auto` and a setpoint from `heat` shows `heat` at its schedule's value in force
+ * for up to this long before `auto` and the setpoint (M14).
  */
-export const TRVZB_AUTO_TAKE_MS = 1000;
+export const ZBT_AUTO_LAG_MS = 1 * 1000;
+/** A TRVZB turned below this is off (M12). */
+const TRVZB_KNOB_MIN = 4;
+const KNOB_STEP = 0.5;
 
 const FACTORY_DAY_TRVZB = "00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16";
 
@@ -159,6 +192,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
   const state = {
     mode: options.mode ?? "auto",
     setpoint: options.setpoint ?? 17,
+    manual: options.manualSetpoint ?? options.setpoint ?? 17,
     frostProtection: options.frostProtection ?? 7,
     select: options.select ?? "local_temperature",
     activeGroup: options.activeGroup ?? 1,
@@ -178,13 +212,16 @@ export function createSimValve(options: SimValveOptions): SimValve {
   let queue: ValveRequest[] = [];
   let late: ValveRequest[] = [];
   const zone = options.zone ?? BUILDER_NOW.timeZoneId;
-  /** The last instant the valve looked at its schedule's points. */
-  let pointsSeenAt = options.nowMs;
+  const offsetMs = options.clockOffsetMs ?? 0;
+  /** The last instant, on the valve's clock, the valve looked at its schedule's points. */
+  let pointsSeenAt = options.nowMs + offsetMs;
   /** A TRVZB's pending take of its schedule's value. */
   let takeAt: number | undefined;
+  /** Parts of a write the valve shows later, in order: applied and reported at `at`. */
+  let phases: { at: number; apply: () => void }[] = [];
 
   const speak = (speech: Speech, nowMs: number): void => {
-    lastSpokeAt = nowMs;
+    if (speech.echo !== true) lastSpokeAt = nowMs;
     onSpeak(speech, nowMs);
   };
 
@@ -219,10 +256,10 @@ export function createSimValve(options: SimValveOptions): SimValve {
     return week;
   };
 
-  /** The running week's value in force at `nowMs`. */
+  /** The running week's value in force at `nowMs`, on the valve's clock. */
   const inForce = (nowMs: number): number | undefined => {
     const week = runningWeek();
-    return week === undefined ? undefined : activePoint(week, zoned(nowMs)).temperature;
+    return week === undefined ? undefined : activePoint(week, zoned(nowMs + offsetMs)).temperature;
   };
 
   /** In auto, the setpoint becomes the running week's value in force; true when it moved. */
@@ -242,17 +279,119 @@ export function createSimValve(options: SimValveOptions): SimValve {
   /** The next point the valve waits for, and the texts it was found in. */
   let upcoming: Readonly<{ texts: DayTexts | undefined; at: number | undefined }> | undefined;
 
-  /** A point of the running week lies after the last look and at or before `nowMs`. */
+  /** A point of the running week lies after the last look and at or before `nowMs` (valve clock). */
   const pointPassed = (nowMs: number): boolean => {
+    const valveNow = nowMs + offsetMs;
     const texts = runningTexts();
     const known =
       upcoming !== undefined && upcoming.texts === texts
         ? upcoming
         : { texts, at: pointAfter(pointsSeenAt) };
-    pointsSeenAt = nowMs;
-    const passed = known.at !== undefined && known.at <= nowMs;
-    upcoming = passed ? { texts, at: pointAfter(nowMs) } : known;
+    pointsSeenAt = valveNow;
+    const passed = known.at !== undefined && known.at <= valveNow;
+    upcoming = passed ? { texts, at: pointAfter(valveNow) } : known;
     return passed;
+  };
+
+  /** `heat` at the setpoint, which becomes the last manual one. */
+  const holdHeat = (setpoint: number): void => {
+    state.mode = "heat";
+    state.setpoint = setpoint;
+    state.manual = setpoint;
+  };
+
+  /** `off` shows the frost protection temperature as its setpoint (M12). */
+  const turnOff = (): void => {
+    state.mode = "off";
+    state.setpoint = state.frostProtection;
+  };
+
+  /** Shows a part of the write `delayMs` from now, as a message of its own. */
+  const later = (nowMs: number, delayMs: number, apply: () => void): void => {
+    phases.push({ at: nowMs + delayMs, apply });
+  };
+
+  /**
+   * The mode and setpoint of a write, as Task 1 measured them (M12, M14, M15). What is shown at
+   * once is set here; later parts wait in `phases`.
+   */
+  const applyThermostat = (
+    mode: ValveTruth["mode"] | undefined,
+    setpoint: number | undefined,
+    nowMs: number,
+  ): void => {
+    const from = state.mode;
+    // A newer write replaces what an older one had yet to show.
+    phases = [];
+    if (mode === "off") {
+      turnOff();
+      return;
+    }
+    if (mode === "heat") {
+      if (from === "heat") {
+        holdHeat(setpoint ?? state.manual);
+        return;
+      }
+      if (model === "trvzb") {
+        // The mode first, at the old setpoint; then the last manual setpoint; then the new one.
+        state.mode = "heat";
+        later(nowMs, TRVZB_MANUAL_SHOW_MS, () => {
+          state.setpoint = state.manual;
+        });
+        if (setpoint !== undefined) {
+          later(nowMs, options.keyLagMs ?? TRVZB_SETPOINT_LAG_MS, () => {
+            holdHeat(setpoint);
+          });
+        }
+        return;
+      }
+      if (setpoint === undefined) {
+        holdHeat(state.manual);
+        return;
+      }
+      // The TRV-ZBT shows the setpoint first.
+      state.setpoint = setpoint;
+      later(nowMs, options.keyLagMs ?? ZBT_MODE_LAG_MS, () => {
+        holdHeat(setpoint);
+      });
+      return;
+    }
+    if (mode === "auto") {
+      if (model === "trvzb") {
+        if (from !== "auto") {
+          state.mode = "auto";
+          takeAt = nowMs + TRVZB_AUTO_TAKE_MS;
+        }
+        // Measured (M1): a setpoint written in auto moves the TRVZB to heat.
+        if (setpoint !== undefined) holdHeat(setpoint);
+        return;
+      }
+      if (setpoint === undefined) {
+        // `auto` takes the schedule's value, and drops a held one when already in auto (M15).
+        state.mode = "auto";
+        const value = inForce(nowMs);
+        if (value !== undefined) state.setpoint = value;
+        return;
+      }
+      if (from === "heat") {
+        // A moment in `heat` at the schedule's value, then `auto` holding the setpoint (M14).
+        const value = inForce(nowMs);
+        if (value !== undefined) state.setpoint = value;
+        later(nowMs, options.keyLagMs ?? ZBT_AUTO_LAG_MS, () => {
+          state.mode = "auto";
+          state.setpoint = setpoint;
+        });
+        return;
+      }
+      state.mode = "auto";
+      state.setpoint = setpoint;
+      return;
+    }
+    if (setpoint === undefined) return;
+    if (state.mode === "heat") holdHeat(setpoint);
+    // Measured: a setpoint written in auto moves the TRVZB to heat; the TRV-ZBT holds it in auto.
+    else if (model === "trvzb" && state.mode === "auto") holdHeat(setpoint);
+    else state.setpoint = setpoint;
   };
 
   const apply = (request: ValveRequest, nowMs: number): void => {
@@ -274,26 +413,32 @@ export function createSimValve(options: SimValveOptions): SimValve {
       if (model === "trvzb") takeAt = nowMs + TRVZB_WEEK_TAKE_MS;
       else takeSchedule(nowMs);
     }
-    if (w.mode !== undefined) {
-      const entering = w.mode === "auto" && state.mode !== "auto";
-      state.mode = w.mode;
-      // Measured (M1): `auto` takes the schedule's value in force; the TRVZB's echo still carries
-      // the old setpoint (M14).
-      if (entering && model === "trvzb") takeAt = nowMs + TRVZB_AUTO_TAKE_MS;
-      else if (entering) takeSchedule(nowMs);
-    }
-    if (w.setpoint !== undefined) {
-      state.setpoint = w.setpoint;
-      // Measured: a setpoint written in auto moves the TRVZB to heat; the TRV-ZBT stays in auto.
-      if (model === "trvzb" && state.mode === "auto") state.mode = "heat";
-    }
+    const thermostat = w.mode !== undefined || w.setpoint !== undefined;
+    // The first message after a mode or setpoint write is the valve's, still showing the old state;
+    // Zigbee2MQTT's echo of the new state repeats its `last_seen` (M14).
+    if (thermostat) speak({ cause: "write", keys: undefined, wroteDays: false }, nowMs);
+    applyThermostat(w.mode, w.setpoint, nowMs);
     if (w.external !== undefined) {
       state.external = w.external;
       state.externalAt = nowMs;
       // Measured: one push brings a fallen-back valve back to its remote source.
       if (state.select === "remote_source_offline") state.select = "remote_temperature";
     }
-    speak({ cause: "write", keys: undefined, wroteDays: w.days !== undefined }, nowMs);
+    speak(
+      { cause: "write", keys: undefined, wroteDays: w.days !== undefined, echo: thermostat },
+      nowMs,
+    );
+  };
+
+  /** Shows the parts of writes that are due, each in a message of its own. */
+  const showPhases = (nowMs: number): void => {
+    const due = phases.filter((phase) => phase.at <= nowMs);
+    if (due.length === 0) return;
+    phases = phases.filter((phase) => phase.at > nowMs);
+    for (const phase of due) {
+      phase.apply();
+      speak({ cause: "write", keys: undefined, wroteDays: false }, phase.at);
+    }
   };
 
   const landLate = (nowMs: number): void => {
@@ -363,6 +508,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
     },
     advance(nowMs) {
       if (!awake) return;
+      showPhases(nowMs);
       // In auto the valve follows its own week: a pending take, or each point it passes.
       const due = takeAt !== undefined && nowMs >= takeAt;
       if (due) takeAt = undefined;
@@ -388,6 +534,37 @@ export function createSimValve(options: SimValveOptions): SimValve {
       setup(change);
       if (awake) speak({ cause: "person", keys: undefined, wroteDays: false }, nowMs);
     },
+    knob(clicks, nowMs) {
+      if (state.mode === "off" || clicks === 0) return;
+      let left = Math.abs(clicks);
+      const step = Math.sign(clicks) * KNOB_STEP;
+      if (model === "trvzb" && state.mode !== "heat") {
+        // The first click only enters heat: it shows the old setpoint, then the last manual one.
+        state.mode = "heat";
+        if (awake) speak({ cause: "person", keys: undefined, wroteDays: false }, nowMs);
+        state.setpoint = state.manual;
+        left -= 1;
+      }
+      const turned = state.setpoint + left * step;
+      if (model === "trvzb" && turned < TRVZB_KNOB_MIN) turnOff();
+      else {
+        const max = model === "trvzb" ? 35 : 30;
+        const min = model === "trvzb" ? TRVZB_KNOB_MIN : 5;
+        const value = Math.min(max, Math.max(min, turned));
+        if (state.mode === "heat") holdHeat(value);
+        else state.setpoint = value;
+      }
+      if (awake) speak({ cause: "person", keys: undefined, wroteDays: false }, nowMs);
+    },
+    button(nowMs) {
+      if (model !== "trv_zbt" || state.mode === "off") return;
+      if (state.mode === "heat") {
+        state.mode = "auto";
+        const value = inForce(nowMs);
+        if (value !== undefined) state.setpoint = value;
+      } else holdHeat(state.manual);
+      if (awake) speak({ cause: "person", keys: undefined, wroteDays: false }, nowMs);
+    },
     batterySwap(nowMs) {
       for (const group of groupsOf(model)) schedules[group] = factoryWeek(model);
       state.select = "local_temperature";
@@ -396,6 +573,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
       state.externalAt = undefined;
       queue = [];
       late = [];
+      phases = [];
       awake = true;
       speak({ cause: "rejoin", keys: undefined, wroteDays: false }, nowMs);
     },
@@ -412,6 +590,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
   function setup(change: PersonChange): void {
     if (change.mode !== undefined) state.mode = change.mode;
     if (change.setpoint !== undefined) state.setpoint = change.setpoint;
+    if (state.mode === "heat" && change.setpoint !== undefined) state.manual = change.setpoint;
     if (change.select !== undefined) state.select = change.select;
     if (change.activeGroup !== undefined) state.activeGroup = change.activeGroup;
     if (change.days !== undefined) applyDays(change.days.group, change.days.texts);

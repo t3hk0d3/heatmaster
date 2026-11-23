@@ -3,27 +3,33 @@ import { membershipsOf, roomWeek } from "./control.ts";
 import type { Effect, World } from "./control.ts";
 import { EMPTY_ENTRY, mayHoldEntry, withHaEdit } from "./labels.ts";
 import type { HaChangeItem, Membership, StoredConfig } from "./ledger.ts";
-import {
-  BOOST_DURATION_MS,
-  END_RULES,
-  NEXT_CHANGE_LEAD_MS,
-  PRESET_NAMES,
-  effectivePresets,
-} from "./model.ts";
+import { BOOST_DURATION_MS, END_RULES, PRESET_NAMES, effectivePresets } from "./model.ts";
 import type { EndRule, PresetName, Room, RoomEntry } from "./model.ts";
-import { roundHalfUp } from "./rounding.ts";
-import { activePoint, segmentAt } from "./schedule.ts";
-import type { ResolvedWeek } from "./schedule.ts";
+import { activePoint } from "./schedule.ts";
 import type { ValveMode, ValveSpec } from "./settings.ts";
+import {
+  SCHEDULE,
+  SENT_KEPT,
+  clampTarget,
+  defaultEnd,
+  endsAt,
+  roomLimits,
+  sameThermostat,
+  sameWanted,
+} from "./thermostat-rules.ts";
 
-/** How many sent writes a valve expectation keeps, newest first. */
-export const SENT_KEPT = 4;
-
-/** A sent write is retired when a report heard this long after it neither matches nor shows it. */
-export const SENT_RETIRE_MS = 60 * 1000;
-
-/** Targets are rounded half up to this step, in °C. */
-const TARGET_STEP = 0.5;
+export {
+  SCHEDULE,
+  SENT_KEPT,
+  SENT_RETIRE_MS,
+  clampTarget,
+  defaultEnd,
+  ended,
+  endsAt,
+  roomLimits,
+  sameThermostat,
+  sameWanted,
+} from "./thermostat-rules.ts";
 
 /** Where a room change came from; callers outside a valve pass `valveId: undefined`. */
 export type Origin = Readonly<{ source: "valve" | "climate" | "api"; valveId: string | undefined }>;
@@ -56,8 +62,6 @@ type Held = Exclude<Thermostat, Readonly<{ kind: "schedule" }>>;
 
 /** What an override and an off share. */
 type HeldFields = Pick<Held, "rule" | "endsAt" | "origin" | "since">;
-
-export const SCHEDULE: Thermostat = { kind: "schedule" };
 
 /** By room id. A missing room is `SCHEDULE`; a room on its schedule is never stored. */
 export type Thermostats = ReadonlyMap<string, Thermostat>;
@@ -120,62 +124,6 @@ export type RoomChoice =
 
 /** The temperatures a room's targets are held in, inclusive. */
 export type RoomLimits = Readonly<{ min: number; max: number }>;
-
-/** The narrowest range of the specs: the largest `minTemp`, the smallest `maxTemp` (R12). */
-export function roomLimits(specs: readonly ValveSpec[]): RoomLimits | undefined {
-  if (specs.length === 0) return undefined;
-  return {
-    min: Math.max(...specs.map((spec) => spec.minTemp)),
-    max: Math.min(...specs.map((spec) => spec.maxTemp)),
-  };
-}
-
-/** Held inside the limits, then rounded half up to 0.5. */
-export function clampTarget(celsius: number, limits: RoomLimits): number {
-  return roundHalfUp(Math.min(Math.max(celsius, limits.min), limits.max), TARGET_STEP);
-}
-
-/**
- * When a change made at `now` ends: `next_change` at the first set point after
- * `now + NEXT_CHANGE_LEAD_MS` (R8; the timer when there is none), `timer` after the choice's or
- * the room's duration, `manual` never.
- */
-export function endsAt(
-  choice: EndChoice,
-  room: Room,
-  week: ResolvedWeek,
-  now: Temporal.ZonedDateTime,
-): number | undefined {
-  const timer = now.epochMilliseconds + (choice.durationMs ?? room.overrideDurationMs);
-  switch (choice.rule) {
-    case "manual":
-      return undefined;
-    case "timer":
-      return timer;
-    case "next_change":
-      return segmentAt(week, now.add({ milliseconds: NEXT_CHANGE_LEAD_MS })).nextAt ?? timer;
-  }
-}
-
-/** The room's own end rule and duration. */
-export function defaultEnd(room: Room): EndChoice {
-  return { rule: room.overrideEnd, durationMs: room.overrideDurationMs };
-}
-
-/** The thermostat has an end and it is not after `nowMs`. */
-export function ended(thermostat: Thermostat, nowMs: number): boolean {
-  return (
-    thermostat.kind !== "schedule" && thermostat.endsAt !== undefined && thermostat.endsAt <= nowMs
-  );
-}
-
-/** Equal in kind, target, preset and rule (R21); `endsAt`, `origin` and `since` are ignored. */
-export function sameThermostat(a: Thermostat, b: Thermostat): boolean {
-  if (a.kind === "schedule" || b.kind === "schedule") return a.kind === b.kind;
-  if (a.rule !== b.rule) return false;
-  if (a.kind === "off" || b.kind === "off") return a.kind === b.kind;
-  return a.target === b.target && a.preset === b.preset;
-}
 
 /** The managed valves' specs of a room. */
 function roomSpecs(world: World, room: Room, kinds: ReadonlyMap<string, Membership>): ValveSpec[] {
@@ -443,10 +391,6 @@ function wantedOf(obj: Readonly<Record<string, unknown>>): ThermostatWanted {
     setpoint: maybe(obj.setpoint, finite),
     scheduled: flag(obj.scheduled),
   };
-}
-
-function sameWanted(a: ThermostatWanted, b: ThermostatWanted): boolean {
-  return a.mode === b.mode && a.setpoint === b.setpoint && a.scheduled === b.scheduled;
 }
 
 function sentFromRaw(value: unknown): SentWrite {

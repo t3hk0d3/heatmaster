@@ -88,7 +88,8 @@ export function createSimBridge(): SimBridge {
 
   const spoke = (valveId: string, speech: Speech, nowMs: number): void => {
     const entry = entryOf(valveId);
-    entry.tokenMs = Math.max(nowMs, entry.tokenMs + 1);
+    // An echo repeats the token of the message before it; the valve's own message has a new one.
+    if (speech.echo !== true) entry.tokenMs = Math.max(nowMs, entry.tokenMs + 1);
     const truth = reported(entry.valve.model, entry.valve.truth());
     if (speech.cause === "read" && speech.keys !== undefined) {
       for (const key of speech.keys) {

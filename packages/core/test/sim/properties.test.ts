@@ -2,14 +2,22 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   BUCKET,
+  SCHEDULE,
+  WEEKDAYS,
   configToRaw,
   START_TOKENS,
   GROUPS,
+  clampTarget,
+  confirmedWeek,
   findProfile,
+  fitted,
   groupOf,
   reconcile,
   resolveRooms,
+  roomLimits,
+  roomWeek,
   sensorId,
+  weekKey,
 } from "../../src/index.ts";
 import { Z2M_KEYS } from "../../src/profiles/sonoff-codec.ts";
 import {
@@ -23,7 +31,9 @@ import {
   resolvedRooms,
 } from "./driver.ts";
 import {
+  BY_HAND,
   MODELS,
+  NOT_KEPT,
   ROOM_NAMES,
   SLOTS,
   VALVE_IDS,
@@ -31,11 +41,21 @@ import {
   faultPlan,
   modelConfig,
   modelMembership,
+  ownFault,
   quiesce,
   sensorOf,
 } from "./faults.ts";
 import { factoryWeek, reported } from "./valve.ts";
-import type { Effect, Ledger, SettingKey, SettingValue, ValveRecord } from "../../src/index.ts";
+import type {
+  Effect,
+  Ledger,
+  Room,
+  SettingKey,
+  SettingValue,
+  Thermostat,
+  ValveRecord,
+  World,
+} from "../../src/index.ts";
 import type {
   Fault,
   FaultPlan,
@@ -44,6 +64,8 @@ import type {
   RoomName,
   Slot,
   StepInfo,
+  Subset,
+  TurnMade,
   Variant,
 } from "./faults.ts";
 import type { SimDriver } from "./driver.ts";
@@ -73,10 +95,16 @@ const IDS = [
   "intent.firstMessage",
   "intent.zbtGroups",
   "mode.managed",
+  "own.schedule",
+  "one.matches",
+  "keep.value",
 ] as const;
 type Id = (typeof IDS)[number];
 
 type Report = ReadonlyMap<Id, readonly string[]>;
+
+/** The properties of plan 3a's room thermostat (Task 6); the crash-safety property leaves them out. */
+const THERMOSTAT_IDS: readonly Id[] = ["own.schedule", "one.matches", "keep.value"];
 
 /** The brief's waits between refreshes of a valve that is not heard: 2 min, 10 min, 1 h, 6 h. */
 const REFRESH_BACKOFF_MIN = [2, 10, 60, 360];
@@ -454,6 +482,211 @@ function converge(rig: Rig, found: (id: Id, text: string) => void): void {
   }
 }
 
+// The room thermostat (plan 3a, Task 6) --------------------------------------------------------
+
+/** The resolved room that holds the valve while it is managed, with its world. */
+function managedRoom(
+  sim: SimDriver,
+  valveId: string,
+): Readonly<{ room: Room; world: World }> | undefined {
+  const world = sim.world();
+  if (kindsOf(world).get(valveId) !== "managed" || world.stored === undefined) return undefined;
+  const room = resolvedRooms(world).find((r) => r.valves.some((v) => v.valveId === valveId));
+  if (room === undefined || roomWeek(world.stored.config, room) === undefined) return undefined;
+  return { room, world };
+}
+
+/** The room's saved thermostat. */
+function thermostatOf(sim: SimDriver, roomId: string): Thermostat {
+  return sim.thermostats().rooms.get(roomId) ?? SCHEDULE;
+}
+
+/** Equal in kind and target: what a person's change sets (R5). */
+function sameState(a: Thermostat, b: Thermostat): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind !== "override" || (b.kind === "override" && a.target === b.target);
+}
+
+function describeState(t: Thermostat): string {
+  return t.kind === "override" ? `override ${String(t.target)}` : t.kind;
+}
+
+/**
+ * What the room's thermostat becomes after a turn that left the valve showing `truth`, or
+ * undefined where a known limit of the spec leaves it unseen: a TRV-ZBT on its schedule turned to
+ * a value of its week, or while its desired week is not confirmed on it.
+ */
+function expectedAfter(sim: SimDriver, turn: TurnMade): Thermostat | undefined {
+  const valveId = VALVE_IDS[turn.valve];
+  const placed = managedRoom(sim, valveId);
+  if (placed === undefined) return undefined;
+  const { room, world } = placed;
+  const config = world.stored?.config;
+  const view = world.devices.get(valveId);
+  const week = config === undefined ? undefined : roomWeek(config, room);
+  if (week === undefined || view?.spec === undefined) return undefined;
+  const specs = room.valves.flatMap(({ valveId: id }) => {
+    const spec = kindsOf(world).get(id) === "managed" ? world.devices.get(id)?.spec : undefined;
+    return spec === undefined ? [] : [spec];
+  });
+  const limits = roomLimits(specs);
+  if (limits === undefined) return undefined;
+  // A valve being taken over (moved, joined, managed again) is not judged (R3).
+  const expectation = world.thermostats?.valves.get(valveId);
+  if (expectation?.roomId !== room.id || expectation.confirmed === undefined) return undefined;
+  const { truth } = turn;
+  const origin = { source: "valve", valveId } as const;
+  if (truth.mode === "off") {
+    return { kind: "off", rule: "manual", endsAt: undefined, origin, since: 0 };
+  }
+  const current = thermostatOf(sim, room.id);
+  if (truth.mode === "auto" && turn.valve === 1 && current.kind === "schedule") {
+    const days = fitted(week, view.spec).days;
+    const values = WEEKDAYS.flatMap((day) => days[day].map((p) => p.temperature));
+    const vm = world.memory.valves.get(valveId);
+    const confirmed = vm === undefined ? undefined : confirmedWeek(view.spec, vm, view.state, days);
+    const saved = world.thermostats?.valves.get(valveId);
+    const kept = saved?.roomId === room.id && saved.week?.key === weekKey(days);
+    const otherGroup =
+      view.state?.values.active_group !== undefined && view.state.values.active_group !== 3;
+    const known = confirmed !== undefined || (kept && !otherGroup);
+    if (values.includes(truth.setpoint) || !known) return undefined;
+  }
+  return {
+    kind: "override",
+    target: clampTarget(truth.setpoint, limits),
+    preset: undefined,
+    rule: "manual",
+    endsAt: undefined,
+    origin,
+    since: 0,
+  };
+}
+
+/**
+ * Watches the plan for P-own and P-keep until `stop`:
+ * - P-own: in a plan with nothing done by hand at a valve, no competing writer and no battery
+ *   swap, every room stays on its schedule.
+ * - P-keep: in a plan with one turn and, after it, only faults P-own covers and no change of
+ *   rooms or stores, the room's thermostat holds what the turn left until it ends, and it is adopted
+ *   unless the valve stopped showing it before Heatmaster heard it.
+ */
+function watchThermostats(
+  rig: Rig,
+  plan: FaultPlan,
+  found: (id: Id, text: string) => void,
+): Readonly<{ stop: () => void }> {
+  const { sim } = rig;
+  const own = plan.steps.every(ownFault);
+  const turnAt = plan.steps.findIndex((s) => BY_HAND.has(s.k));
+  const keep =
+    turnAt >= 0 &&
+    plan.steps.filter((s) => BY_HAND.has(s.k)).length === 1 &&
+    plan.steps.slice(turnAt + 1).every((s) => ownFault(s) && !NOT_KEPT.has(s.k));
+  let watching = true;
+  let target: Readonly<{ roomId: string; state: Thermostat }> | undefined;
+  let settled: Readonly<{ endsAt: number | undefined }> | undefined;
+  const elapsed = (): string => `${String(Math.round(sim.elapsed() / 1000))}s`;
+  rig.onStep(() => {
+    if (!watching) return;
+    if (own) {
+      for (const [roomId, t] of sim.thermostats().rooms) {
+        found("own.schedule", `${roomId} is ${describeState(t)} at ${elapsed()}`);
+      }
+    }
+    const turn = rig.turns[0];
+    if (!keep || turn === undefined) return;
+    if (target === undefined && settled === undefined) {
+      const state = expectedAfter(sim, turn);
+      const placed = managedRoom(sim, VALVE_IDS[turn.valve]);
+      // A turn the spec's known limits leave unseen, or on a valve in no room, holds nothing.
+      if (state === undefined || placed === undefined) {
+        settled = { endsAt: 0 };
+        return;
+      }
+      target = { roomId: placed.room.id, state };
+    }
+    if (target === undefined) return;
+    // A move made before the turn can take effect after it, once Home Assistant is back: the
+    // room then holds nothing more (a change of rooms, which P-keep leaves out).
+    if (managedRoom(sim, VALVE_IDS[turn.valve])?.room.id !== target.roomId) {
+      target = undefined;
+      return;
+    }
+    const now = thermostatOf(sim, target.roomId);
+    if (sameState(now, target.state)) {
+      settled = { endsAt: now.kind === "schedule" ? undefined : now.endsAt };
+      return;
+    }
+    const over = settled?.endsAt !== undefined && sim.now() >= settled.endsAt;
+    if (settled !== undefined && !over) {
+      found(
+        "keep.value",
+        `${target.roomId} is ${describeState(now)} at ${elapsed()}, the turn left ${describeState(target.state)}`,
+      );
+    }
+    if (over) target = undefined;
+  });
+  return {
+    stop: () => {
+      watching = false;
+      // Unseen is a failure only while the valve still shows what the turn left: a TRV-ZBT in
+      // `auto` drops a held value at its next point, which may come before Heatmaster hears it.
+      const turn = rig.turns[0];
+      const truth = turn === undefined ? undefined : sim.valve(VALVE_IDS[turn.valve]).truth();
+      const shown =
+        turn !== undefined &&
+        truth?.mode === turn.truth.mode &&
+        truth.setpoint === turn.truth.setpoint;
+      if (target !== undefined && settled === undefined && shown) {
+        found("keep.value", `${target.roomId} never took ${describeState(target.state)}`);
+      }
+    },
+  };
+}
+
+/**
+ * P-one: once quiesced and idle long enough for the tokens to refill, a knob is turned; with
+ * links up and no fault from then on, 3 min later every live valve of the room shows what the
+ * room's thermostat wants of it: `heat` at an override's target, `off`, or `auto` on its schedule.
+ */
+function oneTurn(
+  rig: Rig,
+  slot: Slot,
+  clicks: number,
+  found: (id: Id, text: string) => void,
+): void {
+  const { sim } = rig;
+  const valveId = VALVE_IDS[slot];
+  rig.advance(3 * HOUR_MS, MINUTE_MS);
+  const placed = managedRoom(sim, valveId);
+  // As for convergence: writes must not be held and both stores readable.
+  const { configState, stored } = sim.config();
+  const writable =
+    configState === "ok" &&
+    stored?.config.settings.holdWrites === false &&
+    sim.ledger() !== undefined;
+  if (placed === undefined || !writable || !sim.valve(valveId).isAwake()) return;
+  sim.valve(valveId).knob(clicks, sim.now());
+  rig.advance(3 * MINUTE_MS, 5 * 1000);
+  const t = thermostatOf(sim, placed.room.id);
+  const kinds = kindsOf(sim.world());
+  for (const { valveId: id } of placed.room.valves) {
+    if (kinds.get(id) !== "managed" || !sim.valve(id).isAwake()) continue;
+    const truth = sim.valve(id).truth();
+    const ok =
+      t.kind === "override"
+        ? truth.mode === "heat" && truth.setpoint === t.target
+        : truth.mode === (t.kind === "off" ? "off" : "auto");
+    if (!ok) {
+      found(
+        "one.matches",
+        `${id} shows ${truth.mode} ${String(truth.setpoint)} 3 min after ${String(clicks)} clicks on ${valveId}; the room is ${describeState(t)}`,
+      );
+    }
+  }
+}
+
 // Running a plan ---------------------------------------------------------------------------------
 
 const memo = new Map<string, Report>();
@@ -471,9 +704,12 @@ function execute(plan: FaultPlan): Readonly<{ report: Map<Id, string[]>; rig: Ri
     plan.steps.some((s) => s.k === "swap"),
     add,
   );
+  const watch = watchThermostats(rig, plan, add);
   rig.run(plan);
   quiesce(rig.sim);
   converge(rig, add);
+  watch.stop();
+  if (plan.turn !== undefined) oneTurn(rig, plan.turn.valve, plan.turn.clicks, add);
   return { report: found, rig };
 }
 
@@ -510,7 +746,11 @@ function holds(arbitrary: fc.Arbitrary<FaultPlan>, ids: readonly Id[]): void {
 const SLOW_MS = 120 * 1000;
 const PLAN_MS = 20 * 1000;
 
-function propertyTest(name: string, ids: readonly Id[], options: { crashy?: boolean } = {}): void {
+function propertyTest(
+  name: string,
+  ids: readonly Id[],
+  options: { crashy?: boolean; subset?: Subset } = {},
+): void {
   it(
     name,
     () => {
@@ -608,7 +848,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
     describe("With a crash after any effect and with a restart at any step", () => {
       propertyTest(
         "the four properties above still hold",
-        IDS.filter((id) => id !== "mode.managed"),
+        IDS.filter((id) => id !== "mode.managed" && !THERMOSTAT_IDS.includes(id)),
         { crashy: true },
       );
     });
@@ -623,12 +863,29 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
     });
   });
 
+  describe("P-own", () => {
+    propertyTest("holds over its fault subset", ["own.schedule"], { subset: "own" });
+  });
+
+  describe("P-one", () => {
+    propertyTest("holds over its fault subset", ["one.matches"]);
+  });
+
+  describe("P-keep", () => {
+    propertyTest(
+      "holds over the fault plans without knob or person faults after the turn",
+      ["keep.value"],
+      { subset: "keep" },
+    );
+  });
+
   describe("plans that fast-check does not reach often", () => {
     const initial = {
       trvzbSelect: "local_temperature",
       zbtSelect: "local_temperature",
       zbtGroup: 1,
       intervalMin: 5,
+      offsets: [0, 0],
     } as const;
     const nothingBroken = (report: Report): void => {
       for (const id of IDS) expect(report.get(id) ?? [], id).toEqual([]);
@@ -863,17 +1120,17 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
 // Preview ------------------------------------------------------------------------------------------
 
 /**
- * A config change, made while `heat` (the TRVZB, or none) was just set to heat 22 by a person, so
- * that the planned writes hold mode writes; `frost` is the house frost preset, for frost writes.
- * The TRV-ZBT is left out of `heat`: the preview cannot know its week is heard after a day write
- * it plans, so it plans `auto` alone where the tick later sends `auto` with the value in force.
+ * A config change; with `overridden`, room `a` (the TRVZB's) was overridden at 22 until cancelled
+ * through the API and its valves settled in `heat`, so that a change that moves a valve in or out
+ * of it plans mode writes (a take-over); `frost` is the house frost preset, for frost writes. A
+ * person's change at a valve is adopted (Task 6), so it no longer makes Heatmaster plan writes.
  */
 type Change = Readonly<{
   placement: Placement;
   schedules: Readonly<{ default: Variant; alt: Variant }>;
   comfort: number;
   frost: number;
-  heat: Slot | null;
+  overridden: boolean;
 }>;
 
 const changeArbitrary: fc.Arbitrary<Change> = fc.record({
@@ -887,8 +1144,24 @@ const changeArbitrary: fc.Arbitrary<Change> = fc.record({
   }),
   comfort: fc.integer({ min: 36, max: 48 }).map((n) => n / 2),
   frost: fc.integer({ min: 8, max: 34 }).map((n) => n / 2),
-  heat: fc.constantFrom<Slot | null>(0, null),
+  overridden: fc.boolean(),
 });
+
+/** Steps until no valve is written to for 30 min, or 6 h passed. */
+function untilQuiet(sim: SimDriver): void {
+  let quiet = 0;
+  let logged = sim.log().length;
+  const start = sim.elapsed();
+  while (quiet < 30 * MINUTE_MS && sim.elapsed() - start < 6 * HOUR_MS) {
+    sim.step(30 * 1000);
+    const writes = sim
+      .log()
+      .slice(logged)
+      .filter((e) => e.effect.kind === "publish").length;
+    logged = sim.log().length;
+    quiet = writes > 0 ? 0 : quiet + 30 * 1000;
+  }
+}
 
 function settledSystem(): SimDriver {
   const config = modelConfig({ default: 0, alt: 1 }, false);
@@ -929,9 +1202,10 @@ function previewHolds(change: Change): void {
     ...base,
     presets: { ...base.presets, comfort: change.comfort, frost: change.frost },
   };
-  if (change.heat !== null) {
-    sim.valve(VALVE_IDS[change.heat]).person({ mode: "heat", setpoint: 22 }, sim.now());
-    sim.deliver();
+  if (change.overridden) {
+    const end = { rule: "manual", durationMs: undefined } as const;
+    sim.command("a", { kind: "set_target", celsius: 22, end });
+    untilQuiet(sim);
   }
   const before = sim.log().length;
   // The devices move in Home Assistant; the change's preview reconciles over the new house, so

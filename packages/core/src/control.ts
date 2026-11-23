@@ -1,3 +1,5 @@
+import { adopt, recorded, savedWeek, scheduledAuto } from "./adopt.ts";
+import type { JudgedValve } from "./adopt.ts";
 import {
   differing,
   fitted,
@@ -76,13 +78,23 @@ import {
 import type { Problem, RoomStatus, ValveStatus } from "./status.ts";
 import { aggregate, freshness } from "./temperature.ts";
 import type { Freshness, RoomTemperature, SensorReading } from "./temperature.ts";
-import { SCHEDULE, ended, roomLimits } from "./thermostat.ts";
+import type { AdapterContext } from "./thermostat-adapter.ts";
+import {
+  SCHEDULE,
+  SENT_KEPT,
+  SENT_RETIRE_MS,
+  ended,
+  roomLimits,
+  sameWanted,
+} from "./thermostat-rules.ts";
 import type {
   SavedWeek,
+  SentWrite,
   Thermostat,
   ThermostatSeen,
   ThermostatState,
   ThermostatWanted,
+  ValveExpectation,
 } from "./thermostat.ts";
 
 const MINUTE_MS = 60 * 1000;
@@ -416,6 +428,115 @@ function nextThermostats(
   return rooms.size === state.rooms.size ? state : { rooms, valves: state.valves };
 }
 
+/** A valve's memory marked by age, with this tick's desired schedule values noted. */
+function scheduleNoted(
+  world: World,
+  valveId: string,
+  spec: ValveSpec,
+  week: ResolvedWeek,
+  state: DeviceState | undefined,
+): ValveMemory {
+  const nowMs = world.now.epochMilliseconds;
+  const old = world.memory.valves.get(valveId) ?? startMemory(world, valveId, spec);
+  const vm = markByAge(old, spec, nowMs);
+  return noteAll(vm, spec, managedDesired(spec, week, state, undefined, false));
+}
+
+/**
+ * Judges every managed valve with a spec of each planned room and adopts a person's change as the
+ * room's state (R3–R5). Returns the plans with the adopted thermostats (settling from their start)
+ * and each judged valve's judging. Nothing is judged while the state file is unreadable (R10).
+ */
+function judgeRooms(
+  world: World,
+  plans: ReadonlyMap<string, RoomPlan>,
+  kinds: ReadonlyMap<string, Membership>,
+  state: ThermostatState | undefined,
+  nowMs: number,
+): Readonly<{
+  plans: ReadonlyMap<string, RoomPlan>;
+  valves: ReadonlyMap<string, ValveThermostat>;
+}> {
+  const valves = new Map<string, ValveThermostat>();
+  if (state === undefined) return { plans, valves };
+  const judgedPlans = new Map<string, RoomPlan>();
+  for (const [roomId, plan] of plans) {
+    const judged: JudgedValve[] = [];
+    for (const { valveId } of plan.room.valves) {
+      const view = world.devices.get(valveId);
+      const spec = view?.spec;
+      if (kinds.get(valveId) !== "managed" || view === undefined || spec === undefined) continue;
+      const vm = scheduleNoted(world, valveId, spec, plan.week, view.state);
+      const expectation = state.valves.get(valveId);
+      judged.push(judgedValve(valveId, spec, plan, view.state, vm, expectation, world.now));
+    }
+    const limits = roomLimits(judged.map((j) => j.spec));
+    if (plan.thermostat === undefined || limits === undefined) {
+      judgedPlans.set(roomId, plan);
+      continue;
+    }
+    const adoption = adopt({
+      room: plan.room,
+      thermostat: plan.thermostat,
+      valves: judged,
+      limits,
+      week: plan.week,
+      now: world.now,
+    });
+    const thermostat = adoption.thermostat;
+    judgedPlans.set(
+      roomId,
+      thermostat === plan.thermostat
+        ? plan
+        : { ...plan, thermostat, settling: settles(thermostat, nowMs) },
+    );
+    for (const j of judged) {
+      const expectation = adoption.expectations.get(j.valveId);
+      if (expectation !== undefined) valves.set(j.valveId, { judged: j, expectation });
+    }
+  }
+  return { plans: judgedPlans, valves };
+}
+
+/**
+ * The state the tick saves (R22): the planned rooms' thermostats and the run valves'
+ * expectations over `given`; while `prune` holds (the house live, the config readable), the
+ * expectation of a valve that is not managed is dropped, unless its membership is frozen (R16).
+ * `given` itself when nothing changed.
+ */
+function committed(
+  given: ThermostatState,
+  plans: ReadonlyMap<string, RoomPlan>,
+  expectations: ReadonlyMap<string, ValveExpectation>,
+  kinds: ReadonlyMap<string, Membership>,
+  prune: boolean,
+): ThermostatState {
+  let changed = false;
+  const rooms = new Map(given.rooms);
+  for (const [roomId, plan] of plans) {
+    const thermostat = plan.thermostat;
+    if (thermostat === undefined || thermostat === (given.rooms.get(roomId) ?? SCHEDULE)) continue;
+    if (thermostat.kind === "schedule") rooms.delete(roomId);
+    else rooms.set(roomId, thermostat);
+    changed = true;
+  }
+  const valves = new Map(given.valves);
+  for (const [valveId, expectation] of expectations) {
+    if (given.valves.get(valveId) === expectation) continue;
+    valves.set(valveId, expectation);
+    changed = true;
+  }
+  if (prune) {
+    for (const valveId of [...valves.keys()]) {
+      const kind = kinds.get(valveId);
+      if (kind === "managed" || kind === "frozen") continue;
+      valves.delete(valveId);
+      changed = true;
+    }
+  }
+  return changed ? { rooms, valves } : given;
+}
+
 function roomProblems(plan: RoomPlan, world: World): readonly Problem[] {
   const problems: Problem[] = [];
   if (plan.fresh === "stale") problems.push(problemRoomNoTemperature(plan.room.id));
@@ -437,8 +558,13 @@ type Context = Readonly<{
   config: Config | undefined;
 }>;
 
+/** A managed valve of a planned room as judged, and its expectation after judging. */
+type ValveThermostat = Readonly<{ judged: JudgedValve; expectation: ValveExpectation }>;
+
+/** `expectation`: the valve's expectation after the tick (undefined: not judged). */
 type ValveRun = Readonly<{
   vm: ValveMemory;
+  expectation: ValveExpectation | undefined;
   push: Effect | undefined;
   action: Effect | undefined;
   finished: boolean;
@@ -513,37 +639,150 @@ function usableSavedWeek(
   return other && active !== spec.scheduleGroup ? undefined : saved;
 }
 
+/** A valve that has shown nothing. */
+const NOTHING_SEEN: ThermostatSeen = { mode: undefined, setpoint: undefined };
+
+/** Equal keys, or both undefined. */
+function sameWeek(a: SavedWeek | undefined, b: SavedWeek | undefined): boolean {
+  return a?.key === b?.key;
+}
+
+/**
+ * A managed valve of a planned room as it is judged (R4): what it shows, what its adapter is told
+ * of its week (R18, R23) and its confirmed week as a key and values (undefined while unconfirmed).
+ * `vm` must already have noted this tick's desired schedule values. The expectation's saved week
+ * counts only when it was kept for this room.
+ */
+function judgedValve(
+  valveId: string,
+  spec: ValveSpec,
+  plan: RoomPlan,
+  state: DeviceState | undefined,
+  vm: ValveMemory,
+  expectation: ValveExpectation | undefined,
+  now: Temporal.ZonedDateTime,
+): JudgedValve {
+  const days = fitted(plan.week, spec).days;
+  const saved = expectation?.roomId === plan.room.id ? expectation.week : undefined;
+  const confirmed = confirmedWeek(spec, vm, state, days);
+  const key = weekKey(days);
+  const ctx: AdapterContext = thermostatContext(
+    spec,
+    confirmed,
+    usableSavedWeek(spec, state, saved),
+    key,
+    state?.heardAt,
+    now,
+  );
+  const values = ctx.weekValues;
+  const week =
+    confirmed === undefined || values === undefined
+      ? undefined
+      : { key, values: [...values].sort((a, b) => a - b) };
+  return {
+    valveId,
+    spec,
+    seen: state === undefined ? NOTHING_SEEN : seenOf(state),
+    heardAt: state?.heardAt,
+    expectation,
+    ctx,
+    week,
+  };
+}
+
 /**
  * What a managed valve of a planned room is wanted at for the room's state: its frost protection,
  * always; and, while the state is readable, its mode and setpoint (`wanted`) with the adapter's
- * verdict on what it shows (`matches`, undefined without a state). `days` is the valve's fitted
- * week; `vm` must already have noted this tick's desired schedule values.
+ * verdict on what it shows (`matches`, undefined without a state).
  */
 function thermostatPart(
   spec: ValveSpec,
   plan: RoomPlan,
-  days: ResolvedWeek,
+  judged: JudgedValve | undefined,
   state: DeviceState | undefined,
-  vm: ValveMemory,
-  now: Temporal.ZonedDateTime,
 ): Readonly<{
   desired: Desired;
   wanted: ThermostatWanted | undefined;
   matches: boolean | undefined;
 }> {
   const frost = frostDesired(spec, plan.frost);
-  if (plan.thermostat === undefined)
+  if (plan.thermostat === undefined || judged === undefined) {
     return { desired: frost, wanted: undefined, matches: undefined };
-  // No valve expectation is kept yet, so no saved week is known.
-  const saved = usableSavedWeek(spec, state, undefined);
-  const confirmed = confirmedWeek(spec, vm, state, days);
-  const ctx = thermostatContext(spec, confirmed, saved, weekKey(days), state?.heardAt, now);
-  const wanted = thermostatWanted(spec, plan.thermostat, ctx);
+  }
+  const wanted = thermostatWanted(spec, plan.thermostat, judged.ctx);
   return {
     desired: { ...frost, ...thermostatDesired(wanted) },
     wanted,
-    matches: state === undefined ? undefined : spec.thermostat.matches(wanted, seenOf(state), ctx),
+    matches:
+      state === undefined ? undefined : spec.thermostat.matches(wanted, judged.seen, judged.ctx),
   };
+}
+
+/**
+ * The expectation once the valve matches `wanted` (R22): the wanted state is confirmed, with the
+ * setpoint it shows recorded and its week saved (`recorded`, `savedWeek`). Between two scheduled
+ * `auto` states it is not replaced: (a) while no week values are known the shown setpoint is
+ * recorded; (b) a recorded setpoint that is no value of the confirmed week becomes the shown one;
+ * (c) a confirmed week with another key is saved. `e` itself when nothing changes.
+ */
+function matched(
+  judged: JudgedValve,
+  e: ValveExpectation,
+  wanted: ThermostatWanted,
+): ValveExpectation {
+  const confirmed = e.confirmed;
+  const { seen, ctx, week } = judged;
+  if (confirmed !== undefined && scheduledAuto(confirmed) && scheduledAuto(wanted)) {
+    let setpoint = confirmed.setpoint;
+    if (ctx.weekValues === undefined) setpoint = seen.setpoint;
+    else if (week !== undefined && setpoint !== undefined && !week.values.includes(setpoint)) {
+      setpoint = seen.setpoint;
+    }
+    const kept = week !== undefined && !sameWeek(week, e.week) ? week : e.week;
+    if (setpoint === confirmed.setpoint && kept === e.week) return e;
+    return { ...e, confirmed: { ...confirmed, setpoint }, week: kept };
+  }
+  const next = recorded(wanted, judged);
+  const saved = savedWeek(wanted, e, judged);
+  const kept = sameWeek(saved, e.week) ? e.week : saved;
+  if (confirmed !== undefined && sameWanted(confirmed, next) && kept === e.week) return e;
+  return { ...e, confirmed: next, week: kept };
+}
+
+/**
+ * The expectation after the tick: confirmed where the valve matches `wanted`, and, when the tick
+ * publishes the thermostat group to it, the write first in `sent` (an equal one dropped, at most
+ * `SENT_KEPT`) with what the valve showed.
+ */
+function nextExpectation(
+  judged: JudgedValve,
+  e: ValveExpectation,
+  wanted: ThermostatWanted,
+  matches: boolean | undefined,
+  published: boolean,
+  nowMs: number,
+): ValveExpectation {
+  const next = matches === true ? matched(judged, e, wanted) : e;
+  if (!published) return next;
+  const write: SentWrite = { wanted, at: nowMs, from: judged.seen };
+  const sent = [write, ...next.sent.filter((s) => !sameWanted(s.wanted, wanted))];
+  return { ...next, sent: sent.slice(0, SENT_KEPT) };
+}
+
+/**
+ * The newest sent write is unconfirmed `SENT_RETIRE_MS` after it was sent, the valve was not
+ * heard since then, and it was not asked since then (R4, one ask per write).
+ */
+function writeUnheard(
+  e: ValveExpectation,
+  heardAt: number | undefined,
+  asks: readonly number[],
+  nowMs: number,
+): boolean {
+  const newest = e.sent[0];
+  if (newest === undefined) return false;
+  const due = newest.at + SENT_RETIRE_MS;
+  return nowMs >= due && (heardAt === undefined || heardAt < due) && !asks.some((at) => at >= due);
 }
 
 /**
@@ -590,7 +829,10 @@ function startMemory(world: World, valveId: string, spec: ValveSpec): ValveMemor
   return importBucket(fresh, buckets.stamps.get(valveId) ?? buckets.fallback, nowMs);
 }
 
-/** Runs a managed or releasing valve that has a spec (and, when managed, a planned room). */
+/**
+ * Runs a managed or releasing valve that has a spec (and, when managed, a planned room).
+ * `thermostat` is the managed valve's judging, undefined while the state file is unreadable.
+ */
 function runValve(
   ctx: Context,
   valveId: string,
@@ -598,6 +840,7 @@ function runValve(
   view: DeviceView,
   spec: ValveSpec,
   plan: RoomPlan | undefined,
+  thermostat: ValveThermostat | undefined,
 ): ValveRun {
   const { world, nowMs, held } = ctx;
   const state = view.state;
@@ -635,12 +878,13 @@ function runValve(
     const part =
       managedPlan === undefined || week === undefined
         ? undefined
-        : thermostatPart(spec, managedPlan, week.days, state, vm, world.now);
+        : thermostatPart(spec, managedPlan, thermostat?.judged, state);
     // A release counts its hold only while the valve is observed.
     if (kind === "releasing") vm = { ...vm, equalSince: undefined };
     vm = withFeedLost(vm, state, nowMs);
     return {
       vm,
+      expectation: thermostat?.expectation,
       push: undefined,
       action,
       finished: false,
@@ -661,7 +905,7 @@ function runValve(
       ? wantedSource(managedPlan.fresh, managedPlan.rm, vm, nowMs)
       : undefined;
     [desired, vm] = managedFor(spec, managedPlan.week, state, source, vm);
-    const part = thermostatPart(spec, managedPlan, week.days, state, vm, world.now);
+    const part = thermostatPart(spec, managedPlan, thermostat?.judged, state);
     desired = { ...desired, ...part.desired };
     vm = noteAll(vm, spec, part.desired);
     wanted = part.wanted;
@@ -701,9 +945,13 @@ function runValve(
   ) {
     vm = stopped(vm);
   }
-  if (canRead && readable && needsAsk(vm, spec, state.heardAt) && mayAsk(vm, nowMs)) {
+  // R4: one ask per write still unconfirmed a minute after it was sent.
+  const writeAsk =
+    thermostat !== undefined && writeUnheard(thermostat.expectation, state.heardAt, vm.asks, nowMs);
+  if (canRead && readable && (needsAsk(vm, spec, state.heardAt) || writeAsk) && mayAsk(vm, nowMs)) {
     action = ask();
   }
+  let published = false;
   if (canAct && action === undefined) {
     const pick = cands.find(
       (s) => !(settling && s.group === "thermostat") && mayWrite(vm, s.group, nowMs),
@@ -711,6 +959,7 @@ function runValve(
     if (pick !== undefined) {
       action = { kind: "publish", valveId, values: pick.values };
       vm = charge(vm, pick.group, nowMs, pick.marked);
+      published = pick.group === "thermostat";
       if (
         kind === "managed" &&
         pick.group === "schedule" &&
@@ -778,8 +1027,20 @@ function runValve(
   if (vm.feedLostSince !== undefined && nowMs - vm.feedLostSince >= FEED_LOST_AFTER_MS) {
     problems.push(problemFeedLost(valveId));
   }
+  const expectation =
+    thermostat === undefined || wanted === undefined
+      ? thermostat?.expectation
+      : nextExpectation(
+          thermostat.judged,
+          thermostat.expectation,
+          wanted,
+          matches,
+          published,
+          nowMs,
+        );
   return {
     vm,
+    expectation,
     push,
     action,
     finished,
@@ -917,13 +1178,16 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
   const stored = world.stored;
   const held = stored?.config.settings.holdWrites === true;
   const config = world.configState === "ok" ? stored?.config : undefined;
-  const thermostats = nextThermostats(world, config, resolved, kinds, nowMs);
-  const plans =
+  const expired = nextThermostats(world, config, resolved, kinds, nowMs);
+  const planned =
     config === undefined
       ? new Map<string, RoomPlan>()
-      : planRooms(config, resolved, world, nowMs, thermostats);
+      : planRooms(config, resolved, world, nowMs, expired);
+  const judging = judgeRooms(world, planned, kinds, expired, nowMs);
+  const plans = judging.plans;
   const roomOf = roomOfValves(resolved);
   const ctx: Context = { world, nowMs, held, config };
+  const expectations = new Map<string, ValveExpectation>();
 
   const valves = new Map<string, ValveMemory>();
   const statuses = new Map<string, ValveStatus>();
@@ -992,8 +1256,9 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
       continue;
     }
 
-    const run = runValve(ctx, valveId, kind, view, spec, plan);
+    const run = runValve(ctx, valveId, kind, view, spec, plan, judging.valves.get(valveId));
     valves.set(valveId, run.vm);
+    if (run.expectation !== undefined) expectations.set(valveId, run.expectation);
     if (run.push !== undefined) valveEffects.push(run.push);
     if (run.action !== undefined) valveEffects.push(run.action);
     if (run.finished) finished.push(valveId);
@@ -1056,6 +1321,16 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
     for (const valveId of world.house.notInHa) houseProblems.push(problemValveNotInHa(valveId));
   }
 
+  const thermostats =
+    expired === undefined
+      ? undefined
+      : committed(
+          expired,
+          plans,
+          expectations,
+          kinds,
+          world.house.kind === "live" && config !== undefined,
+        );
   // R20: mode and setpoint writes come after the state is saved, everything else before it.
   const save: Effect[] =
     thermostats === undefined || thermostats === world.thermostats
@@ -1140,7 +1415,9 @@ export function preview(world: World): readonly PlannedWrite[] {
             ? "internal"
             : "external";
         [desired, vm] = managedFor(spec, plan.week, state, source, vm);
-        const part = thermostatPart(spec, plan, fitted(plan.week, spec).days, state, vm, world.now);
+        const expectation = world.thermostats?.valves.get(valveId);
+        const judged = judgedValve(valveId, spec, plan, state, vm, expectation, world.now);
+        const part = thermostatPart(spec, plan, judged, state);
         desired = { ...desired, ...part.desired };
         vm = noteAll(vm, spec, part.desired);
         matches = part.matches;

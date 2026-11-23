@@ -18,7 +18,7 @@ import type {
   TickResult,
   World,
 } from "../../src/index.ts";
-import type { Fate, PersonChange, SelectValue, ValveRequest } from "./valve.ts";
+import type { Fate, PersonChange, SelectValue, ValveRequest, ValveTruth } from "./valve.ts";
 
 // The world the plans run in ----------------------------------------------------------------------
 
@@ -35,6 +35,14 @@ export type ScheduleName = "default" | "alt";
 
 /** The longest a late write waits: inside the release hold, as Task 2 checks. */
 export const LATE_LIMIT_MS = 10 * MINUTE_MS;
+/**
+ * The longest a mode or setpoint write waits while the valve is awake, so it lands within the
+ * next step and under `SENT_RETIRE_MS` (real echoes take at most 15.8 s, M2, M14). A later one is
+ * a known limit of the plan, not a fault the properties cover.
+ */
+export const THERMOSTAT_LATE_LIMIT_MS = 25 * 1000;
+/** The farthest a valve's clock runs from the house's in the plans (M8 saw 40 s). */
+export const CLOCK_OFFSET_LIMIT_MS = 90 * 1000;
 
 export function sensorOf(room: RoomName): string {
   return `ha:sensor.${room}`;
@@ -95,6 +103,8 @@ export type Fault =
   | Readonly<{ k: "crash"; after: number }>
   | Readonly<{ k: "link"; name: "z2m" | "ha"; up: boolean }>
   | Readonly<{ k: "person"; valve: Slot; change: PersonKind }>
+  | Readonly<{ k: "knob"; valve: Slot; clicks: number }>
+  | Readonly<{ k: "button"; valve: Slot }>
   | Readonly<{
       k: "compete";
       valve: Slot;
@@ -121,9 +131,57 @@ export type Initial = Readonly<{
   zbtGroup: 1 | 2 | 3;
   /** The configured temperature write interval, in minutes (1 to 60). */
   intervalMin: number;
+  /** How far each valve's clock runs from the house's, in ms (TRVZB, TRV-ZBT). */
+  offsets: readonly [number, number];
 }>;
 
-export type FaultPlan = Readonly<{ initial: Initial; steps: readonly Fault[] }>;
+/** A knob turned after quiesce, for P-one. */
+export type Turn = Readonly<{ valve: Slot; clicks: number }>;
+
+/** `turn`: a knob turned once the plan is over and quiesced (P-one); none in hand-made plans. */
+export type FaultPlan = Readonly<{ initial: Initial; steps: readonly Fault[]; turn?: Turn }>;
+
+/**
+ * Which faults a plan draws from: `all`; `own`, without anything a person does at a valve, a
+ * competing writer or a battery swap (P-own); `keep`, an `own` prefix, one knob turn or button
+ * press, then faults that neither touch a valve by hand nor change rooms or stores (P-keep).
+ */
+export type Subset = "all" | "own" | "keep";
+
+/** Faults that a person makes at a valve. */
+export const BY_HAND: ReadonlySet<Fault["k"]> = new Set(["knob", "button", "person"]);
+/** Kinds of fault P-own leaves out. */
+export const NOT_OWN: ReadonlySet<Fault["k"]> = new Set([...BY_HAND, "compete", "swap"]);
+
+/**
+ * A write to the TRV-ZBT that is lost or late. Its days are write-only, so a day write that does
+ * not land while the valve still reports counts as confirmed (R23), and the valve's own points of
+ * its old week are then judged against the new one. P-own leaves these out (see the task report).
+ */
+export function zbtWriteMissed(fault: Fault): boolean {
+  return (
+    fault.k === "fate" &&
+    fault.valve === 1 &&
+    fault.on !== "read" &&
+    (fault.fate === "lose" || fault.fate === "late")
+  );
+}
+
+/** A fault P-own covers. */
+export function ownFault(fault: Fault): boolean {
+  return !NOT_OWN.has(fault.k) && !zbtWriteMissed(fault);
+}
+/**
+ * Kinds of fault P-keep leaves out after the turn: those P-own leaves out (a competing writer or a
+ * battery swap moves a TRV-ZBT to another group, whose points it then takes), and those that
+ * change rooms or stores.
+ */
+export const NOT_KEPT: ReadonlySet<Fault["k"]> = new Set([
+  ...NOT_OWN,
+  "place",
+  "loseStore",
+  "importCopy",
+]);
 
 const slot: fc.Arbitrary<Slot> = fc.constantFrom<Slot>(0, 1);
 const room: fc.Arbitrary<RoomName | null> = fc.constantFrom<RoomName | null>("a", "b", "c", null);
@@ -133,7 +191,28 @@ const initial: fc.Arbitrary<Initial> = fc.record({
   zbtSelect: fc.constantFrom<SelectValue>("local_temperature", "remote_temperature"),
   zbtGroup: fc.constantFrom<1 | 2 | 3>(1, 2, 3),
   intervalMin: fc.constantFrom(1, 5, 5, 10, 30, 60),
+  offsets: fc
+    .tuple(
+      fc.integer({ min: -CLOCK_OFFSET_LIMIT_MS / 1000, max: CLOCK_OFFSET_LIMIT_MS / 1000 }),
+      fc.integer({ min: -CLOCK_OFFSET_LIMIT_MS / 1000, max: CLOCK_OFFSET_LIMIT_MS / 1000 }),
+    )
+    .map(([a, b]): readonly [number, number] => [a * 1000, b * 1000]),
 });
+
+/** Clicks of a knob turn: mostly a few up or down, now and then far enough to turn a TRVZB off. */
+const clicks: fc.Arbitrary<number> = fc.oneof(
+  { weight: 8, arbitrary: fc.integer({ min: 1, max: 12 }) },
+  { weight: 4, arbitrary: fc.integer({ min: -12, max: -1 }) },
+  { weight: 1, arbitrary: fc.constant(-30) },
+);
+
+const turnFault: fc.Arbitrary<Fault> = fc.oneof(
+  {
+    weight: 4,
+    arbitrary: fc.record({ valve: slot, clicks }).map((r): Fault => ({ k: "knob", ...r })),
+  },
+  { weight: 1, arbitrary: fc.constant<Fault>({ k: "button", valve: 1 }) },
+);
 
 const person: fc.Arbitrary<PersonKind> = fc.oneof(
   fc
@@ -155,6 +234,11 @@ const seconds = fc.constantFrom(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 1
 function faultArbitrary(crashy: boolean): fc.Arbitrary<Fault> {
   const weight = (normal: number, heavy: number): number => (crashy ? heavy : normal);
   return fc.oneof(
+    {
+      weight: 3,
+      arbitrary: fc.record({ valve: slot, clicks }).map((r): Fault => ({ k: "knob", ...r })),
+    },
+    { weight: 1, arbitrary: fc.constant<Fault>({ k: "button", valve: 1 }) },
     { weight: 12, arbitrary: seconds.map((s): Fault => ({ k: "wait", seconds: s })) },
     {
       weight: 6,
@@ -238,18 +322,41 @@ function faultArbitrary(crashy: boolean): fc.Arbitrary<Fault> {
 }
 
 /**
- * A fast-check arbitrary of fault plans. `crashy` makes crashes and restarts frequent, for the
- * crash-safety properties.
+ * A fast-check arbitrary of fault plans over `subset` (`all` by default), each with a knob turn
+ * for after quiesce. `crashy` makes crashes and restarts frequent, for the crash-safety
+ * properties.
  */
-export function faultPlan(options: Readonly<{ crashy?: boolean }> = {}): fc.Arbitrary<FaultPlan> {
-  return fc.record({
-    initial,
-    steps: fc.array(faultArbitrary(options.crashy === true), {
-      minLength: 4,
-      maxLength: 40,
+export function faultPlan(
+  options: Readonly<{ crashy?: boolean; subset?: Subset }> = {},
+): fc.Arbitrary<FaultPlan> {
+  const crashy = options.crashy === true;
+  const turn = fc.record({ valve: slot, clicks });
+  const steps = (covered: (fault: Fault) => boolean, min: number, max: number) =>
+    fc.array(faultArbitrary(crashy).filter(covered), {
+      minLength: min,
+      maxLength: max,
       size: "large",
-    }),
-  });
+    });
+  switch (options.subset ?? "all") {
+    case "all":
+      return fc.record({ initial, steps: steps(() => true, 4, 40), turn });
+    case "own":
+      return fc.record({ initial, steps: steps(ownFault, 4, 40), turn });
+    case "keep":
+      return fc
+        .record({
+          initial,
+          before: steps(ownFault, 2, 20),
+          at: turnFault,
+          after: steps((fault) => ownFault(fault) && !NOT_KEPT.has(fault.k), 2, 20),
+          turn,
+        })
+        .map((r): FaultPlan => ({
+          initial: r.initial,
+          steps: [...r.before, r.at, ...r.after],
+          turn: r.turn,
+        }));
+  }
 }
 
 // The rig ----------------------------------------------------------------------------------------
@@ -296,8 +403,13 @@ export type StepInfo = Readonly<{
   ledgerBefore: Ledger | undefined;
 }>;
 
+/** A knob turn or button press at a valve: when, and what the valve showed right after it. */
+export type TurnMade = Readonly<{ at: number; valve: Slot; truth: ValveTruth }>;
+
 export type Rig = Readonly<{
   sim: SimDriver;
+  /** Every knob turn and button press the plan made, oldest first. */
+  turns: readonly TurnMade[];
   /** What the user last asked for: the config the rig submits. */
   model: () => Config;
   joins: readonly Join[];
@@ -320,6 +432,7 @@ function factorySetup(plan: Initial): SimSetup["valves"] {
       selfReports: true,
       select: plan.trvzbSelect,
       activeGroup: 1,
+      clockOffsetMs: plan.offsets[0],
     },
     {
       valveId: VALVE_IDS[1],
@@ -327,6 +440,7 @@ function factorySetup(plan: Initial): SimSetup["valves"] {
       selfReports: true,
       select: plan.zbtSelect,
       activeGroup: plan.zbtGroup,
+      clockOffsetMs: plan.offsets[1],
     },
   ];
 }
@@ -415,6 +529,7 @@ export function createRig(start: Initial): Rig {
   };
   faultStates.set(sim, state);
   const joins: Join[] = [];
+  const turns: TurnMade[] = [];
   let cut = false;
   const observers: ((info: StepInfo) => void)[] = [];
 
@@ -433,12 +548,24 @@ export function createRig(start: Initial): Rig {
   });
 
   for (const s of SLOTS) {
-    sim.valve(VALVE_IDS[s]).setPolicy((request: ValveRequest): Fate | undefined => {
+    const valve = sim.valve(VALVE_IDS[s]);
+    valve.setPolicy((request: ValveRequest): Fate | undefined => {
       const list = state.fates[s];
       const i = list.findIndex((f) => f.on === "any" || f.on === request.kind);
       const entry = list[i];
       if (entry === undefined) return undefined;
       list.splice(i, 1);
+      const thermostat =
+        request.kind === "write" &&
+        (request.write.mode !== undefined || request.write.setpoint !== undefined);
+      // A mode or setpoint write that is late or queued while the valve is awake lands within
+      // the next step (THERMOSTAT_LATE_LIMIT_MS); one queued while it sleeps lands at its wake-up,
+      // before it speaks.
+      if (thermostat && entry.fate !== "lose" && valve.isAwake()) {
+        const due = sim.now() + Math.min(entry.delayMs, THERMOSTAT_LATE_LIMIT_MS);
+        state.lateAt[s] = Math.min(state.lateAt[s] ?? due, due);
+        return "late";
+      }
       if (entry.fate === "late" && state.lateAt[s] === undefined) {
         state.lateAt[s] = sim.now() + Math.min(entry.delayMs, LATE_LIMIT_MS);
       }
@@ -624,6 +751,20 @@ export function createRig(start: Initial): Rig {
         if (valve.isAwake()) valve.person(personChange(fault.valve, fault.change), sim.now());
         return;
       }
+      case "knob": {
+        const valve = sim.valve(VALVE_IDS[fault.valve]);
+        if (!valve.isAwake()) return;
+        valve.knob(fault.clicks, sim.now());
+        turns.push({ at: sim.now(), valve: fault.valve, truth: valve.truth() });
+        return;
+      }
+      case "button": {
+        const valve = sim.valve(VALVE_IDS[fault.valve]);
+        if (!valve.isAwake()) return;
+        valve.button(sim.now());
+        turns.push({ at: sim.now(), valve: fault.valve, truth: valve.truth() });
+        return;
+      }
       case "compete":
         state.competitors[fault.valve] = {
           what: fault.what,
@@ -691,6 +832,7 @@ export function createRig(start: Initial): Rig {
 
   return {
     sim,
+    turns,
     model: () => modelConfig(schedules, hold, intervalMs),
     joins,
     onStep: (fn) => {

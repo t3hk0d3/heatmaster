@@ -2,14 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   BUCKET,
   REFILL_MS,
+  SCHEDULE,
   START_TOKENS,
+  THERMOSTAT_SETTLE_MS,
   VALVE_SILENT_AFTER_MS,
   configToRaw,
   decodeDay,
   encodeDay,
 } from "../../src/index.ts";
 import { Z2M_DAY_PAYLOAD } from "../../src/profiles/sonoff-codec.ts";
-import { entriesOf, makeConfig, membershipOf } from "../builders.ts";
+import { entriesOf, makeConfig, membershipOf, weekOf } from "../builders.ts";
 import {
   HOUR_MS,
   MINUTE_MS,
@@ -31,7 +33,16 @@ import {
   reported,
 } from "./valve.ts";
 import type { SimDriver } from "./driver.ts";
-import type { Config, Effect, ProblemKind, Room, SettingKey } from "../../src/index.ts";
+import type {
+  Config,
+  Effect,
+  ProblemKind,
+  Room,
+  Schedule,
+  SetPoint,
+  SettingKey,
+  Thermostat,
+} from "../../src/index.ts";
 import type { DayTexts, SimValve, ValveModel, ValveTruth, ValveWrite } from "./valve.ts";
 
 // Helpers ----------------------------------------------------------------------------------------
@@ -66,6 +77,8 @@ function build(
     recorded?: boolean;
     /** Sensors no room names yet. */
     extraSensors?: readonly string[];
+    /** Options every valve is built with. */
+    valve?: Readonly<{ keyLagMs?: number }>;
   }>,
 ): Built {
   const rooms = options.rooms.map(roomOf);
@@ -76,8 +89,8 @@ function build(
   const valves = [
     ...placed.map(({ plan, id, model }) =>
       options.outOfSync === true
-        ? factoryValve(id, model)
-        : inSyncValve(config, rooms, plan.id, id, model),
+        ? { ...factoryValve(id, model), ...options.valve }
+        : { ...inSyncValve(config, rooms, plan.id, id, model), ...options.valve },
     ),
     ...(options.extra ?? []).map(([n, model]) => factoryValve(valveIdOf(n), model)),
   ];
@@ -183,6 +196,11 @@ function writesTo(sim: SimDriver, valveId: string): number {
 
 const A = 1;
 const B = 2;
+
+/** A set point at a time of day with a temperature. */
+function at(time: string, temperature: number): SetPoint {
+  return { time: Temporal.PlainTime.from(time), preset: undefined, temperature };
+}
 
 // Scenarios --------------------------------------------------------------------------------------
 
@@ -1088,6 +1106,252 @@ describe("scenarios", () => {
     });
   });
 
+  describe("room thermostat", () => {
+    const [a, b] = [valveIdOf(A), valveIdOf(B)];
+    const SECOND = 1000;
+    const BOTH: Placed = [
+      [A, "trvzb"],
+      [B, "trv_zbt"],
+    ];
+
+    /** Room `r1` holding the valves, in sync, run for an hour from the builders' Monday noon. */
+    function settledRoom(valves: Placed, options: Readonly<{ keyLagMs?: number }> = {}): SimDriver {
+      const { sim } = build({ rooms: [{ id: "r1", valves }], valve: options });
+      sim.step(0);
+      sim.runTo(HOUR_MS);
+      return sim;
+    }
+
+    /** The room's saved thermostat. */
+    function roomState(sim: SimDriver): Thermostat {
+      return sim.thermostats().rooms.get("r1") ?? SCHEDULE;
+    }
+
+    /** Runs `ms` more in steps of `stepMs`. */
+    function runFor(sim: SimDriver, ms: number, stepMs = STEP_MS): void {
+      sim.runTo(sim.elapsed() + ms, stepMs);
+    }
+
+    /** Every room state saved since `fromMs` (time since the start). */
+    function savedRooms(sim: SimDriver, fromMs: number): readonly (Thermostat | undefined)[] {
+      const startMs = sim.now() - sim.elapsed();
+      return sim
+        .log()
+        .filter(({ at }) => at - startMs >= fromMs)
+        .flatMap(({ effect }) =>
+          effect.kind === "saveThermostats" ? [effect.state.rooms.get("r1")] : [],
+        );
+    }
+
+    /** The thermostat publishes to the valve, with their time since the start in ms. */
+    function thermostatPublishes(sim: SimDriver, valveId: string) {
+      return sim
+        .effectsOf(valveId, "publish")
+        .filter(
+          (e) =>
+            e.effect.kind === "publish" &&
+            ("system_mode" in e.effect.values || "setpoint" in e.effect.values),
+        );
+    }
+
+    describe("A knob turned on the TRVZB in a two-valve room", () => {
+      it("the TRV-ZBT follows within one tick after the settle", () => {
+        const sim = settledRoom(BOTH);
+        // The first click enters heat at the last manual 17, two more make 18 (M11).
+        sim.valve(a).knob(3, sim.now());
+        const step = 5 * SECOND;
+        sim.step(step);
+        const adopted = roomState(sim);
+        expect(adopted).toMatchObject({ kind: "override", target: 18, origin: { valveId: a } });
+        const sinceMs =
+          adopted.kind === "override" ? adopted.since - (sim.now() - sim.elapsed()) : 0;
+        runFor(sim, MINUTE_MS, step);
+        const [first] = thermostatPublishes(sim, b).filter((e) => e.at >= sinceMs);
+        expect(first?.effect).toMatchObject({ values: { system_mode: "heat", setpoint: 18 } });
+        expect(first?.at).toBeGreaterThanOrEqual(sinceMs + THERMOSTAT_SETTLE_MS);
+        expect(first?.at).toBeLessThan(sinceMs + THERMOSTAT_SETTLE_MS + step);
+        expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: 18 });
+      });
+    });
+
+    describe("Two valves, an override cancelled while writes are in flight", () => {
+      it("the room stays on its schedule and both valves end in auto", () => {
+        const sim = settledRoom(BOTH);
+        sim.command("r1", { kind: "set_target", celsius: 22, end: undefined });
+        // One-second steps, so every half-applied state is seen.
+        runFor(sim, THERMOSTAT_SETTLE_MS + SECOND, SECOND);
+        expect(thermostatPublishes(sim, a).length).toBeGreaterThan(0);
+        runFor(sim, SECOND, SECOND);
+        sim.command("r1", { kind: "resume" });
+        const resumedAt = sim.elapsed();
+        runFor(sim, 10 * MINUTE_MS, SECOND);
+        expect(savedRooms(sim, resumedAt)).not.toContainEqual(expect.anything());
+        expect(roomState(sim)).toEqual(SCHEDULE);
+        expect(sim.valve(a).truth().mode).toBe("auto");
+        expect(sim.valve(b).truth().mode).toBe("auto");
+      });
+    });
+
+    describe("A schedule picked in Home Assistant for a room with a TRVZB", () => {
+      it("no override is made and the TRVZB stays in auto", () => {
+        const { sim, config } = build({ rooms: [{ id: "r1", valves: [[A, "trvzb"]] }] });
+        const evening: Schedule = {
+          id: "evening",
+          name: "Evening",
+          defaultWeek: weekOf([at("00:00", 16), at("07:00", 21), at("23:00", 16)]),
+        };
+        sim.step(0);
+        sim.runTo(HOUR_MS);
+        const planned = sim.planChange(
+          configToRaw({ ...config, schedules: [...config.schedules, evening] }),
+        );
+        expect(planned.ok).toBe(true);
+        runFor(sim, 10 * MINUTE_MS);
+        const pickedAt = sim.elapsed();
+        sim.choose("r1", { kind: "schedule", scheduleId: "evening" });
+        runFor(sim, 30 * MINUTE_MS, 5 * SECOND);
+        expect(savedRooms(sim, pickedAt)).not.toContainEqual(expect.anything());
+        // The TRVZB takes the new week's 21 by itself, about 20 s after the day write (M1).
+        expect(sim.valve(a).truth()).toMatchObject({ mode: "auto", setpoint: 21 });
+      });
+    });
+
+    describe("A daily schedule re-check during a timed TRV-ZBT override", () => {
+      it("the override is kept", () => {
+        const sim = settledRoom([[B, "trv_zbt"]]);
+        const end = { rule: "timer", durationMs: 30 * HOUR_MS } as const;
+        sim.command("r1", { kind: "set_target", celsius: 23, end });
+        const made = roomState(sim);
+        runFor(sim, 25 * HOUR_MS, MINUTE_MS);
+        expect(roomState(sim)).toEqual(made);
+        expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: 23 });
+      });
+    });
+
+    describe("A TRV-ZBT joining in auto with a hand-set value off its week", () => {
+      it("nothing is adopted and it ends on its schedule", () => {
+        const { sim } = build({
+          rooms: [{ id: "r1", valves: [[B, "trv_zbt"]] }],
+          outOfSync: true,
+          recorded: false,
+        });
+        sim.valve(b).setup({ setpoint: 23.5 });
+        sim.step(0);
+        sim.runTo(2 * HOUR_MS);
+        expect(savedRooms(sim, 0)).not.toContainEqual(expect.anything());
+        const truth = sim.valve(b).truth();
+        expect(truth.mode).toBe("auto");
+        expect(truth.activeGroup).toBe(3);
+        // The builder day holds 20 from 06:30 to 22:00.
+        expect(truth.setpoint).toBe(20);
+      });
+    });
+
+    describe("A boost from Home Assistant with each key reported in its own message", () => {
+      it("the room's override keeps its preset, rule and origin", () => {
+        const sim = settledRoom(BOTH, { keyLagMs: 5 * SECOND });
+        const climate = { source: "climate", valveId: undefined } as const;
+        sim.command("r1", { kind: "set_preset", preset: "boost", end: undefined }, climate);
+        const made = roomState(sim);
+        runFor(sim, 2 * MINUTE_MS, SECOND);
+        expect(roomState(sim)).toEqual(made);
+        expect(made).toMatchObject({ kind: "override", preset: "boost", rule: "timer" });
+        const target = made.kind === "override" ? made.target : undefined;
+        expect(sim.valve(a).truth()).toMatchObject({ mode: "heat", setpoint: target });
+        expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: target });
+      });
+    });
+
+    describe("A knob turned while Home Assistant is down", () => {
+      it("the knob's value becomes the room's override", () => {
+        const sim = settledRoom(BOTH);
+        sim.linkDown("ha");
+        sim.valve(a).knob(3, sim.now());
+        runFor(sim, 2 * MINUTE_MS, 5 * SECOND);
+        expect(roomState(sim)).toMatchObject({ kind: "override", target: 18 });
+        expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: 18 });
+      });
+    });
+
+    describe("Heatmaster restarted during an override", () => {
+      it("the override is kept and ends on time", () => {
+        const sim = settledRoom(BOTH);
+        const end = { rule: "timer", durationMs: HOUR_MS } as const;
+        sim.command("r1", { kind: "set_target", celsius: 22, end });
+        const made = roomState(sim);
+        const endsAt = made.kind === "override" ? (made.endsAt ?? 0) : 0;
+        runFor(sim, 10 * MINUTE_MS);
+        sim.restart();
+        while (sim.now() + STEP_MS < endsAt) sim.step(STEP_MS);
+        expect(roomState(sim)).toEqual(made);
+        expect(sim.valve(a).truth()).toMatchObject({ mode: "heat", setpoint: 22 });
+        runFor(sim, 10 * MINUTE_MS);
+        expect(roomState(sim)).toEqual(SCHEDULE);
+        expect(sim.valve(a).truth().mode).toBe("auto");
+        expect(sim.valve(b).truth().mode).toBe("auto");
+      });
+    });
+
+    describe("Heatmaster restarted after an override ended", () => {
+      it("nothing is adopted and the valves return to auto", () => {
+        const sim = settledRoom(BOTH);
+        const end = { rule: "timer", durationMs: 30 * MINUTE_MS } as const;
+        sim.command("r1", { kind: "set_target", celsius: 22, end });
+        runFor(sim, 29 * MINUTE_MS);
+        expect(sim.valve(a).truth()).toMatchObject({ mode: "heat", setpoint: 22 });
+        // Heatmaster is down across the end: its first tick is 10 min later.
+        sim.restart();
+        const startedAt = sim.elapsed();
+        sim.step(10 * MINUTE_MS);
+        runFor(sim, 20 * MINUTE_MS);
+        expect(savedRooms(sim, startedAt)).not.toContainEqual(expect.anything());
+        expect(roomState(sim)).toEqual(SCHEDULE);
+        expect(sim.valve(a).truth().mode).toBe("auto");
+        expect(sim.valve(b).truth().mode).toBe("auto");
+      });
+    });
+
+    describe("A knob turned while Heatmaster was down, on each model", () => {
+      it("the knob's value becomes the room's override and is not overwritten", () => {
+        // The TRVZB enters heat at 17 and goes to 19; the TRV-ZBT holds 17 + 2.5 in auto.
+        for (const [valveId, value] of [
+          [a, 19],
+          [b, 19.5],
+        ] as const) {
+          const sim = settledRoom(BOTH);
+          sim.whileDown(() => {
+            sim.valve(valveId).knob(5, sim.now());
+          });
+          sim.step(0);
+          runFor(sim, 30 * MINUTE_MS);
+          expect(roomState(sim)).toMatchObject({
+            kind: "override",
+            target: value,
+            origin: { source: "valve", valveId },
+          });
+          expect(sim.valve(a).truth()).toMatchObject({ mode: "heat", setpoint: value });
+          expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: value });
+        }
+      });
+    });
+
+    describe("A knob turned while Heatmaster was down on a TRV-ZBT that never left its schedule since the first start", () => {
+      it("the knob's value becomes the room's override and is not overwritten", () => {
+        const sim = settledRoom([[B, "trv_zbt"]]);
+        runFor(sim, HOUR_MS);
+        // It saved its week once confirmed (R22 c), so the week is known after the restart.
+        expect(sim.thermostats().valves.get(b)?.week).toBeDefined();
+        sim.whileDown(() => {
+          sim.valve(b).knob(5, sim.now());
+        });
+        sim.step(0);
+        runFor(sim, 30 * MINUTE_MS);
+        expect(roomState(sim)).toMatchObject({ kind: "override", target: 19.5 });
+        expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: 19.5 });
+      });
+    });
+  });
+
   describe("simulator", () => {
     // These check the stand-ins against the device notes, so the scenarios above mean something.
     function pair(): Built & Readonly<{ a: string; b: string }> {
@@ -1122,11 +1386,12 @@ describe("scenarios", () => {
 
       it("stays armed through a step with fewer effects", () => {
         const { sim } = build({ rooms: [{ id: "r1", valves: [[A, "trv_zbt"]] }] });
-        sim.crashAfterEffects(2);
+        // The first step has two effects: the ask and the state save of the take-over.
+        sim.crashAfterEffects(3);
         sim.step(0);
         expect(sim.memory().valves.size).toBe(1);
         sim.step(STEP_MS);
-        // The first step with two effects (the push and the days) crashes.
+        // The first step with three effects (the push, the days and the state save) crashes.
         expect(sim.memory().valves.size).toBe(0);
       });
     });
@@ -1316,8 +1581,9 @@ describe("scenarios", () => {
             setpoint: 22,
           });
           valve.receive({ kind: "write", write: write({ mode: "auto" }) }, NOON_MS);
-          expect(reports).toHaveLength(1);
-          expect(reports[0]).toMatchObject({
+          // The valve's first message still shows heat 22; the echo shows the new state (M14).
+          expect(reports).toHaveLength(2);
+          expect(reports[1]).toMatchObject({
             at: NOON_MS,
             payload: { system_mode: "auto", occupied_heating_setpoint: 19 },
           });

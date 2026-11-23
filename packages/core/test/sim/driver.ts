@@ -19,8 +19,10 @@ import {
   resolveWeek,
   restoreValve,
   roomsOf,
+  thermostatCommand,
   tick,
   withRecord,
+  withRoomChoice,
 } from "../../src/index.ts";
 import { BUILDER_NOW, makeOriginals } from "../builders.ts";
 import { createSimBridge } from "./bridge.ts";
@@ -41,10 +43,13 @@ import type {
   Ledger,
   Membership,
   Memory,
+  Origin,
   Room,
+  RoomChoice,
   SensorInfo,
   SensorReading,
   StoredConfig,
+  ThermostatCommand,
   ThermostatState,
   TickResult,
   ValveSpec,
@@ -181,6 +186,10 @@ export type SimDriver = Readonly<{
   personWrites: (valveId: string, payload: Readonly<Record<string, unknown>>) => void;
   batterySwap: (valveId: string) => void;
   planChange: (raw: unknown, options?: Partial<ChangeOptions>) => ChangeResult;
+  /** A room command (page or Home Assistant): its effects run as the runtime runs them. */
+  command: (roomId: string, command: ThermostatCommand, origin?: Origin) => void;
+  /** A choice on a room's Home Assistant select (R13), saved as a Home Assistant change. */
+  choose: (roomId: string, choice: RoomChoice) => void;
   restoreValve: (valveId: string) => void;
   forgetValve: (valveId: string) => void;
   /** The effects of one valve, optionally of one kind, with the time since the start. */
@@ -595,6 +604,15 @@ export function createSimDriver(setup: SimSetup): SimDriver {
         if (!(error instanceof ChangeRefused)) throw error;
         return { ok: false, refused: error };
       }
+    },
+    command(roomId, given, origin = { source: "api", valveId: undefined }) {
+      deliver();
+      executeAll(thermostatCommand(buildWorld(), roomId, given, origin));
+    },
+    choose(roomId, choice) {
+      if (stored === undefined) throw new Error("the config is not readable");
+      const next = withRoomChoice(stored, roomId, choice, nowMs);
+      if (next !== stored) executeAll([{ kind: "saveConfig", stored: next }]);
     },
     restoreValve(valveId) {
       executeAll(restoreValve(buildWorld(), valveId));

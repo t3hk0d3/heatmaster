@@ -297,6 +297,7 @@ export {
   endsAt,
   roomLimits,
   sameThermostat,
+  sameWanted,
   thermostatCommand,
   thermostatStateFromRaw,
   thermostatStateToRaw,
@@ -317,6 +318,16 @@ export type {
   ThermostatWanted,
   ValveExpectation,
 } from "./thermostat.ts";
+export {
+  adopt,
+  asWanted,
+  clampThermostatState,
+  personThermostat,
+  recorded,
+  savedWeek,
+  scheduledAuto,
+} from "./adopt.ts";
+export type { Adoption, AdoptInput, JudgedValve, PersonChange } from "./adopt.ts";
 export {
   ChangeRefused,
   capture,

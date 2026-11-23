@@ -8,10 +8,14 @@ import {
   FRESH_STORED,
   TRVZB_THERMOSTAT,
   TRV_ZBT_THERMOSTAT,
+  WEEKDAYS,
   applyEvent,
+  fitted,
   memberships,
+  roomWeek,
   roomsOf,
   tick,
+  weekKey,
   withRecord,
 } from "../src/index.ts";
 import { DEFAULT_SETTINGS } from "../src/model.ts";
@@ -34,11 +38,14 @@ import type {
   ResolvedDay,
   Room,
   RoomEntry,
+  SavedWeek,
   Schedule,
   SensorRef,
   SetPoint,
   SettingValues,
   Thermostat,
+  ThermostatWanted,
+  ValveExpectation,
   ValveRecord,
   ValveSpec,
   Week,
@@ -466,9 +473,52 @@ export function makeOriginals(model: "trvzb" | "trv_zbt"): ValveRecord["original
     : { active_group: 1, sensor_source: "internal" };
 }
 
+/** What either model is wanted at while its room follows its schedule and its week is unknown. */
+export const BUILDER_SCHEDULED: ThermostatWanted = {
+  mode: "auto",
+  setpoint: undefined,
+  scheduled: true,
+};
+
+/**
+ * A valve expectation for `BUILDER_ROOM`: unless told otherwise, confirmed at `BUILDER_SCHEDULED`,
+ * nothing sent, no saved week. `confirmed: undefined` is a valve being taken over. `makeManaged`
+ * saves the room's week with it (`savedWeekOf`).
+ */
+export function makeExpectation(
+  options: {
+    roomId?: string;
+    confirmed?: ThermostatWanted | undefined;
+    sent?: ValveExpectation["sent"];
+    week?: ValveExpectation["week"];
+  } = {},
+): ValveExpectation {
+  return {
+    roomId: options.roomId ?? BUILDER_ROOM,
+    confirmed: "confirmed" in options ? options.confirmed : BUILDER_SCHEDULED,
+    sent: options.sent ?? [],
+    week: options.week,
+  };
+}
+
+/** The world with the valve's expectation set, or removed when `expectation` is undefined. */
+export function withExpectation(
+  world: World,
+  expectation: ValveExpectation | undefined,
+  valveId = BUILDER_VALVE,
+): World {
+  const state = world.thermostats ?? EMPTY_THERMOSTAT_STATE;
+  const valves = new Map(state.valves);
+  if (expectation === undefined) valves.delete(valveId);
+  else valves.set(valveId, expectation);
+  return { ...world, thermostats: { ...state, valves } };
+}
+
 /**
  * One schedule, one room (`BUILDER_ROOM`) holding the valve and the given sensors, a ledger record
- * with the captured originals, and a usable device with `makeSpec(model)` and the state.
+ * with the captured originals, and a usable device with `makeSpec(model)` and the state. The
+ * room follows its schedule and the valve's expectation is confirmed at what the room wants for
+ * it (`makeExpectation`), unless `expectation` says otherwise (`null`: none, so it is taken over).
  */
 export function makeManaged(
   options: {
@@ -477,6 +527,7 @@ export function makeManaged(
     sensors?: readonly SensorRef[];
     state?: DeviceState;
     holdWrites?: boolean;
+    expectation?: ValveExpectation | null;
   } = {},
 ): World {
   const model = options.model ?? "trvzb";
@@ -507,7 +558,26 @@ export function makeManaged(
     usable: true,
     state: options.state ?? makeState(),
   };
-  return makeWorld({ config, rooms: [room], ledger, devices: new Map([[valveId, view]]) });
+  const world = makeWorld({ config, rooms: [room], ledger, devices: new Map([[valveId, view]]) });
+  const week = savedWeekOf(world, spec);
+  const expectation =
+    options.expectation === undefined ? makeExpectation({ week }) : options.expectation;
+  return withExpectation(world, expectation ?? undefined, valveId);
+}
+
+/**
+ * The week a valve of the builder room saves once its scheduled state is confirmed (R23): the
+ * room's week fitted to the spec, as its key and its temperatures.
+ */
+export function savedWeekOf(world: World, spec: ValveSpec, roomId = BUILDER_ROOM): SavedWeek {
+  const config = world.stored?.config;
+  const rooms = world.stored === undefined ? undefined : roomsOf("ok", world.stored, world.house);
+  const found = rooms?.find((r) => r.id === roomId);
+  const week = config === undefined || found === undefined ? undefined : roomWeek(config, found);
+  if (week === undefined) throw new Error(`no week for ${roomId}`);
+  const days = fitted(week, spec).days;
+  const values = new Set(WEEKDAYS.flatMap((day) => days[day].map((p) => p.temperature)));
+  return { key: weekKey(days), values: [...values].sort((a, b) => a - b) };
 }
 
 function atMs(world: World, nowMs: number): Temporal.ZonedDateTime {
@@ -516,8 +586,9 @@ function atMs(world: World, nowMs: number): Temporal.ZonedDateTime {
 
 /**
  * Runs `tick` and answers every refresh, write and setpoint write with a heard message that holds
- * what was written, a second after the tick, until no managed valve's memory holds a mark. Returns
- * that world with `now` 10 min after the last refresh or write.
+ * what was written, a second after the tick, until no managed valve's memory holds a mark. Each
+ * tick's thermostat state is carried on, as the runtime keeps a saved one. Returns that world with
+ * `now` 10 min after the last refresh or write.
  */
 export function settled(world: World): World {
   const specs = new Map<string, ValveSpec>();
@@ -552,7 +623,13 @@ export function settled(world: World): World {
     const devices = new Map(
       [...current.devices].map(([id, view]) => [id, { ...view, state: inbox.states.get(id) }]),
     );
-    current = { ...current, devices, memory: inbox.memory, now: atMs(current, nowMs) };
+    current = {
+      ...current,
+      devices,
+      memory: inbox.memory,
+      now: atMs(current, nowMs),
+      thermostats: result.thermostats,
+    };
     const kinds = memberships(
       current.configState,
       current.stored,
