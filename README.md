@@ -1,12 +1,15 @@
 # Heatmaster
 
 Manages Sonoff radiator valves (TRVZB, TRV-ZBT) through Zigbee2MQTT: shared schedules, weighted
-room temperatures, and every problem shown in its own web page and in Home Assistant.
+room temperatures, a thermostat for each room with temporary changes, and every problem shown in its
+own web page and in Home Assistant.
 
 ## What Heatmaster is
 
 Heatmaster runs the week's schedule on each valve itself (onboard) and feeds each valve a weighted
-room temperature taken from the room's sensors in Home Assistant. Every problem it detects is
+room temperature taken from the room's sensors in Home Assistant. Since 0.3.0 each room is also one
+thermostat, and Heatmaster sets the valves' mode (see [The room thermostat](#the-room-thermostat)).
+Every problem it detects is
 shown on its page and as Home Assistant entities. It runs as a Home Assistant app (add-on) or as a
 plain container.
 
@@ -84,6 +87,178 @@ the supported valves whose Home Assistant device is in that area. Its id is the 
 - **With no schedule in the config nothing is managed:** no joins, no releases, no label writes or
   pulls. The rooms are listed and a problem asks for a schedule.
 
+## The room thermostat
+
+Since 0.3.0 each room behaves as one thermostat, as in the tado app. Heatmaster now **sets the
+mode** of every valve it manages (`auto`, `heat` or `off`); earlier versions never did.
+
+### Room states
+
+A room is always in one of three states:
+
+- **Schedule.** The room follows its week. The valves are in `auto` and run the week they hold.
+- **Override.** The room is held at one temperature, until an end rule ends it. The valves are in
+  `heat` at that temperature.
+- **Off.** The valves are in `off`; a valve's own frost protection keeps it above its frost
+  temperature. It ends by the same rules as an override.
+
+When an override or off ends, Heatmaster writes `auto` and the valves take the schedule's current
+value. **Every override is held in `heat`, whatever its end rule.** If Heatmaster is down when an
+override should end, the valves stay at the override's temperature until it is running again; an
+override that has already run out is ended at once at the next start.
+
+A new override replaces the current one. A command that repeats the current state (same target and
+same end rule) changes nothing, and its end time is not moved. A target is limited to the room's
+range: the narrowest setpoint range of its valves (TRVZB 4 to 35 °C, TRV-ZBT 5 to 30 °C).
+
+### End rules
+
+| Rule          | Ends                                                                                                                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `next_change` | At the first point of the room's week that is more than 10 minutes away. A change made 2 minutes before a point lasts until the one after it. If that point has the same target, the override still ends there. |
+| `timer`       | After a set time.                                                                                                                                                                                               |
+| `manual`      | Never; the room stays as set until it is resumed ("until you cancel").                                                                                                                                          |
+
+The house default is `next_change`, and a timed change lasts 120 minutes. Both can be set for the
+house and for one room in the config; a duration is whole minutes from 15 to 1440 (24 hours):
+
+```yaml
+settings:
+  override_end: next_change # next_change, timer or manual; the default
+  override_duration_min: 120 # 15 to 1440; the default
+rooms:
+  bedroom:
+    override_end: timer
+    override_duration_min: 60
+```
+
+A room's entry wins over `settings`. A change may also carry its own rule and duration, through the
+API (below). **A boost** is an override at the `boost` preset (23 °C unless you changed it) for 30
+minutes, whatever the room's rule. Presets (`comfort` 20, `eco` 17, `frost` 7, `boost` 23) are
+those of the config, for the house and per room; an override may name one or give a temperature.
+
+### Where a change can be made
+
+- **A valve.** Turn the knob or press the button: Heatmaster takes it as the room's new state, with
+  the room's end rule, and brings the room's other valves to match. See [Changes made on a
+  valve](#changes-made-on-a-valve).
+- **The room's `climate` entity in Home Assistant** (below).
+- **The API.** `POST /api/rooms/<id>/override` with `{"target": 21}` or `{"preset": "eco"}` and an
+  optional `"end": {"rule": "timer", "durationMs": 3600000}`; `DELETE /api/rooms/<id>/override`
+  returns the room to its schedule; `POST /api/rooms/<id>/off` turns it off (it takes `end` too).
+  `durationMs` is whole minutes in milliseconds, 15 minutes to 24 hours.
+- **The page.** Each room shows its state ("Following the schedule", "Set to 21 °C until the next
+  schedule change", "Off until …"), where the change was made, and a "Resume schedule" button.
+
+A change made in one place shows in all the others. The page can only resume the schedule; it does
+not set a target.
+
+### The climate entity and the two selects
+
+Each room's device in Home Assistant gets, with MQTT discovery:
+
+- **`climate.heatmaster_<room id>`** ("Thermostat"). Its `current_temperature` is the room's
+  temperature and its `temperature` the current target. `hvac_mode` is `auto` on the schedule,
+  `heat` in an override and `off` when off. Setting `auto` resumes the schedule, `off` turns the room
+  off, and `heat` starts an override at the current target. Setting a temperature or a preset
+  (`comfort`, `eco`, `frost`, `boost`; `none` when there is none) starts an override with the
+  room's end rule; `boost` lasts 30 minutes. The range is the room's, in steps of 0.5 °C. Its
+  attributes are `rule`, `ends_at`, `origin` (a valve's name, `climate` or `api`), `next_change_at`
+  and `next_target`.
+- **`select.heatmaster_<room id>_override_end`** ("Override ends"): "Next schedule change", "For a
+  set time" or "Until cancelled". It sets the room's end rule, which is a change of the config
+  (a new revision), so choosing it just before setting a temperature picks the rule for that
+  change.
+- **`select.heatmaster_<room id>_schedule`** ("Schedule"): the schedule's name. It is a config
+  change too, and the area's schedule label follows it (see [Labels](#labels)).
+
+(A room's id has `-` replaced by `_` in entity ids.) The valves' own Home Assistant entities from
+Zigbee2MQTT are left alone; a change made on them is taken like a knob.
+
+### Changes made on a valve
+
+Heatmaster writes a valve, then reads its reports until the valve shows what was written. That is
+how a write is **confirmed**. After that, a report that neither the confirmed state nor a write
+still waiting for its confirmation explains is a person's change, and becomes the room's state:
+
+- mode `off`: the room is off;
+- mode `auto` on a valve that was confirmed in another mode: the room returns to its schedule;
+- a setpoint: an override at that target;
+- mode `heat` with no new setpoint: an override at the room's current target.
+
+If several valves change in one tick, the newest report wins. A write that never matches is a
+communication failure, not a person's change: it is retried, and a "setting not holding" problem is
+shown. Heatmaster never undoes a change made on a valve or in Home Assistant.
+
+The two models behave differently, so the rules differ:
+
+- **TRVZB.** The knob's first click switches the valve to `heat` at its last manual setpoint, and
+  more clicks change it; turning below 4 °C switches it to `off`. In `auto` its setpoint is not
+  judged (the valve moves it itself at schedule points), so a person shows as a change of mode.
+- **TRV-ZBT.** The knob changes the setpoint and the valve stays in `auto`; the top button toggles
+  `auto` and `heat`. On its schedule, a setpoint that is any value of the valve's own week is the
+  valve's doing; any other value is a person's. Heatmaster keeps the week a state was confirmed
+  under, so a restart does not make the valve's week unknown.
+- In `heat`, which is only used by an override, the setpoint must match exactly on both models.
+
+**The 10-second settle.** After an override or off starts, from any source, no mode or setpoint is
+written to any of the room's valves for 10 seconds, so a knob turned several clicks, or a slider
+dragged, costs each valve one write. A return to the schedule is written at once.
+
+A write that fails on one valve does not stop the others. A valve that cannot be reached gets the
+room's state when it next reports, and the room shows as not in sync until then.
+
+**Known limits.** These are the cases Heatmaster cannot tell from its own writes:
+
+- A TRV-ZBT on its schedule turned to a value of its own week changes only that valve until its next
+  point. Turned while a changed week is not yet confirmed on it, it is set back once the week is
+  confirmed.
+- A person who sets a valve to exactly the value Heatmaster sent less than a minute earlier is not
+  seen.
+- A report that shows a write of the last minute in only one of its two parts is judged on the
+  valve's next report.
+- Pressing `heat` at a valve without changing its setpoint, while a `heat` write to it is waiting
+  for its confirmation, is taken for that write.
+- A Heatmaster write that lands more than a minute late may be taken for a person's change.
+- A TRV-ZBT turned back to the value that was in force before Heatmaster's `heat` write landed is
+  not seen.
+- A combined write whose setpoint is lost just as the valve passes a schedule point is taken for a
+  person's change.
+- **A lost, queued or late TRV-ZBT schedule write.** The valve's days cannot be read back, so a write
+  that is lost or late while the valve still reports counts as confirmed. The valve then stays on its
+  old week while Heatmaster takes the new one. The next point of the old week, if its value is not in
+  the new week, is taken for a person's change: the room goes into an override at that value until its
+  end rule ends it. Resuming the schedule puts it right.
+- Heatmaster cannot tell a knob from a write sent through Zigbee2MQTT or Home Assistant. Both show
+  as a change made on that valve.
+
+### Taking over a valve
+
+A valve that Heatmaster has not seen confirm a state for its room is **taken over**: nothing it
+shows is adopted, and it is written what the room wants (`auto` on its schedule). That is what
+happens when a valve joins a room, when a valve moves to another room, when a valve is managed
+again after its release began, at the first start of 0.3.0, and after Start over. So a room that
+joins always starts on its schedule, whatever mode its valves were left in.
+
+### Frost protection
+
+Heatmaster writes each managed valve's `frost_protection_temperature`: the room's `frost` preset
+(7 °C unless changed), limited to the valve's range (TRVZB 4 to 35, TRV-ZBT 5 to 15 °C).
+
+### `state.json` and Start over
+
+The room states, and for each valve the state Heatmaster saw it confirm and the writes sent since,
+are kept in `state.json` in `/data`. A missing file means every room is on its schedule and every
+valve is taken over. A change made on a valve is saved before any valve is written for it, so a
+failed save is tried again with the same report on the next tick, and meanwhile no mode or setpoint
+is written; schedules, temperature pushes and frost protection go on.
+
+If `state.json` cannot be read, Heatmaster writes **no mode or setpoint to any valve** and judges
+nothing, and a problem says so. It does not overwrite the file. The page then offers **Start over**
+(`POST /api/thermostats/reset`): the unreadable file is set aside, an empty state is saved, every
+room goes back to its schedule and every valve is taken over. Start over is refused while the file
+can be read.
+
 ## Example config
 
 ```yaml
@@ -140,7 +315,8 @@ Documents of version 1 (a `default_week` with a list per day) are refused too.
 
 Home Assistant gets, through MQTT discovery, one device per room (temperature, target
 temperature, problem and sync entities) and one "Heatmaster" device (problem, problem count,
-writes held, and the "Stop writing" button). There is no thermostat entity in this version.
+writes held, and the "Stop writing" button). The room device also holds the room's thermostat and
+two selects, see [The room thermostat](#the-room-thermostat).
 Their entity ids are `<platform>.heatmaster_<room id>_<kind>` (for example
 `sensor.heatmaster_living_room_temperature`); this needs Home Assistant 2025.10 or newer, which
 reads the discovery key `default_entity_id`. Older releases ignore it and name the entities from
@@ -270,6 +446,20 @@ exist. Once Heatmaster has pushed a temperature to a room's valves for the first
 `room_temperature_sensor` from that room's sensors, or turn the automation off for the room.
 Nothing else needs to change: the sensors keep their `heatmaster_temp_sensor` label.
 
+## Upgrading to 0.3.0
+
+- Heatmaster now writes valve modes. Valves are in `auto` while a room follows its schedule, and
+  in `heat` or `off` while it is overridden or off.
+- The first start of 0.3.0 has no `state.json`: every room is on its schedule and every valve is
+  taken over, so a valve left in `heat` or `off`, or at a held setpoint, is put back to `auto`.
+- **Valves joined before 0.3.0 keep their mode, setpoint and frost protection on release.** Their
+  records hold no such originals, and they are not changed afterwards. Valves that join from 0.3.0
+  on get them given back.
+- Heatmaster treats an outside write, such as an automation that sets a valve's setpoint, as a
+  person's change: it becomes the room's override. The room's `origin` says which valve it was.
+- The problem `valve_not_auto` is gone: Heatmaster sets the mode, so a valve not in `auto` is
+  no longer reported.
+
 ## Pending valves
 
 A valve that is in a room but fails a join check is listed under "Valves waiting to join a room"
@@ -284,7 +474,11 @@ restored when it leaves. Without it the valve stays pending, unwritten.
 
 It overwrites the valve's schedule, and sends it again at every start, after a rejoin, after a
 Zigbee2MQTT restart and once a day. **The valve's old schedule is not saved and not put back.**
-The sensor source (and on TRV-ZBT the active group) is saved and put back on release.
+The sensor source (and on TRV-ZBT the active group) is saved and put back on release. Since 0.3.0
+it also sets the valve's mode and setpoint to follow the room's state, and its frost protection.
+**The valve's `system_mode`, setpoint and frost protection** are saved when it joins and put back
+on release, with one exception: **the setpoint is put back only when the original mode was `heat`**,
+because a setpoint written to a TRVZB in `auto` would switch it to `heat`.
 
 Heatmaster limits how often it writes to a valve: a bucket of 6 writes per valve, one more every 30
 minutes. The time the bucket is full again is kept in `/data/pacing.json`, so a restart, or a

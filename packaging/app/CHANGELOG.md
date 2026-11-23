@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.0
+
+- Each room is one thermostat with a state: following its schedule, an override, or off. Heatmaster now sets
+  the valves' mode: `auto` on the schedule, `heat` at the target for every override, `off` for a room that is off.
+  A valve left in an override stays in `heat` while Heatmaster is down, and an override that ran out in the
+  meantime ends at the next start.
+- An override ends by a rule: at the next schedule change (the default), after a set time (`timer`, 120 minutes by
+  default, 15 minutes to 24 hours) or never (`manual`). Config keys `override_end` and `override_duration_min`
+  in `settings` and in a room's entry. A boost is the `boost` preset for 30 minutes.
+- A change made on a valve (knob or button), on the room's climate entity or through the API becomes the room's
+  state, and the room's other valves follow. A write is confirmed by reading it back; a later difference that no
+  expected state explains is a person's change. The rules differ for the TRVZB and the TRV-ZBT. After an
+  override or off starts, no mode or setpoint is written to the room for 10 seconds. A repeated command with
+  the same target and rule does not move its end. The known limits are in the README, including a lost or late
+  TRV-ZBT schedule write that can show up as a phantom override.
+- A valve that joins a room, moves to another, or is managed again after its release began is taken over: it is
+  written what the room wants, and what it showed before is not adopted. So is every valve at the first start of
+  0.3.0 and after Start over.
+- Home Assistant gets a `climate.heatmaster_<room id>` entity per room (`auto`, `heat`, `off`; presets `comfort`,
+  `eco`, `frost`, `boost`), and two selects: "Override ends" and "Schedule".
+- Frost protection is written on every managed valve: the room's `frost` preset, limited to the valve's range.
+- The page shows each room's state, where it came from and a "Resume schedule" button.
+  API: `POST` and `DELETE /api/rooms/<id>/override`, `POST /api/rooms/<id>/off`, `POST /api/thermostats/reset`.
+- Room states and what each valve was seen to confirm are kept in `state.json`. If it cannot be read, no mode or
+  setpoint is written to any valve and the page offers Start over.
+- Release gives back a valve's mode and frost protection, and its setpoint only when the original mode was
+  `heat`. **Valves joined before 0.3.0 keep their mode, setpoint and frost protection on release.**
+- The problem `valve_not_auto` is removed.
+
 ## 0.2.0
 
 - Rooms come from Home Assistant: every area that holds a supported valve is a room (the label `heatmaster_ignore` opts an
