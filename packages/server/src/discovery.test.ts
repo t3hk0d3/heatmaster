@@ -1,4 +1,10 @@
-import type { ProblemView, RoomView, StateView } from "@heatmaster/core";
+import type {
+  ProblemView,
+  RoomChoice,
+  RoomView,
+  StateView,
+  ThermostatCommand,
+} from "@heatmaster/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startFakeZ2m, type FakeZ2m } from "../test/fake-z2m.ts";
 import {
@@ -9,10 +15,12 @@ import {
   SYSTEM_STATE_TOPIC,
   configMessages,
   createDiscovery,
+  roomCommandTopic,
   roomConfigTopic,
   roomStateTopic,
   stateMessages,
   systemConfigTopic,
+  type DiscoveryDeps,
   type DiscoveryMqtt,
   type DiscoveryOptions,
 } from "./discovery.ts";
@@ -132,17 +140,27 @@ describe("discovery", () => {
       it("availability_topic is heatmaster/status", () => {
         expect(config.availability_topic).toBe("heatmaster/status");
       });
-      it("components holds exactly temperature, target, problem and sync", () => {
+      it("components holds exactly temperature, target, problem, sync, climate, schedule and override_end", () => {
         expect(Object.keys(config.components)).toEqual([
           "temperature",
           "target",
           "problem",
           "sync",
+          "climate",
+          "schedule",
+          "override_end",
         ]);
       });
-      it("every component's state_topic is the room's state topic", () => {
-        for (const component of Object.values<Config>(config.components)) {
-          expect(component.state_topic).toBe("heatmaster/rooms/a/state");
+      it("every sensor's and select's state_topic is the room's state topic", () => {
+        for (const key of [
+          "temperature",
+          "target",
+          "problem",
+          "sync",
+          "schedule",
+          "override_end",
+        ]) {
+          expect(config.components[key].state_topic).toBe("heatmaster/rooms/a/state");
         }
       });
       it("temperature has device class temperature, unit °C, state class measurement", () => {
@@ -170,11 +188,12 @@ describe("discovery", () => {
         expect(Object.hasOwn(entity, "unit_of_measurement")).toBe(false);
         expect(Object.hasOwn(entity, "state_class")).toBe(false);
       });
-      it("no component has the platform climate", () => {
-        for (const message of configMessages(view(), OPTIONS).values()) {
-          for (const component of Object.values<Config>(parse(message).components)) {
-            expect(component.platform).not.toBe("climate");
-          }
+      it("no component of the system device has the platform climate", () => {
+        const system = parse(
+          configMessages(view(), OPTIONS).get(systemConfigTopic("homeassistant")),
+        );
+        for (const component of Object.values<Config>(system.components)) {
+          expect(component.platform).not.toBe("climate");
         }
       });
     });
@@ -203,6 +222,9 @@ describe("discovery", () => {
             target: texts.target,
             problem: texts.problem,
             sync: texts.sync,
+            climate: texts.thermostat,
+            schedule: texts.schedule,
+            override_end: texts.overrideEnd,
           });
         });
         it("every system component is named from the language's texts", () => {
@@ -305,7 +327,7 @@ describe("discovery", () => {
     });
 
     describe("For the default entity ids", () => {
-      it("each room component has <platform>.heatmaster_<roomId>_<key>", () => {
+      it("each room component has <platform>.heatmaster_<roomId>_<key>, the climate without the key", () => {
         const config = parse(
           configMessages(view(), OPTIONS).get(roomConfigTopic("homeassistant", "a")),
         );
@@ -318,6 +340,9 @@ describe("discovery", () => {
           target: "sensor.heatmaster_a_target",
           problem: "binary_sensor.heatmaster_a_problem",
           sync: "sensor.heatmaster_a_sync",
+          climate: "climate.heatmaster_a",
+          schedule: "select.heatmaster_a_schedule",
+          override_end: "select.heatmaster_a_override_end",
         });
       });
       it("a hyphen in the room id becomes an underscore", () => {
@@ -410,14 +435,232 @@ describe("discovery", () => {
     });
   });
 
+  describe("configMessages (thermostat)", () => {
+    const limited = room("a", {
+      minTemp: 5,
+      maxTemp: 30,
+      overrideEnd: "manual",
+      scheduleName: "Weekdays",
+    });
+    const schedules = [
+      { id: "weekdays", name: "Weekdays" },
+      { id: "weekend", name: "Weekend" },
+    ];
+    const configOf = (state: StateView): Config =>
+      parse(configMessages(state, OPTIONS).get(roomConfigTopic("homeassistant", "a")));
+
+    describe("For a managed room limited to 5–30", () => {
+      const config = configOf(view({ rooms: [limited], schedules }));
+      it("its config has a climate component with modes auto/heat/off, the four presets, min_temp 5, max_temp 30, temp_step 0.5", () => {
+        expect(config.components.climate).toMatchObject({
+          platform: "climate",
+          modes: ["auto", "heat", "off"],
+          preset_modes: ["comfort", "eco", "frost", "boost"],
+          min_temp: 5,
+          max_temp: 30,
+          temp_step: 0.5,
+          temperature_unit: "C",
+          default_entity_id: "climate.heatmaster_a",
+          name: "Thermostat",
+        });
+      });
+      it("its climate reads the room state topic through templates and sends commands to the set topics", () => {
+        expect(config.components.climate).toMatchObject({
+          mode_state_topic: "heatmaster/rooms/a/state",
+          mode_state_template: "{{ value_json.mode }}",
+          mode_command_topic: roomCommandTopic("a", "mode"),
+          temperature_state_topic: "heatmaster/rooms/a/state",
+          temperature_state_template: "{{ value_json.target }}",
+          temperature_command_topic: roomCommandTopic("a", "temperature"),
+          current_temperature_topic: "heatmaster/rooms/a/state",
+          current_temperature_template: "{{ value_json.temperature }}",
+          preset_mode_state_topic: "heatmaster/rooms/a/state",
+          preset_mode_value_template: "{{ value_json.preset }}",
+          preset_mode_command_topic: roomCommandTopic("a", "preset"),
+          action_topic: "heatmaster/rooms/a/state",
+          action_template: "{{ value_json.action }}",
+          json_attributes_topic: "heatmaster/rooms/a/state",
+        });
+        for (const key of ["rule", "ends_at", "origin", "next_change_at", "next_target"]) {
+          expect(config.components.climate.json_attributes_template).toContain(
+            `"${key}": value_json.${key}`,
+          );
+        }
+      });
+      it("its config has the selects schedule and override_end with their options", () => {
+        expect(config.components.schedule).toMatchObject({
+          platform: "select",
+          options: ["Weekdays", "Weekend"],
+          state_topic: "heatmaster/rooms/a/state",
+          value_template: "{{ value_json.schedule }}",
+          command_topic: roomCommandTopic("a", "schedule"),
+          default_entity_id: "select.heatmaster_a_schedule",
+        });
+        expect(config.components.override_end).toMatchObject({
+          platform: "select",
+          options: ["Next schedule change", "For a set time", "Until cancelled"],
+          state_topic: "heatmaster/rooms/a/state",
+          value_template: "{{ value_json.override_end }}",
+          command_topic: roomCommandTopic("a", "override_end"),
+          default_entity_id: "select.heatmaster_a_override_end",
+        });
+      });
+      it("unique ids end with _climate, _schedule and _override_end", () => {
+        expect(config.components.climate.unique_id).toBe("heatmaster_room_a_climate");
+        expect(config.components.schedule.unique_id).toBe("heatmaster_room_a_schedule");
+        expect(config.components.override_end.unique_id).toBe("heatmaster_room_a_override_end");
+      });
+    });
+
+    describe("With language ru", () => {
+      it("the override_end options are the Russian texts", () => {
+        const config = configOf(view({ language: "ru", rooms: [limited], schedules }));
+        expect(config.components.override_end.options).toEqual([
+          "До смены по расписанию",
+          "На заданное время",
+          "До отмены",
+        ]);
+      });
+    });
+
+    describe('With a room "Кабинет" with id office-1', () => {
+      it("the climate's entity id has underscores for the dash", () => {
+        const state = view({ rooms: [room("office-1", { name: "Кабинет" })] });
+        const config = parse(
+          configMessages(state, OPTIONS).get(roomConfigTopic("homeassistant", "office-1")),
+        );
+        expect(config.components.climate.default_entity_id).toBe("climate.heatmaster_office_1");
+      });
+    });
+  });
+
   describe("stateMessages", () => {
     const one = (state: StateView, topic: string): string | undefined =>
       stateMessages(state).get(topic);
     describe("With a room at 19.6 with target 20, in sync, not degraded, no problem", () => {
-      it('its message is {"temperature":19.6,"target":20,"problem":"OFF","sync":"in_sync"}', () => {
-        expect(one(view(), roomStateTopic("a"))).toBe(
-          '{"temperature":19.6,"target":20,"problem":"OFF","sync":"in_sync"}',
-        );
+      it("its message holds the temperature, the target, the problem and the sync, and no thermostat state", () => {
+        expect(parse(one(view(), roomStateTopic("a")))).toEqual({
+          temperature: 19.6,
+          target: 20,
+          problem: "OFF",
+          sync: "in_sync",
+          mode: null,
+          preset: "none",
+          action: "idle",
+          rule: null,
+          ends_at: null,
+          origin: null,
+          next_change_at: null,
+          next_target: null,
+          schedule: null,
+          override_end: null,
+        });
+      });
+    });
+    describe("With a room overridden manual at 22 with preset comfort, heating", () => {
+      const state = view({
+        rooms: [
+          room("a", {
+            target: 22,
+            heating: true,
+            thermostat: {
+              kind: "override",
+              target: 22,
+              preset: "comfort",
+              rule: "manual",
+              origin: { source: "api" },
+            },
+            overrideEnd: "manual",
+          }),
+        ],
+      });
+      it("mode heat, target 22, preset comfort, action heating, rule manual, ends_at null", () => {
+        expect(parse(one(state, roomStateTopic("a")))).toMatchObject({
+          mode: "heat",
+          target: 22,
+          preset: "comfort",
+          action: "heating",
+          rule: "manual",
+          ends_at: null,
+          origin: "api",
+          override_end: "Until cancelled",
+        });
+      });
+    });
+    describe("With a room overridden until an instant", () => {
+      it("ends_at is its ISO 8601 text", () => {
+        const state = view({
+          rooms: [
+            room("a", {
+              thermostat: {
+                kind: "override",
+                target: 21,
+                rule: "timer",
+                endsAt: Date.UTC(2026, 10, 20, 18, 30),
+                origin: { source: "climate" },
+              },
+              nextChangeAt: Date.UTC(2026, 10, 20, 22, 0),
+              nextTarget: 17,
+            }),
+          ],
+        });
+        expect(parse(one(state, roomStateTopic("a")))).toMatchObject({
+          ends_at: "2026-11-20T18:30:00.000Z",
+          next_change_at: "2026-11-20T22:00:00.000Z",
+          next_target: 17,
+          origin: "climate",
+        });
+      });
+    });
+    describe("With a room off", () => {
+      it("mode off, target null, action off", () => {
+        const state = view({
+          rooms: [
+            room("a", { target: 5, heating: true, thermostat: { kind: "off", rule: "manual" } }),
+          ],
+        });
+        expect(parse(one(state, roomStateTopic("a")))).toMatchObject({
+          mode: "off",
+          target: null,
+          action: "off",
+        });
+      });
+    });
+    describe("With a room on its schedule, idle", () => {
+      it("mode auto, preset none, action idle", () => {
+        const state = view({
+          rooms: [
+            room("a", {
+              heating: false,
+              thermostat: { kind: "schedule" },
+              scheduleName: "Weekdays",
+            }),
+          ],
+        });
+        expect(parse(one(state, roomStateTopic("a")))).toMatchObject({
+          mode: "auto",
+          preset: "none",
+          action: "idle",
+          schedule: "Weekdays",
+        });
+      });
+    });
+    describe('With an override from valve "Кабинет TRV"', () => {
+      it('origin "valve Кабинет TRV"', () => {
+        const state = view({
+          rooms: [
+            room("a", {
+              thermostat: {
+                kind: "override",
+                target: 21,
+                rule: "manual",
+                origin: { source: "valve", valveId: "z2m:1" },
+              },
+            }),
+          ],
+          valves: [{ valveId: "z2m:1", name: "Кабинет TRV", supported: true }],
+        });
+        expect(parse(one(state, roomStateTopic("a"))).origin).toBe("valve Кабинет TRV");
       });
     });
     describe("With a room whose temperature is unknown", () => {
@@ -562,12 +805,19 @@ function stub(initial: MqttState = "connected") {
   };
 }
 
-function make(mqttStub = stub(), stopWriting: () => Promise<unknown> = () => Promise.resolve()) {
+function make(
+  mqttStub = stub(),
+  stopWriting: () => Promise<unknown> = () => Promise.resolve(),
+  extra: Partial<Pick<DiscoveryDeps, "roomCommand" | "roomChoice" | "log">> = {},
+) {
   const discovery = createDiscovery({
     mqtt: mqttStub.mqtt,
     stopWriting,
+    roomCommand: () => Promise.resolve(),
+    roomChoice: () => Promise.resolve(),
     options: OPTIONS,
     log: undefined,
+    ...extra,
   });
   return { discovery, stub: mqttStub };
 }
@@ -579,12 +829,13 @@ const ROOM_B = roomConfigTopic("homeassistant", "b");
 describe("discovery (createDiscovery)", () => {
   describe("start", () => {
     describe("Always", () => {
-      it("subscribes to homeassistant/status, to the press topic and to <prefix>/device/heatmaster/+/config", async () => {
+      it("subscribes to homeassistant/status, to the press topic, to the room commands and to <prefix>/device/heatmaster/+/config", async () => {
         const { discovery, stub: s } = make();
         await discovery.start();
         expect(s.subscribed()).toEqual([
           "homeassistant/status",
           PRESS_TOPIC,
+          "heatmaster/rooms/+/set/+",
           "homeassistant/device/heatmaster/+/config",
         ]);
       });
@@ -780,8 +1031,10 @@ describe("discovery (createDiscovery)", () => {
         const discovery = createDiscovery({
           mqtt: s.mqtt,
           stopWriting: () => Promise.resolve(),
+          roomCommand: () => Promise.resolve(),
+          roomChoice: () => Promise.resolve(),
           options: OPTIONS,
-          log: { error: (message) => errors.push(message) },
+          log: { error: (message) => errors.push(message), warn: () => undefined },
         });
         return { discovery, s, errors };
       }
@@ -912,6 +1165,173 @@ describe("discovery (createDiscovery)", () => {
     });
   });
 
+  describe("commands", () => {
+    const SCHEDULES = [
+      { id: "wd", name: "Weekdays" },
+      { id: "we", name: "Weekend" },
+    ];
+    async function ready() {
+      const roomCommand = vi.fn<(roomId: string, command: ThermostatCommand) => Promise<unknown>>(
+        () => Promise.resolve(),
+      );
+      const roomChoice = vi.fn<(roomId: string, choice: RoomChoice) => Promise<unknown>>(() =>
+        Promise.resolve(),
+      );
+      const warn = vi.fn();
+      const log = { error: vi.fn(), warn };
+      const { discovery, stub: s } = make(stub(), undefined, { roomCommand, roomChoice, log });
+      await discovery.start();
+      await discovery.sync(view({ rooms: [room("mancave")], schedules: SCHEDULES }));
+      const send = (what: string, text: string, retained = false): void => {
+        s.deliver(roomCommandTopic("mancave", what), text, retained);
+      };
+      const deliver = (topic: string, text: string): void => {
+        s.deliver(topic, text, false);
+      };
+      return { discovery, roomCommand, roomChoice, warn, send, deliver };
+    }
+
+    describe('With heatmaster/rooms/mancave/set/temperature "21.5"', () => {
+      it("roomCommand got mancave set_target 21.5", async () => {
+        const { roomCommand, send } = await ready();
+        send("temperature", "21.5");
+        expect(roomCommand).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "set_target",
+          celsius: 21.5,
+          end: undefined,
+        });
+      });
+    });
+    describe('With set/mode "auto"', () => {
+      it("roomCommand got resume", async () => {
+        const { roomCommand, send } = await ready();
+        send("mode", "auto");
+        expect(roomCommand).toHaveBeenCalledExactlyOnceWith("mancave", { kind: "resume" });
+      });
+    });
+    describe('With set/mode "heat"', () => {
+      it("roomCommand got heat", async () => {
+        const { roomCommand, send } = await ready();
+        send("mode", "heat");
+        expect(roomCommand).toHaveBeenCalledExactlyOnceWith("mancave", { kind: "heat" });
+      });
+    });
+    describe('With set/mode "off"', () => {
+      it("roomCommand got off with the room's default end", async () => {
+        const { roomCommand, send } = await ready();
+        send("mode", "off");
+        expect(roomCommand).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "off",
+          end: undefined,
+        });
+      });
+    });
+    describe('With set/preset "eco"', () => {
+      it("roomCommand got set_preset eco", async () => {
+        const { roomCommand, send } = await ready();
+        send("preset", "eco");
+        expect(roomCommand).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "set_preset",
+          preset: "eco",
+          end: undefined,
+        });
+      });
+    });
+    describe('With set/preset "none"', () => {
+      it("nothing is called", async () => {
+        const { roomCommand, roomChoice, warn, send } = await ready();
+        send("preset", "none");
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(roomChoice).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+    describe('With set/schedule "Weekdays" for an existing schedule named Weekdays', () => {
+      it("roomChoice got schedule with its id", async () => {
+        const { roomChoice, send } = await ready();
+        send("schedule", "Weekdays");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "schedule",
+          scheduleId: "wd",
+        });
+      });
+    });
+    describe('With set/override_end "Until cancelled"', () => {
+      it("roomChoice got override_end manual", async () => {
+        const { roomChoice, send } = await ready();
+        send("override_end", "Until cancelled");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "override_end",
+          rule: "manual",
+        });
+      });
+    });
+    describe('With set/temperature "warm"', () => {
+      it("nothing is called and one warning is logged", async () => {
+        const { roomCommand, roomChoice, warn, send } = await ready();
+        send("temperature", "warm");
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(roomChoice).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+    describe("With set/temperature empty", () => {
+      it("nothing is called and one warning is logged", async () => {
+        const { roomCommand, warn, send } = await ready();
+        send("temperature", "");
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+    describe('With set/schedule "Nights", which no schedule is named', () => {
+      it("nothing is called and one warning is logged", async () => {
+        const { roomChoice, warn, send } = await ready();
+        send("schedule", "Nights");
+        expect(roomChoice).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+    describe("With a command for a room that does not exist", () => {
+      it("nothing is called and one warning is logged", async () => {
+        const { roomCommand, warn, deliver } = await ready();
+        deliver(roomCommandTopic("ghost", "mode"), "auto");
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+    describe("With set/fan", () => {
+      it("nothing is called and one warning is logged", async () => {
+        const { roomCommand, warn, send } = await ready();
+        send("fan", "high");
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+    describe("With a retained command", () => {
+      it("nothing is called", async () => {
+        const { roomCommand, roomChoice, warn, send } = await ready();
+        send("mode", "auto", true);
+        send("schedule", "Weekdays", true);
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(roomChoice).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+    describe("With roomCommand rejecting", () => {
+      it("one warning is logged and discovery keeps running", async () => {
+        const { roomCommand, warn, send, discovery } = await ready();
+        roomCommand.mockRejectedValueOnce(new Error("no"));
+        send("mode", "auto");
+        await vi.waitFor(() => {
+          expect(warn).toHaveBeenCalledTimes(1);
+        }, WAIT);
+        send("mode", "heat");
+        expect(roomCommand).toHaveBeenCalledTimes(2);
+        await expect(discovery.sync(view({ rooms: [room("mancave")] }))).resolves.toBeUndefined();
+      });
+    });
+  });
+
   describe("stop", () => {
     describe("Always", () => {
       it("the subscriptions are removed", async () => {
@@ -950,6 +1370,8 @@ describe("discovery on the test broker (the real MQTT client)", () => {
     const discovery = createDiscovery({
       mqtt: first,
       stopWriting,
+      roomCommand: () => Promise.resolve(),
+      roomChoice: () => Promise.resolve(),
       options: OPTIONS,
       log: undefined,
     });

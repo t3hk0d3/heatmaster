@@ -10,7 +10,13 @@ import { startFakeHa, type FakeHa } from "../test/fake-ha.ts";
 import { startFakeZ2m, type FakeZ2m, type Received } from "../test/fake-z2m.ts";
 import { createManualClock, type ManualClock } from "../test/manual-clock.ts";
 import { startRawBroker } from "../test/raw-broker.ts";
-import { PRESS_TOPIC, roomConfigTopic, roomStateTopic, systemConfigTopic } from "./discovery.ts";
+import {
+  PRESS_TOPIC,
+  roomCommandTopic,
+  roomConfigTopic,
+  roomStateTopic,
+  systemConfigTopic,
+} from "./discovery.ts";
 import { API_HOST, type Options } from "./options.ts";
 import { systemClock } from "./clock.ts";
 import { createMqttClient } from "./mqtt.ts";
@@ -1317,6 +1323,27 @@ describe("main (discovery)", () => {
         ]);
         await first.discovery.sync(stateView(snapshot));
         expect(fake.retained(roomConfigTopic("ha_test", "living"))).toBeTruthy();
+      });
+    });
+
+    describe("With a stored config of one room and a temperature command on the room's climate topic", () => {
+      it("discovery's roomCommand reaches the runtime with origin climate", async () => {
+        const { fake, first } = await applied(true);
+        live.push(() => first.stop());
+        await vi.waitFor(() => {
+          expect(fake.retained(roomStateTopic("living"))).toBeDefined();
+        }, WAIT);
+        fake.inject(roomCommandTopic("living", "temperature"), "21");
+        await vi.waitFor(() => {
+          const living = stateView(first.runtime.snapshot()).rooms.find(
+            (r) => r.roomId === "living",
+          );
+          expect(living?.thermostat).toMatchObject({
+            kind: "override",
+            target: 21,
+            origin: { source: "climate" },
+          });
+        }, WAIT);
       });
     });
 

@@ -359,6 +359,7 @@ describe("ConfigStore", () => {
         const errors: string[] = [];
         const store = createConfigStore(w.dataDir, w.clock, {
           error: (message) => errors.push(message),
+          warn: () => undefined,
         });
         // A directory where the copy's temporary file goes: opening it for writing fails.
         mkdirSync(w.file("config.v2.json.tmp"));

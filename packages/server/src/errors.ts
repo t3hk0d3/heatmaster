@@ -14,11 +14,15 @@ export class HeatmasterError extends Error {
 /** Where a module reports a fault it cannot throw; `main` passes Fastify's logger. */
 export type ErrorLog = Readonly<{
   error(message: string, data?: Readonly<Record<string, unknown>>): void;
+  warn(message: string, data?: Readonly<Record<string, unknown>>): void;
 }>;
 
 /** The log of a module that is used on its own (tests): one JSON line on stderr. */
 export const consoleErrorLog: ErrorLog = {
   error(message, data) {
     console.error(JSON.stringify({ level: "error", msg: message, ...data }));
+  },
+  warn(message, data) {
+    console.error(JSON.stringify({ level: "warn", msg: message, ...data }));
   },
 };

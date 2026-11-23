@@ -6,6 +6,7 @@ export {
   END_RULES,
   NEXT_CHANGE_LEAD_MS,
   OVERRIDE_DURATION_RANGE_MS,
+  PRESET_NAMES,
   WEEKDAYS,
   effectivePresets,
   sensorId,

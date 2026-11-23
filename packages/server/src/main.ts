@@ -1,3 +1,4 @@
+import type { Origin } from "@heatmaster/core";
 import type { FastifyBaseLogger } from "fastify";
 import pkg from "../package.json" with { type: "json" };
 import { buildApi, startApi, type ApiRuntime } from "./api.ts";
@@ -21,6 +22,9 @@ export type Running = Readonly<{
   discovery: Discovery;
   stop(): Promise<void>;
 }>;
+
+/** What a command from the room's Home Assistant climate entity is made by. */
+const CLIMATE_ORIGIN: Origin = { source: "climate", valveId: undefined };
 
 /** The runtime's and the Home Assistant link's log lines go through Fastify's logger. */
 function runtimeLog(logger: FastifyBaseLogger): RuntimeLog & HaLog {
@@ -108,6 +112,8 @@ export async function start(
   const discovery = createDiscovery({
     mqtt,
     stopWriting: () => runtime.setHold(true),
+    roomCommand: (roomId, command) => runtime.roomCommand(roomId, command, CLIMATE_ORIGIN),
+    roomChoice: (roomId, choice) => runtime.roomChoice(roomId, choice),
     options: { prefix: options.discoveryPrefix, version: pkg.version },
     log,
   });

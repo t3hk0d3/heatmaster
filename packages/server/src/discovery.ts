@@ -1,6 +1,16 @@
 /** Home Assistant entities through MQTT discovery: room devices, a Heatmaster device, one button. */
 
-import type { ProblemView, RoomView, StateView, SyncState } from "@heatmaster/core";
+import {
+  END_RULES,
+  PRESET_NAMES,
+  type EndRule,
+  type ProblemView,
+  type RoomChoice,
+  type RoomView,
+  type StateView,
+  type SyncState,
+  type ThermostatCommand,
+} from "@heatmaster/core";
 import { consoleErrorLog, type ErrorLog } from "./errors.ts";
 import { STATUS_OFFLINE, STATUS_ONLINE, STATUS_TOPIC, type MqttClient } from "./mqtt.ts";
 
@@ -22,6 +32,7 @@ export const SYNC_OPTIONS: readonly SyncState[] = [
 
 const SUPPORT_URL = "https://github.com/t3hk0d3/heatmaster";
 const ROOM_PREFIX = "room_";
+const ATTRIBUTE_KEYS = ["rule", "ends_at", "origin", "next_change_at", "next_target"] as const;
 
 export type EntityTexts = Readonly<{
   temperature: string;
@@ -32,6 +43,12 @@ export type EntityTexts = Readonly<{
   held: string;
   stopWriting: string;
   roomModel: string;
+  thermostat: string;
+  schedule: string;
+  /** The name of the select that sets how an override ends. */
+  overrideEnd: string;
+  /** The select's options, one text per end rule. */
+  overrideEndOptions: Readonly<Record<EndRule, string>>;
 }>;
 
 export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
@@ -44,6 +61,14 @@ export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
     held: "Writes held",
     stopWriting: "Stop writing",
     roomModel: "Room",
+    thermostat: "Thermostat",
+    schedule: "Schedule",
+    overrideEnd: "Override ends",
+    overrideEndOptions: {
+      next_change: "Next schedule change",
+      timer: "For a set time",
+      manual: "Until cancelled",
+    },
   },
   ru: {
     temperature: "Температура",
@@ -54,6 +79,14 @@ export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
     held: "Запись остановлена",
     stopWriting: "Остановить запись",
     roomModel: "Комната",
+    thermostat: "Термостат",
+    schedule: "Расписание",
+    overrideEnd: "Конец ручной настройки",
+    overrideEndOptions: {
+      next_change: "До смены по расписанию",
+      timer: "На заданное время",
+      manual: "До отмены",
+    },
   },
 };
 
@@ -62,6 +95,13 @@ export type DiscoveryOptions = Readonly<{ prefix: string; version: string }>;
 export function roomStateTopic(roomId: string): string {
   return `heatmaster/rooms/${roomId}/state`;
 }
+
+/** Where Home Assistant sends a room's command: `what` is mode, temperature, preset, schedule or override_end. */
+export function roomCommandTopic(roomId: string, what: string): string {
+  return `heatmaster/rooms/${roomId}/set/${what}`;
+}
+
+export const ROOM_COMMANDS_FILTER = "heatmaster/rooms/+/set/+";
 
 export function roomConfigTopic(prefix: string, roomId: string): string {
   return `${prefix}/device/${DISCOVERY_NODE}/${ROOM_PREFIX}${roomId}/config`;
@@ -85,11 +125,25 @@ function entityId(platform: string, roomId: string | undefined, key: string): st
     : `${platform}.${DISCOVERY_NODE}_${roomId.replaceAll("-", "_")}_${key}`;
 }
 
+/** The climate's id carries no key: it is the room's one thermostat. */
+function climateEntityId(roomId: string): string {
+  return `climate.${DISCOVERY_NODE}_${roomId.replaceAll("-", "_")}`;
+}
+
 function template(key: string): string {
   return `{{ value_json.${key} }}`;
 }
 
-function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOptions): string {
+/** The climate's attributes: the keys of the room state that describe how its state ends. */
+const ATTRIBUTES_TEMPLATE =
+  "{{ {" + ATTRIBUTE_KEYS.map((key) => `"${key}": value_json.${key}`).join(", ") + "} | tojson }}";
+
+function roomConfig(
+  room: RoomView,
+  schedules: StateView["schedules"],
+  texts: EntityTexts,
+  options: DiscoveryOptions,
+): string {
   const stateTopic = roomStateTopic(room.roomId);
   const id = `heatmaster_room_${room.roomId}`;
   return JSON.stringify({
@@ -150,6 +204,53 @@ function roomConfig(room: RoomView, texts: EntityTexts, options: DiscoveryOption
         options: SYNC_OPTIONS,
         entity_category: "diagnostic",
         value_template: template("sync"),
+      },
+      climate: {
+        platform: "climate",
+        unique_id: `${id}_climate`,
+        name: texts.thermostat,
+        default_entity_id: climateEntityId(room.roomId),
+        modes: ["auto", "heat", "off"],
+        preset_modes: PRESET_NAMES,
+        min_temp: room.minTemp,
+        max_temp: room.maxTemp,
+        temp_step: 0.5,
+        temperature_unit: "C",
+        mode_state_topic: stateTopic,
+        mode_state_template: template("mode"),
+        mode_command_topic: roomCommandTopic(room.roomId, "mode"),
+        temperature_state_topic: stateTopic,
+        temperature_state_template: template("target"),
+        temperature_command_topic: roomCommandTopic(room.roomId, "temperature"),
+        current_temperature_topic: stateTopic,
+        current_temperature_template: template("temperature"),
+        preset_mode_state_topic: stateTopic,
+        preset_mode_value_template: template("preset"),
+        preset_mode_command_topic: roomCommandTopic(room.roomId, "preset"),
+        action_topic: stateTopic,
+        action_template: template("action"),
+        json_attributes_topic: stateTopic,
+        json_attributes_template: ATTRIBUTES_TEMPLATE,
+      },
+      schedule: {
+        platform: "select",
+        unique_id: `${id}_schedule`,
+        name: texts.schedule,
+        default_entity_id: entityId("select", room.roomId, "schedule"),
+        options: schedules.map((schedule) => schedule.name),
+        state_topic: stateTopic,
+        value_template: template("schedule"),
+        command_topic: roomCommandTopic(room.roomId, "schedule"),
+      },
+      override_end: {
+        platform: "select",
+        unique_id: `${id}_override_end`,
+        name: texts.overrideEnd,
+        default_entity_id: entityId("select", room.roomId, "override_end"),
+        options: END_RULES.map((rule) => texts.overrideEndOptions[rule]),
+        state_topic: stateTopic,
+        value_template: template("override_end"),
+        command_topic: roomCommandTopic(room.roomId, "override_end"),
       },
     },
   });
@@ -228,7 +329,10 @@ export function configMessages(
   messages.set(systemConfigTopic(options.prefix), systemConfig(texts, options));
   if (state.configState !== "ok") return messages;
   for (const room of managedRooms(state)) {
-    messages.set(roomConfigTopic(options.prefix, room.roomId), roomConfig(room, texts, options));
+    messages.set(
+      roomConfigTopic(options.prefix, room.roomId),
+      roomConfig(room, state.schedules, texts, options),
+    );
   }
   return messages;
 }
@@ -247,6 +351,40 @@ function problemEntry(problem: ProblemView): ProblemView {
   };
 }
 
+const MODES = { schedule: "auto", override: "heat", off: "off" } as const;
+
+function isoOrNull(at: number | undefined): string | null {
+  return at === undefined ? null : new Date(at).toISOString();
+}
+
+/** Who made the room's state, in words: a valve is named, as the valve list names it. */
+function originText(room: RoomView, state: StateView): string | null {
+  const origin = room.thermostat?.origin;
+  if (origin === undefined) return null;
+  if (origin.source !== "valve") return origin.source;
+  const valve = state.valves.find((candidate) => candidate.valveId === origin.valveId);
+  return `valve ${valve?.name ?? origin.valveId ?? ""}`.trimEnd();
+}
+
+/** The part of a room's state message that belongs to its thermostat (R14). */
+function thermostatPayload(room: RoomView, state: StateView): Record<string, unknown> {
+  const thermostat = room.thermostat;
+  const texts = ENTITY_TEXTS[state.language];
+  return {
+    mode: thermostat === undefined ? null : MODES[thermostat.kind],
+    preset: thermostat?.preset ?? "none",
+    action: thermostat?.kind === "off" ? "off" : room.heating === true ? "heating" : "idle",
+    rule: thermostat?.rule ?? null,
+    ends_at: isoOrNull(thermostat?.endsAt),
+    origin: originText(room, state),
+    next_change_at: isoOrNull(room.nextChangeAt),
+    next_target: room.nextTarget ?? null,
+    schedule: room.scheduleName ?? null,
+    override_end:
+      room.overrideEnd === undefined ? null : texts.overrideEndOptions[room.overrideEnd],
+  };
+}
+
 /** Topic → JSON text: the managed rooms in order, then the system state, then the problems. */
 export function stateMessages(state: StateView): ReadonlyMap<string, string> {
   const messages = new Map<string, string>();
@@ -255,9 +393,10 @@ export function stateMessages(state: StateView): ReadonlyMap<string, string> {
       roomStateTopic(room.roomId),
       JSON.stringify({
         temperature: room.currentTemperature ?? null,
-        target: room.target ?? null,
+        target: room.thermostat?.kind === "off" ? null : (room.target ?? null),
         problem: onOff(room.degraded || room.hasProblem),
         sync: room.sync,
+        ...thermostatPayload(room, state),
       }),
     );
   }
@@ -284,6 +423,8 @@ export type DiscoveryMqtt = Pick<MqttClient, "state" | "publish" | "subscribe" |
 export type DiscoveryDeps = Readonly<{
   mqtt: DiscoveryMqtt;
   stopWriting: () => Promise<unknown>;
+  roomCommand(roomId: string, command: ThermostatCommand): Promise<unknown>;
+  roomChoice(roomId: string, choice: RoomChoice): Promise<unknown>;
   options: DiscoveryOptions;
   /** Defaults to one JSON line on stderr. */
   log: ErrorLog | undefined;
@@ -307,6 +448,9 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
   const published = new Map<string, string>();
   /** Room config topics this process published to, or that the broker holds from earlier runs. */
   const knownRooms = new Set<string>();
+  const warn = (message: string, data: Readonly<Record<string, unknown>>): void => {
+    log.warn(message, data);
+  };
   const unsubscribes: (() => void)[] = [];
   let latest: StateView | undefined;
   let running: Promise<void> | undefined;
@@ -396,6 +540,70 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
     return loop;
   }
 
+  /** What a room command asks of the thermostat, or undefined when it asks nothing usable. */
+  function parseCommand(
+    state: StateView,
+    what: string,
+    text: string,
+  ): ThermostatCommand | RoomChoice | undefined {
+    switch (what) {
+      case "mode":
+        if (text === "auto") return { kind: "resume" };
+        if (text === "heat") return { kind: "heat" };
+        return text === "off" ? { kind: "off", end: undefined } : undefined;
+      case "temperature": {
+        const celsius = Number(text);
+        return text.trim() !== "" && Number.isFinite(celsius)
+          ? { kind: "set_target", celsius, end: undefined }
+          : undefined;
+      }
+      case "preset": {
+        const preset = PRESET_NAMES.find((name) => name === text);
+        return preset === undefined ? undefined : { kind: "set_preset", preset, end: undefined };
+      }
+      case "schedule": {
+        const schedule = state.schedules.find((candidate) => candidate.name === text);
+        return schedule === undefined ? undefined : { kind: "schedule", scheduleId: schedule.id };
+      }
+      case "override_end": {
+        const options = ENTITY_TEXTS[state.language].overrideEndOptions;
+        const rule = END_RULES.find((candidate) => options[candidate] === text);
+        return rule === undefined ? undefined : { kind: "override_end", rule };
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  function onRoomCommand(topic: string, payload: Buffer, retained: boolean): void {
+    if (retained) return;
+    const parts = topic.split("/");
+    const roomId = parts[2];
+    const what = parts[4];
+    const text = payload.toString("utf8");
+    if (parts.length !== 5 || roomId === undefined || what === undefined) return;
+    // `none` is what Home Assistant sends to leave a preset; an override is left by auto instead.
+    if (what === "preset" && text === "none") return;
+    const state = latest;
+    const known = state?.rooms.some((room) => room.managed && room.roomId === roomId) === true;
+    const command = state === undefined || !known ? undefined : parseCommand(state, what, text);
+    if (command === undefined) {
+      warn("a room command was not understood", { topic, payload: text });
+      return;
+    }
+    void (async () => {
+      try {
+        if (command.kind === "schedule" || command.kind === "override_end") {
+          await deps.roomChoice(roomId, command);
+        } else {
+          await deps.roomCommand(roomId, command);
+        }
+      } catch (error) {
+        warn("a room command was refused", { topic, payload: text, err: String(error) });
+      }
+    })();
+  }
+
   function resend(): void {
     published.clear();
     if (latest !== undefined) void sync(latest);
@@ -413,6 +621,7 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
             logError("the stop-writing button failed", error);
           });
         }),
+        mqtt.subscribe(ROOM_COMMANDS_FILTER, onRoomCommand),
         mqtt.subscribe(
           `${options.prefix}/device/${DISCOVERY_NODE}/+/config`,
           (topic, payload, retained) => {
