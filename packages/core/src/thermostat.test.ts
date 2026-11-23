@@ -599,6 +599,36 @@ describe("thermostat", () => {
     });
   });
 
+  describe("thermostatStateToRaw", () => {
+    describe("With an override whose target is NaN", () => {
+      it("throws a RangeError naming the room", () => {
+        const state: ThermostatState = {
+          rooms: new Map([[BUILDER_ROOM, makeThermostat({ target: Number.NaN })]]),
+          valves: new Map(),
+        };
+        expect(() => thermostatStateToRaw(state)).toThrow(RangeError);
+        expect(() => thermostatStateToRaw(state)).toThrow(BUILDER_ROOM);
+      });
+    });
+    describe("With a valve's saved week holding Infinity", () => {
+      it("throws a RangeError naming the valve", () => {
+        const expectation: ValveExpectation = {
+          roomId: BUILDER_ROOM,
+          confirmed: undefined,
+          sent: [],
+          week: { key: "week-key", values: [17, Number.POSITIVE_INFINITY] },
+          previous: undefined,
+        };
+        const state: ThermostatState = {
+          rooms: new Map(),
+          valves: new Map([[BUILDER_VALVE, expectation]]),
+        };
+        expect(() => thermostatStateToRaw(state)).toThrow(RangeError);
+        expect(() => thermostatStateToRaw(state)).toThrow(BUILDER_VALVE);
+      });
+    });
+  });
+
   describe("thermostatStateToRaw / thermostatStateFromRaw", () => {
     describe("With an override from a valve, an off from the api, a valve confirmed auto scheduled with a saved week, a previous week and one sent heat 22, and a taken-over valve", () => {
       it("they round-trip", () => {

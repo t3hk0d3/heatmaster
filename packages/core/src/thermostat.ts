@@ -300,15 +300,35 @@ function weekToRaw(week: SavedWeek | undefined): Record<string, unknown> | undef
   return week === undefined ? undefined : { key: week.key, values: [...week.values] };
 }
 
-/** `{ rooms, valves }` of `state.json`; the store adds `version`. Keys left undefined are left out. */
+/** Every number in `raw`, at any depth, is finite. */
+function allFinite(raw: unknown): boolean {
+  if (typeof raw === "number") return Number.isFinite(raw);
+  if (Array.isArray(raw)) return raw.every(allFinite);
+  if (isRecord(raw)) return Object.values(raw).every(allFinite);
+  return true;
+}
+
+/** `raw` itself; a RangeError naming `what` when it holds a number JSON cannot hold. */
+function finiteRaw(raw: Record<string, unknown>, what: string): Record<string, unknown> {
+  if (!allFinite(raw)) throw new RangeError(`the room state of ${what} holds a non-finite number`);
+  return raw;
+}
+
+/**
+ * `{ rooms, valves }` of `state.json`; the store adds `version`. Keys left undefined are left out.
+ * Throws a RangeError for a state holding a number that is not finite (JSON would write `null`,
+ * and the file could not be read back).
+ */
 export function thermostatStateToRaw(state: ThermostatState): Record<string, unknown> {
   const rooms: Record<string, unknown> = {};
   for (const [roomId, thermostat] of state.rooms) {
-    if (thermostat.kind !== "schedule") rooms[roomId] = thermostatToRaw(thermostat);
+    if (thermostat.kind !== "schedule") {
+      rooms[roomId] = finiteRaw(thermostatToRaw(thermostat), `room ${roomId}`);
+    }
   }
   const valves: Record<string, unknown> = {};
   for (const [valveId, expectation] of state.valves) {
-    valves[valveId] = expectationToRaw(expectation);
+    valves[valveId] = finiteRaw(expectationToRaw(expectation), `valve ${valveId}`);
   }
   return { rooms, valves };
 }
