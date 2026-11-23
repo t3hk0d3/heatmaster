@@ -233,7 +233,10 @@ function judge(valve: JudgedValve, roomId: string): Judging {
     ...e.sent.map((s) => s.wanted),
   ];
   const newest = e.sent[0];
-  // R4.2: `last_seen` is whole seconds, so the write's instant is floored to the second (M14).
+  // R4.2: `heardAt` is the server's receive time of the last message with a new `last_seen`.
+  // An echo that repeats the `last_seen` of a message received up to 1 s before the write keeps
+  // that earlier `heardAt` (`last_seen` is whole seconds), so the write's instant is floored to
+  // the second (M14).
   if (
     newest !== undefined &&
     heardAt !== undefined &&
