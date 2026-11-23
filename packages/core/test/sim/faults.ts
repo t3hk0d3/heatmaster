@@ -154,23 +154,21 @@ export const BY_HAND: ReadonlySet<Fault["k"]> = new Set(["knob", "button", "pers
 export const NOT_OWN: ReadonlySet<Fault["k"]> = new Set([...BY_HAND, "compete", "swap"]);
 
 /**
- * A write to the TRV-ZBT that is lost or late. Its days are write-only, so a day write that does
- * not land while the valve still reports counts as confirmed (R23), and the valve's own points of
- * its old week are then judged against the new one. P-own leaves these out (see the task report).
+ * A write to the TRV-ZBT that is lost, late, or queued (a request queued while the valve is awake
+ * waits for a wake-up that may never come). Its days are write-only, so a day write that does not
+ * land while the valve still reports counts as confirmed (R23), and the valve's own points of its
+ * old week are then judged against the new one. P-own leaves these out: a known limit, in
+ * `docs/backlog.md`.
  */
 export function zbtWriteMissed(fault: Fault): boolean {
-  return (
-    fault.k === "fate" &&
-    fault.valve === 1 &&
-    fault.on !== "read" &&
-    (fault.fate === "lose" || fault.fate === "late")
-  );
+  return fault.k === "fate" && fault.valve === 1 && fault.on !== "read";
 }
 
 /** A fault P-own covers. */
 export function ownFault(fault: Fault): boolean {
   return !NOT_OWN.has(fault.k) && !zbtWriteMissed(fault);
 }
+
 /**
  * Kinds of fault P-keep leaves out after the turn: those P-own leaves out (a competing writer or a
  * battery swap moves a TRV-ZBT to another group, whose points it then takes), and those that

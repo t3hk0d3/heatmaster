@@ -894,6 +894,22 @@ describe("adopt", () => {
           expect(result.thermostat).toEqual(byValve(24));
         });
       });
+      describe("With a person's change on a TRV-ZBT with a saved week", () => {
+        it("its saved week is kept with the adopted state", () => {
+          const week = { key: "k", values: [17, 19, 21] };
+          const result = adopt(
+            input([
+              valve({
+                model: "trv_zbt",
+                shows: seen("auto", 24),
+                expectation: makeExpectation({ confirmed: autoAt(19), week }),
+                ctx: savedCtx([17, 19, 21]),
+              }),
+            ]),
+          );
+          expect(expectationOf(result)).toMatchObject({ confirmed: adoptedAuto(24), week });
+        });
+      });
       describe("With a TRV-ZBT confirmed auto 19 scheduled, the desired week changed and unconfirmed, showing auto 24", () => {
         it("nothing is adopted (known limit)", () => {
           const result = adopt(

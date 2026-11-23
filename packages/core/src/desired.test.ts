@@ -388,7 +388,7 @@ describe("desired", () => {
       values === undefined ? undefined : [...values].sort((a, b) => a - b);
 
     describe("With a week whose value in force is 19 and whose temperatures are 17, 19 and 21", () => {
-      const ctx = thermostatContext(TRVZB, WORK, undefined, weekKey(WORK), undefined, NOON);
+      const ctx = thermostatContext(TRVZB, WORK, undefined, WORK, undefined, NOON);
       it("inForce 19, weekValues 17, 19, 21", () => {
         expect(ctx.inForce).toBe(19);
         expect(sorted(ctx.weekValues)).toEqual([17, 19, 21]);
@@ -397,40 +397,48 @@ describe("desired", () => {
     describe("With a week temperature of 34 on a TRV-ZBT", () => {
       it("weekValues holds 30", () => {
         const hot = weekOf(points("00:00/17 09:00/34"));
-        const ctx = thermostatContext(TRV_ZBT, hot, undefined, weekKey(hot), undefined, NOON);
+        const ctx = thermostatContext(TRV_ZBT, hot, undefined, hot, undefined, NOON);
         expect(ctx.weekValues?.has(30)).toBe(true);
       });
     });
     describe("With no week", () => {
       it("inForce, weekValues and pointValues undefined", () => {
         const heardAt = NOON.epochMilliseconds;
-        expect(
-          thermostatContext(TRV_ZBT, undefined, undefined, weekKey(WORK), heardAt, NOON),
-        ).toEqual({ inForce: undefined, weekValues: undefined, pointValues: undefined });
+        expect(thermostatContext(TRV_ZBT, undefined, undefined, WORK, heardAt, NOON)).toEqual({
+          inForce: undefined,
+          weekValues: undefined,
+          pointValues: undefined,
+        });
       });
     });
     describe("With 08:59 and a point at 09:00 (19 → 21)", () => {
       it("inForce 21", () => {
         const week = weekOf(points("00:00/19 09:00/21"));
         const now = at("08:59");
-        expect(
-          thermostatContext(TRV_ZBT, week, undefined, weekKey(week), undefined, now).inForce,
-        ).toBe(21);
+        expect(thermostatContext(TRV_ZBT, week, undefined, week, undefined, now).inForce).toBe(21);
       });
     });
     describe("With the week unconfirmed and the saved week's key equal to the desired week's", () => {
       const saved: SavedWeek = { key: weekKey(WORK), values: [17, 19, 21] };
-      const ctx = thermostatContext(TRV_ZBT, undefined, saved, weekKey(WORK), undefined, NOON);
+      const ctx = thermostatContext(TRV_ZBT, undefined, saved, WORK, undefined, NOON);
       it("weekValues are the saved values, inForce undefined", () => {
         expect(sorted(ctx.weekValues)).toEqual([17, 19, 21]);
         expect(ctx.inForce).toBeUndefined();
+      });
+    });
+    describe("With the week unconfirmed, the saved week's key equal to the desired week's, and heardAt 22:59:30 next to a point at 23:00 (21 → 17)", () => {
+      it("pointValues 17, 21, taken from the saved week as from a confirmed one", () => {
+        const saved: SavedWeek = { key: weekKey(WORK), values: [17, 19, 21] };
+        const heardAt = at("22:59:30").epochMilliseconds;
+        const ctx = thermostatContext(TRV_ZBT, undefined, saved, WORK, heardAt, NOON);
+        expect(sorted(ctx.pointValues)).toEqual([17, 21]);
       });
     });
     describe("With the week unconfirmed and a different desired week", () => {
       it("weekValues undefined", () => {
         const saved: SavedWeek = { key: weekKey(WORK), values: [17, 19, 21] };
         const other = weekOf(points("00:00/16 07:00/21"));
-        const ctx = thermostatContext(TRV_ZBT, undefined, saved, weekKey(other), undefined, NOON);
+        const ctx = thermostatContext(TRV_ZBT, undefined, saved, other, undefined, NOON);
         expect(ctx.weekValues).toBeUndefined();
       });
     });
@@ -438,7 +446,7 @@ describe("desired", () => {
       it("pointValues 17, 21", () => {
         const week = weekOf(points("00:00/17 07:00/21 22:00/17"));
         const heardAt = at("06:59:30").epochMilliseconds;
-        const ctx = thermostatContext(TRV_ZBT, week, undefined, weekKey(week), heardAt, NOON);
+        const ctx = thermostatContext(TRV_ZBT, week, undefined, week, heardAt, NOON);
         expect(sorted(ctx.pointValues)).toEqual([17, 21]);
       });
     });

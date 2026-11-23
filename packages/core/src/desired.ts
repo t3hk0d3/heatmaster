@@ -135,23 +135,30 @@ function temperaturesNear(week: ResolvedWeek, at: number, timeZone: string): rea
  * What the adapter is told of the valve's week (R18, R23). With a `confirmed` week: `inForce` is
  * its value `SCHEDULE_SKEW_MS` from now, `weekValues` every temperature of it, and `pointValues`
  * every temperature in force within `SCHEDULE_SKEW_MS` of `heardAt` (undefined without it).
- * Without one, while `saved` has the key of the desired week (`fittedKey`), `weekValues` are its
- * values; otherwise all three are undefined. Every temperature is held in the valve's range and
+ * Without one, while `saved` has the key of the desired week (`desired`, the valve's fitted week),
+ * the saved week stands in for the confirmed one: `weekValues` are its values and `pointValues`
+ * are taken from it at `heardAt` as above (it is the desired week, by key); `inForce` stays
+ * undefined. Otherwise all three are undefined. Every temperature is held in the valve's range and
  * rounded to its step.
  */
 export function thermostatContext(
   spec: ValveSpec,
   confirmed: ResolvedWeek | undefined,
   saved: SavedWeek | undefined,
-  fittedKey: string,
+  desired: ResolvedWeek,
   heardAt: number | undefined,
   now: Temporal.ZonedDateTime,
 ): AdapterContext {
+  const points = (week: ResolvedWeek): ReadonlySet<number> | undefined =>
+    heardAt === undefined
+      ? undefined
+      : setpointsOf(spec, temperaturesNear(week, heardAt, now.timeZoneId));
   if (confirmed === undefined) {
+    const kept = saved?.key === weekKey(desired);
     return {
       inForce: undefined,
-      weekValues: saved?.key === fittedKey ? setpointsOf(spec, saved.values) : undefined,
-      pointValues: undefined,
+      weekValues: kept ? setpointsOf(spec, saved.values) : undefined,
+      pointValues: kept ? points(desired) : undefined,
     };
   }
   const ahead = now.add({ milliseconds: SCHEDULE_SKEW_MS });
@@ -161,10 +168,7 @@ export function thermostatContext(
       spec,
       WEEKDAYS.flatMap((day) => confirmed[day].map((point) => point.temperature)),
     ),
-    pointValues:
-      heardAt === undefined
-        ? undefined
-        : setpointsOf(spec, temperaturesNear(confirmed, heardAt, now.timeZoneId)),
+    pointValues: points(confirmed),
   };
 }
 

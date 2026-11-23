@@ -195,9 +195,10 @@ function judge(
   ) {
     return { expectation: e, change: undefined };
   }
-  // R4.6: a person's change.
+  // R4.6: a person's change. The saved week is kept: while the valve's week is unconfirmed it
+  // still gives the points that explain an adopted `auto` value (R23, R24; fix round 1).
   return {
-    expectation: { roomId, confirmed: asWanted(seen), sent: e.sent, week: undefined },
+    expectation: { roomId, confirmed: asWanted(seen), sent: e.sent, week: e.week },
     change: { valveId: valve.valveId, seen, before, heardAt },
   };
 }

@@ -670,7 +670,7 @@ function judgedValve(
     spec,
     confirmed,
     usableSavedWeek(spec, state, saved),
-    key,
+    days,
     state?.heardAt,
     now,
   );

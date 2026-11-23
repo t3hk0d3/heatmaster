@@ -78,7 +78,7 @@ function build(
     /** Sensors no room names yet. */
     extraSensors?: readonly string[];
     /** Options every valve is built with. */
-    valve?: Readonly<{ keyLagMs?: number }>;
+    valve?: Readonly<{ keyLagMs?: number; clockOffsetMs?: number }>;
   }>,
 ): Built {
   const rooms = options.rooms.map(roomOf);
@@ -1115,7 +1115,10 @@ describe("scenarios", () => {
     ];
 
     /** Room `r1` holding the valves, in sync, run for an hour from the builders' Monday noon. */
-    function settledRoom(valves: Placed, options: Readonly<{ keyLagMs?: number }> = {}): SimDriver {
+    function settledRoom(
+      valves: Placed,
+      options: Readonly<{ keyLagMs?: number; clockOffsetMs?: number }> = {},
+    ): SimDriver {
       const { sim } = build({ rooms: [{ id: "r1", valves }], valve: options });
       sim.step(0);
       sim.runTo(HOUR_MS);
@@ -1332,6 +1335,64 @@ describe("scenarios", () => {
           expect(sim.valve(a).truth()).toMatchObject({ mode: "heat", setpoint: value });
           expect(sim.valve(b).truth()).toMatchObject({ mode: "heat", setpoint: value });
         }
+      });
+    });
+
+    describe("A TRV-ZBT override held while writes are held, across a restart", () => {
+      it("the override is kept until its end and the valve's own point is not adopted", () => {
+        // At its clock, and with its clock 90 s ahead: it then takes 22:00's 17 at 21:58:30.
+        for (const clockOffsetMs of [0, 90 * SECOND]) {
+          const sim = settledRoom([[B, "trv_zbt"]], { clockOffsetMs });
+          const config = sim.config().stored?.config;
+          if (config === undefined) throw new Error("no config");
+          // The knob holds 16.5 (17 - 0.5) in auto; writes are held before its heat write goes out.
+          sim.valve(b).knob(-1, sim.now());
+          sim.step(5 * SECOND);
+          const adopted = roomState(sim);
+          expect(adopted).toMatchObject({ kind: "override", target: 16.5 });
+          const held = { ...config, settings: { ...config.settings, holdWrites: true } };
+          expect(sim.planChange(configToRaw(held)).ok).toBe(true);
+          sim.restart();
+          const restartedAt = sim.elapsed();
+          const endsAt = adopted.kind === "override" ? (adopted.endsAt ?? 0) : 0;
+          while (sim.now() + STEP_MS <= endsAt) {
+            sim.step(STEP_MS);
+            expect(roomState(sim)).toEqual(adopted);
+          }
+          runFor(sim, 30 * MINUTE_MS);
+          expect(sim.valve(b).truth()).toMatchObject({ mode: "auto", setpoint: 17 });
+          const saved = savedRooms(sim, restartedAt).filter((t) => t !== undefined);
+          expect(saved.filter((t) => t !== adopted)).toEqual([]);
+          expect(roomState(sim)).toEqual(SCHEDULE);
+        }
+      });
+    });
+
+    describe("A write confirmed by its echo in the same second as the valve's last message (M14)", () => {
+      it("it is confirmed without an ask", () => {
+        const sim = settledRoom([[A, "trvzb"]]);
+        const step = SECOND / 2;
+        sim.step(step);
+        sim.command("r1", { kind: "off", end: undefined });
+        for (let i = 0; i < 18; i++) sim.step(step);
+        // The valve speaks at a whole second; the write goes out half a second later, and the
+        // valve's messages after it carry the same `last_seen`.
+        sim.atNextStep(() => {
+          sim.valve(a).person({}, sim.now());
+        });
+        sim.step(step);
+        sim.step(step);
+        const [write] = thermostatPublishes(sim, a).slice(-1);
+        expect(write?.effect).toMatchObject({ values: { system_mode: "off" } });
+        expect((write?.at ?? 0) % SECOND).toBe(step);
+        sim.step(step);
+        expect(sim.thermostats().valves.get(a)).toMatchObject({
+          confirmed: { mode: "off" },
+          sent: [],
+        });
+        const writtenAt = write?.at ?? 0;
+        runFor(sim, 2 * MINUTE_MS, 5 * SECOND);
+        expect(times(sim, a, "refresh").filter((t) => t * 1000 > writtenAt)).toEqual([]);
       });
     });
 

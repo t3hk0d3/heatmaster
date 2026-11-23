@@ -20,6 +20,12 @@ Known follow-ups left after plans 1 and 2 (0.2.0). None blocks daily use. Each l
   (`valve_not_observed`) before the membership drops it.
 - **TRVZB timer mode for timed overrides, see M10.** The TRVZB's own timer (`temporary_mode_select: timer`) holds a
   temperature in `auto` and ends by itself; it could carry timed overrides instead of Heatmaster's own end time.
+- **Lost or late TRV-ZBT day write (plan 3a).** TRV-ZBT days are write-only, so a day write that is lost, queued or
+  late while the valve still reports counts as confirmed (R23): the valve stays on its old week while Heatmaster judges it
+  against the new one, and the valve's next point of the old week, when its value is not in the new week, is adopted
+  as a person's change — a phantom override until its end rule. Idea: keep the previous week's values explaining a
+  scheduled state until the new week is evidenced. The simulator's P-own leaves these writes out
+  (`zbtWriteMissed` in `packages/core/test/sim/faults.ts`).
 
 ## Release process
 

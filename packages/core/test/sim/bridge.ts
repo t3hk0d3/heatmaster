@@ -47,8 +47,11 @@ interface Entry {
 const TRANSPORT = "z2m";
 const HOUR_MS = 60 * 60 * 1000;
 
+const SECOND_MS = 1000;
+
+/** `last_seen` is whole seconds (M14). */
 function iso(ms: number): string {
-  return Temporal.Instant.fromEpochMilliseconds(ms).toString({ fractionalSecondDigits: 3 });
+  return Temporal.Instant.fromEpochMilliseconds(ms).toString({ smallestUnit: "second" });
 }
 
 function numberOf(value: unknown): number | undefined {
@@ -88,8 +91,11 @@ export function createSimBridge(): SimBridge {
 
   const spoke = (valveId: string, speech: Speech, nowMs: number): void => {
     const entry = entryOf(valveId);
-    // An echo repeats the token of the message before it; the valve's own message has a new one.
-    if (speech.echo !== true) entry.tokenMs = Math.max(nowMs, entry.tokenMs + 1);
+    // An echo repeats the token of the message before it. The valve's own message carries the
+    // second it spoke in (M14), so two of its messages in one second share their `last_seen`.
+    if (speech.echo !== true) {
+      entry.tokenMs = Math.max(Math.floor(nowMs / SECOND_MS) * SECOND_MS, entry.tokenMs);
+    }
     const truth = reported(entry.valve.model, entry.valve.truth());
     if (speech.cause === "read" && speech.keys !== undefined) {
       for (const key of speech.keys) {
