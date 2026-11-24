@@ -230,8 +230,9 @@ room into an override that resuming the schedule clears.
   old week. Heatmaster keeps the week it wrote before until the valve shows a point of the new one: a
   point of that week is not taken for a person's change, and the week is written again. Until the
   valve shows the new week, a TRV-ZBT turned to exactly the old week's value at one of its points is
-  not seen. If the write before was lost too, the valve holds an older week, or one Heatmaster never
-  knew, and one of its points can still be taken for a person's change.
+  not seen. If the write before was lost too, or, after a valve was released and managed again, its
+  first week write is missed, the valve holds an older week, or one Heatmaster never knew, and one of
+  its points can still be taken for a person's change.
 - Heatmaster cannot tell a knob from a write sent through Zigbee2MQTT or Home Assistant. Both show
   as a change made on that valve.
 

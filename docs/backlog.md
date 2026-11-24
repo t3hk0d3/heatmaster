@@ -24,9 +24,10 @@ Known follow-ups left after plans 1 and 2 (0.2.0). None blocks daily use. Each l
   the valve's expectation keeps the week Heatmaster wrote before (recorded when a schedule write is sent) until the
   valve shows a point of the new one, a point of that week is not adopted, and the schedule group is written again.
   The residual: until the new week is evidenced, a person turning the TRV-ZBT to exactly the previous week's value at
-  one of its points is not seen (and the week is re-sent). If the write before was lost too, the valve holds an older
-  week, or one Heatmaster never knew, and one of its points can still be adopted. Reading the valve's days back would end both, if
-  a firmware ever reports them.
+  one of its points is not seen (and the week is re-sent). If the write before was lost too, or, after a valve was
+  released and managed again, its first week write is missed, the valve holds an older week, or one Heatmaster never
+  knew, and one of its points can still be adopted. The simulator's P-own leaves these out (`zbtResidual` in
+  `packages/core/test/sim/faults.ts`). Reading the valve's days back would end both, if a firmware ever reports them.
 
 ## Release process
 
