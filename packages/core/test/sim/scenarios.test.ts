@@ -25,7 +25,7 @@ import {
   simRoom,
   valveIdOf,
 } from "./driver.ts";
-import { weeksMissedInRow } from "./faults.ts";
+import { weekMissedAfterRelease, weeksMissedInRow } from "./faults.ts";
 import {
   TRVZB_AUTO_TAKE_MS,
   TRVZB_WEEK_TAKE_MS,
@@ -1784,12 +1784,35 @@ describe("scenarios", () => {
       return { ...built, id: valveIdOf(A) };
     }
 
+    /**
+     * Schedule writes to the TRV-ZBT, one word each: its week's letter, then `m` missed or `l`
+     * landed; a leading `r` marks the first write after a release.
+     */
+    const writes = (text: string) =>
+      text.split(" ").map((w) => ({
+        week: w.replace(/^r/, "").slice(0, 1),
+        missed: w.endsWith("m"),
+        afterRelease: w.startsWith("r"),
+      }));
+
     describe("weeksMissedInRow", () => {
-      it("is false for single missed schedule writes between landed ones", () => {
-        expect(weeksMissedInRow([false, true, false, true, false])).toBe(false);
+      it("is false for single missed weeks between landed writes", () => {
+        expect(weeksMissedInRow(writes("Al Bm Bl Cm Cl"))).toBe(false);
       });
-      it("is true once two schedule writes in a row missed", () => {
-        expect(weeksMissedInRow([false, true, true, false])).toBe(true);
+      it("is false for one week missed several times in a row", () => {
+        expect(weeksMissedInRow(writes("Al Bm Bm Bm"))).toBe(false);
+      });
+      it("is true once two different weeks missed in a row", () => {
+        expect(weeksMissedInRow(writes("Al Bm Cm Cl"))).toBe(true);
+      });
+    });
+
+    describe("weekMissedAfterRelease", () => {
+      it("is false when the first write after a release landed", () => {
+        expect(weekMissedAfterRelease(writes("Al rBl Cm"))).toBe(false);
+      });
+      it("is true when the first write after a release missed", () => {
+        expect(weekMissedAfterRelease(writes("Al rBm Bl"))).toBe(true);
       });
     });
 

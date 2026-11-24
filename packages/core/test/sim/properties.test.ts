@@ -44,6 +44,9 @@ import {
   ownFault,
   quiesce,
   sensorOf,
+  weekMissedAfterRelease,
+  weeksMissedInRow,
+  zbtResidual,
 } from "./faults.ts";
 import { factoryWeek, reported } from "./valve.ts";
 import type {
@@ -575,8 +578,8 @@ function expectedAfter(sim: SimDriver, turn: TurnMade): Thermostat | undefined {
 /**
  * Watches the plan for P-own and P-keep until `stop`:
  * - P-own: in a plan with nothing done by hand at a valve, no competing writer and no battery
- *   swap, every room stays on its schedule, until two schedule writes in a row to the TRV-ZBT were
- *   lost, late or queued.
+ *   swap, every room stays on its schedule, until the documented residual limit of a lost TRV-ZBT
+ *   week is reached (`zbtResidual`).
  * - P-keep: in a plan with one turn and, after it, only faults P-own covers and no change of
  *   rooms or stores, the room's thermostat holds what the turn left until it ends, and it is adopted
  *   unless the valve stopped showing it before Heatmaster heard it.
@@ -599,8 +602,8 @@ function watchThermostats(
   const elapsed = (): string => `${String(Math.round(sim.elapsed() / 1000))}s`;
   rig.onStep(() => {
     if (!watching) return;
-    // Two missed TRV-ZBT week writes in a row: the documented residual limit (`weeksMissedInRow`).
-    if (own && !rig.zbtWeeksMissedInRow()) {
+    // The documented residual limit of a lost TRV-ZBT week (`zbtResidual`).
+    if (own && !zbtResidual(rig.zbtWeekWrites())) {
       for (const [roomId, t] of sim.thermostats().rooms) {
         found("own.schedule", `${roomId} is ${describeState(t)} at ${elapsed()}`);
       }
@@ -1070,6 +1073,8 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         "the week is sent at least once and at most 7 times in 24 h, and every property holds",
         () => {
           const { report, rig } = execute(plan);
+          // One week, lost however often it is sent: P-own covers it.
+          expect(zbtResidual(rig.zbtWeekWrites())).toBe(false);
           nothingBroken(report);
           const weeks = rig.sim
             .effectsOf(VALVE_IDS[1], "publish")
@@ -1084,7 +1089,33 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
       );
     });
 
-    describe("With two schedule writes in a row to the TRV-ZBT lost after it moved rooms (seed 1838578502, second counterexample)", () => {
+    describe("With the TRV-ZBT released, managed again in another room, and its first week write lost (seed 1578396460)", () => {
+      const plan: FaultPlan = {
+        initial: { ...initial, intervalMin: 1 },
+        steps: [
+          { k: "place", valve: 1, room: null },
+          { k: "fate", valve: 1, on: "any", fate: "lose", delaySeconds: 0, count: 2 },
+          { k: "wait", seconds: 30 },
+          { k: "place", valve: 1, room: "c" },
+          { k: "wait", seconds: 14400 },
+          { k: "fate", valve: 0, on: "any", fate: "lose", delaySeconds: 0, count: 1 },
+          { k: "fate", valve: 0, on: "any", fate: "lose", delaySeconds: 0, count: 1 },
+        ],
+        turn: { valve: 0, clicks: 1 },
+      };
+      it(
+        "P-own leaves it out (the documented residual limit) and every other property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          expect(weekMissedAfterRelease(rig.zbtWeekWrites())).toBe(true);
+          expect(weeksMissedInRow(rig.zbtWeekWrites())).toBe(false);
+          nothingBroken(report);
+        },
+        PLAN_MS,
+      );
+    });
+
+    describe("With the writes of two weeks in a row to the TRV-ZBT lost after it moved rooms (seed 1838578502, second counterexample)", () => {
       const plan: FaultPlan = {
         initial: { ...initial, intervalMin: 1 },
         steps: [
@@ -1106,7 +1137,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         "P-own leaves it out (the documented residual limit) and every other property holds",
         () => {
           const { report, rig } = execute(plan);
-          expect(rig.zbtWeeksMissedInRow()).toBe(true);
+          expect(weeksMissedInRow(rig.zbtWeekWrites())).toBe(true);
           nothingBroken(report);
         },
         PLAN_MS,
@@ -1131,7 +1162,7 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         "P-own covers it (one missed write) and every property holds",
         () => {
           const { report, rig } = execute(plan);
-          expect(rig.zbtWeeksMissedInRow()).toBe(false);
+          expect(zbtResidual(rig.zbtWeekWrites())).toBe(false);
           nothingBroken(report);
         },
         PLAN_MS,

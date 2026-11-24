@@ -157,21 +157,51 @@ export const NOT_OWN: ReadonlySet<Fault["k"]> = new Set([...BY_HAND, "compete", 
  * A fault P-own covers. That includes a lost, late or queued day write to the TRV-ZBT: its days
  * are write-only, so the new week counts as confirmed once the valve speaks, and the points of the
  * week it still runs are explained by the week written before, which has its schedule written
- * again. Two such writes in a row are left out at run time (`Rig.zbtWeeksMissedInRow`).
+ * again. The documented residual is left out at run time (`zbtResidual`).
  */
 export function ownFault(fault: Fault): boolean {
   return !NOT_OWN.has(fault.k);
 }
 
 /**
- * Two or more schedule writes in a row to the TRV-ZBT were lost, late or queued (`fates`, one per
- * day write, in order: true when it missed). The valve may then still run a week older than the one
- * written before the last, or one Heatmaster never knew, and one of its points can be adopted. P-own
- * leaves such a plan out from that moment: the documented residual limit, see "TRV-ZBT knob at the
- * previous week's value" in `docs/backlog.md`. A single missed write stays covered.
+ * One schedule (day) write to the TRV-ZBT: `week` the days it carried, as a text; `missed` when a
+ * fault lost, delayed or queued it; `afterRelease` when the valve's expectation was dropped (it was
+ * released, or otherwise not managed) since the write before it.
  */
-export function weeksMissedInRow(fates: readonly boolean[]): boolean {
-  return fates.some((missed, i) => missed && fates[i + 1] === true);
+export type ZbtWeekWrite = Readonly<{ week: string; missed: boolean; afterRelease: boolean }>;
+
+/**
+ * Writes of two or more different weeks to the TRV-ZBT missed in a row, with none landing between
+ * them. The valve may then still run a week older than the one written before the last, or one
+ * Heatmaster never knew, and one of its points can be adopted. A single missed week stays covered,
+ * however often it is sent again.
+ */
+export function weeksMissedInRow(writes: readonly ZbtWeekWrite[]): boolean {
+  let missed = new Set<string>();
+  for (const w of writes) {
+    if (!w.missed) missed = new Set();
+    else missed.add(w.week);
+    if (missed.size >= 2) return true;
+  }
+  return false;
+}
+
+/**
+ * The first schedule write to the TRV-ZBT after it was released and managed again missed. It is
+ * taken over like a join, with no record of the weeks written before the release, so a point of
+ * the week it still runs can be adopted.
+ */
+export function weekMissedAfterRelease(writes: readonly ZbtWeekWrite[]): boolean {
+  return writes.some((w) => w.missed && w.afterRelease);
+}
+
+/**
+ * The documented residual limit of a lost TRV-ZBT week (see "TRV-ZBT knob at the previous week's
+ * value" in `docs/backlog.md`): `weeksMissedInRow` or `weekMissedAfterRelease`. P-own leaves a plan
+ * out from that moment.
+ */
+export function zbtResidual(writes: readonly ZbtWeekWrite[]): boolean {
+  return weeksMissedInRow(writes) || weekMissedAfterRelease(writes);
 }
 
 /**
@@ -436,8 +466,8 @@ export type Rig = Readonly<{
   apply: (fault: Fault) => void;
   /** The plan: a prelude that joins both valves, then the steps. */
   run: (plan: FaultPlan) => void;
-  /** So far, two schedule writes in a row to the TRV-ZBT were lost, late or queued. */
-  zbtWeeksMissedInRow: () => boolean;
+  /** The schedule writes to the TRV-ZBT so far, oldest first. */
+  zbtWeekWrites: () => readonly ZbtWeekWrite[];
 }>;
 
 function factorySetup(plan: Initial): SimSetup["valves"] {
@@ -545,8 +575,10 @@ export function createRig(start: Initial): Rig {
     retry: undefined,
   };
   faultStates.set(sim, state);
-  /** Per schedule write to the TRV-ZBT, in order: lost, late or queued by a fault. */
-  const zbtDayFates: boolean[] = [];
+  /** Per schedule write to the TRV-ZBT, in order (`ZbtWeekWrite`). */
+  const zbtWrites: ZbtWeekWrite[] = [];
+  /** The TRV-ZBT's expectation was dropped since its last schedule write. */
+  let zbtDropped = false;
   const joins: Join[] = [];
   const turns: TurnMade[] = [];
   let cut = false;
@@ -573,7 +605,12 @@ export function createRig(start: Initial): Rig {
       const i = list.findIndex((f) => f.on === "any" || f.on === request.kind);
       const entry = list[i];
       if (s === 1 && request.kind === "write" && request.write.days !== undefined) {
-        zbtDayFates.push(entry !== undefined);
+        zbtWrites.push({
+          week: JSON.stringify(request.write.days),
+          missed: entry !== undefined,
+          afterRelease: zbtDropped,
+        });
+        zbtDropped = false;
       }
       if (entry === undefined) return undefined;
       list.splice(i, 1);
@@ -672,6 +709,9 @@ export function createRig(start: Initial): Rig {
     const result = sim.step(dtMs);
     const world = sim.tickWorld();
     if (world === undefined) throw new Error("no tick ran");
+    if (zbtWrites.length > 0 && sim.thermostats().valves.get(VALVE_IDS[1]) === undefined) {
+      zbtDropped = true;
+    }
     const info: StepInfo = {
       result,
       world,
@@ -866,7 +906,7 @@ export function createRig(start: Initial): Rig {
     advance,
     apply,
     run,
-    zbtWeeksMissedInRow: () => weeksMissedInRow(zbtDayFates),
+    zbtWeekWrites: () => zbtWrites,
   };
 }
 
