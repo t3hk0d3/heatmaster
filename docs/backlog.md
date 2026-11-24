@@ -23,10 +23,12 @@ Known follow-ups left after plans 1 and 2 (0.2.0). None blocks daily use. Each l
 - **TRV-ZBT knob at the previous week's value (plan 3a).** A lost, queued or late TRV-ZBT day write is now detected:
   the valve's expectation keeps the week Heatmaster wrote before (recorded when a schedule write is sent) until the
   valve shows a point of the new one, a point of that week is not adopted, and the schedule group is written again.
-  The residual: until the new week is evidenced, a person turning the TRV-ZBT to exactly the previous week's value at
-  one of its points is not seen (and the week is re-sent). If the write before was lost too, or, after a valve was
-  released and managed again, its first week write is missed, the valve holds an older week, or one Heatmaster never
-  knew, and one of its points can still be adopted. The simulator's P-own leaves these out (`zbtResidual` in
+  The residual: until the new week is evidenced, a person turning the TRV-ZBT to a value the previous week had in
+  force within ±2 minutes of the report (any time of day, and not in the new week) is not seen (and the week is
+  re-sent). If the write before was lost too, if a valve's first week write is missed after a release, or if a valve
+  with no recorded week (new, taken over after Start over or lost state) misses its first schedule write, nothing
+  explains the old week's points and nothing re-sends the schedule: the false override returns at each old-week point
+  whose value is not in the new week, until the 24 h schedule re-assert. The simulator's P-own leaves these out (`zbtResidual` in
   `packages/core/test/sim/faults.ts`). Reading the valve's days back would end both, if a firmware ever reports them.
 
 ## Release process

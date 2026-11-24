@@ -209,7 +209,8 @@ room's state when it next reports, and the room shows as not in sync until then.
 
 **Known limits.** These are the cases Heatmaster cannot tell from its own writes. They are rare.
 Each either misses a change made on a valve, or takes a Heatmaster write for one, which puts the
-room into an override that resuming the schedule clears.
+room into an override. Resuming the schedule clears it, except for the limit on a TRV-ZBT's
+schedule write, which says what ends it.
 
 - A TRV-ZBT on its schedule turned to a value of its own week changes only that valve until its next
   point. Turned while a changed week is not yet confirmed on it, it is set back once the week is
@@ -229,10 +230,14 @@ room into an override that resuming the schedule clears.
   that is lost or late while the valve still reports counts as confirmed, and the valve stays on its
   old week. Heatmaster keeps the week it wrote before until the valve shows a point of the new one: a
   point of that week is not taken for a person's change, and the week is written again. Until the
-  valve shows the new week, a TRV-ZBT turned to exactly the old week's value at one of its points is
-  not seen. If the write before was lost too, or, after a valve was released and managed again, its
-  first week write is missed, the valve holds an older week, or one Heatmaster never knew, and one of
-  its points can still be taken for a person's change.
+  valve shows the new week, a TRV-ZBT turned to a value the old week had in force within two minutes
+  of the change, at any time of day, is not seen; this only hides a change to a value that is not in
+  the new week. If the write before was lost too, if a valve's first week write is missed after it
+  was released and managed again, or if a valve with no recorded week (newly added, or taken over
+  after Start over or a lost saved state) misses its very first schedule write, nothing explains
+  the old week's points and the week is not written again. The room then shows a false override at
+  each old-week point whose value is not in the new week. Resuming the schedule clears it only
+  until the next such point; the daily schedule write puts it right.
 - Heatmaster cannot tell a knob from a write sent through Zigbee2MQTT or Home Assistant. Both show
   as a change made on that valve.
 
