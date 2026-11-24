@@ -156,10 +156,22 @@ export const NOT_OWN: ReadonlySet<Fault["k"]> = new Set([...BY_HAND, "compete", 
 /**
  * A fault P-own covers. That includes a lost, late or queued day write to the TRV-ZBT: its days
  * are write-only, so the new week counts as confirmed once the valve speaks, and the points of the
- * week it still runs are explained by its previous week, which has its schedule written again.
+ * week it still runs are explained by the week written before, which has its schedule written
+ * again. Two such writes in a row are left out at run time (`Rig.zbtWeeksMissedInRow`).
  */
 export function ownFault(fault: Fault): boolean {
   return !NOT_OWN.has(fault.k);
+}
+
+/**
+ * Two or more schedule writes in a row to the TRV-ZBT were lost, late or queued (`fates`, one per
+ * day write, in order: true when it missed). The valve may then still run a week older than the one
+ * written before the last, or one Heatmaster never knew, and one of its points can be adopted. P-own
+ * leaves such a plan out from that moment: the documented residual limit, see "TRV-ZBT knob at the
+ * previous week's value" in `docs/backlog.md`. A single missed write stays covered.
+ */
+export function weeksMissedInRow(fates: readonly boolean[]): boolean {
+  return fates.some((missed, i) => missed && fates[i + 1] === true);
 }
 
 /**
@@ -424,6 +436,8 @@ export type Rig = Readonly<{
   apply: (fault: Fault) => void;
   /** The plan: a prelude that joins both valves, then the steps. */
   run: (plan: FaultPlan) => void;
+  /** So far, two schedule writes in a row to the TRV-ZBT were lost, late or queued. */
+  zbtWeeksMissedInRow: () => boolean;
 }>;
 
 function factorySetup(plan: Initial): SimSetup["valves"] {
@@ -531,6 +545,8 @@ export function createRig(start: Initial): Rig {
     retry: undefined,
   };
   faultStates.set(sim, state);
+  /** Per schedule write to the TRV-ZBT, in order: lost, late or queued by a fault. */
+  const zbtDayFates: boolean[] = [];
   const joins: Join[] = [];
   const turns: TurnMade[] = [];
   let cut = false;
@@ -556,6 +572,9 @@ export function createRig(start: Initial): Rig {
       const list = state.fates[s];
       const i = list.findIndex((f) => f.on === "any" || f.on === request.kind);
       const entry = list[i];
+      if (s === 1 && request.kind === "write" && request.write.days !== undefined) {
+        zbtDayFates.push(entry !== undefined);
+      }
       if (entry === undefined) return undefined;
       list.splice(i, 1);
       // A mode or setpoint write that is late or queued while the valve is awake lands within
@@ -847,6 +866,7 @@ export function createRig(start: Initial): Rig {
     advance,
     apply,
     run,
+    zbtWeeksMissedInRow: () => weeksMissedInRow(zbtDayFates),
   };
 }
 

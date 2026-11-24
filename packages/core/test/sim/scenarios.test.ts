@@ -25,6 +25,7 @@ import {
   simRoom,
   valveIdOf,
 } from "./driver.ts";
+import { weeksMissedInRow } from "./faults.ts";
 import {
   TRVZB_AUTO_TAKE_MS,
   TRVZB_WEEK_TAKE_MS,
@@ -1782,6 +1783,15 @@ describe("scenarios", () => {
       const built = build({ rooms: [{ id: "r1", valves: [[A, model]] }] });
       return { ...built, id: valveIdOf(A) };
     }
+
+    describe("weeksMissedInRow", () => {
+      it("is false for single missed schedule writes between landed ones", () => {
+        expect(weeksMissedInRow([false, true, false, true, false])).toBe(false);
+      });
+      it("is true once two schedule writes in a row missed", () => {
+        expect(weeksMissedInRow([false, true, true, false])).toBe(true);
+      });
+    });
 
     describe("flushLate", () => {
       it("lands the requests that were running late", () => {

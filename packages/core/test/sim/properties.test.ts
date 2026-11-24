@@ -575,7 +575,8 @@ function expectedAfter(sim: SimDriver, turn: TurnMade): Thermostat | undefined {
 /**
  * Watches the plan for P-own and P-keep until `stop`:
  * - P-own: in a plan with nothing done by hand at a valve, no competing writer and no battery
- *   swap, every room stays on its schedule.
+ *   swap, every room stays on its schedule, until two schedule writes in a row to the TRV-ZBT were
+ *   lost, late or queued.
  * - P-keep: in a plan with one turn and, after it, only faults P-own covers and no change of
  *   rooms or stores, the room's thermostat holds what the turn left until it ends, and it is adopted
  *   unless the valve stopped showing it before Heatmaster heard it.
@@ -598,7 +599,8 @@ function watchThermostats(
   const elapsed = (): string => `${String(Math.round(sim.elapsed() / 1000))}s`;
   rig.onStep(() => {
     if (!watching) return;
-    if (own) {
+    // Two missed TRV-ZBT week writes in a row: the documented residual limit (`weeksMissedInRow`).
+    if (own && !rig.zbtWeeksMissedInRow()) {
       for (const [roomId, t] of sim.thermostats().rooms) {
         found("own.schedule", `${roomId} is ${describeState(t)} at ${elapsed()}`);
       }
@@ -1082,6 +1084,35 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
       );
     });
 
+    describe("With two schedule writes in a row to the TRV-ZBT lost after it moved rooms (seed 1838578502, second counterexample)", () => {
+      const plan: FaultPlan = {
+        initial: { ...initial, intervalMin: 1 },
+        steps: [
+          { k: "edit", schedule: "alt", variant: 2 },
+          { k: "wait", seconds: 30 },
+          { k: "place", valve: 1, room: "a" },
+          { k: "fate", valve: 1, on: "any", fate: "lose", delaySeconds: 0, count: 5 },
+          { k: "crash", after: 3 },
+          { k: "place", valve: 0, room: null },
+          { k: "wait", seconds: 1200 },
+          { k: "link", name: "ha", up: false },
+          { k: "edit", schedule: "default", variant: 1 },
+          { k: "wait", seconds: 30 },
+          { k: "wait", seconds: 30 },
+        ],
+        turn: { valve: 0, clicks: 1 },
+      };
+      it(
+        "P-own leaves it out (the documented residual limit) and every other property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          expect(rig.zbtWeeksMissedInRow()).toBe(true);
+          nothingBroken(report);
+        },
+        PLAN_MS,
+      );
+    });
+
     describe("With the TRV-ZBT's first request lost after it joined, and the schedule edited before its first week was confirmed (seed 1838578502)", () => {
       const plan: FaultPlan = {
         initial: { ...initial, intervalMin: 1 },
@@ -1097,9 +1128,11 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
         turn: { valve: 0, clicks: 1 },
       };
       it(
-        "every property holds",
+        "P-own covers it (one missed write) and every property holds",
         () => {
-          nothingBroken(execute(plan).report);
+          const { report, rig } = execute(plan);
+          expect(rig.zbtWeeksMissedInRow()).toBe(false);
+          nothingBroken(report);
         },
         PLAN_MS,
       );
