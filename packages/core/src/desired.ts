@@ -110,8 +110,31 @@ export function weekKey(week: ResolvedWeek): string {
   ).join(";");
 }
 
+/**
+ * How many results `savedPointValues` keeps. Its inputs change only when a valve speaks or a week
+ * is written, while it is asked every tick for every valve that keeps a previous week.
+ */
+const SAVED_POINTS_KEPT = 64;
+
+/** Parsed `weekKey` texts (null: not a week key) and computed point values, by their inputs. */
+const parsedWeeks = new Map<string, ResolvedWeek | null>();
+const savedPoints = new Map<string, ReadonlySet<number> | null>();
+
+/** `cache`'s value for `key`, computed by `make` and kept when missing; the cache is emptied when full. */
+function cached<T>(cache: Map<string, T>, key: string, make: () => T): T {
+  if (cache.has(key)) return cache.get(key) as T;
+  if (cache.size >= SAVED_POINTS_KEPT) cache.clear();
+  const value = make();
+  cache.set(key, value);
+  return value;
+}
+
 /** The week a `weekKey` text describes, or undefined when the text is not one. */
 function weekOfKey(key: string): ResolvedWeek | undefined {
+  return cached(parsedWeeks, key, () => parseWeekKey(key) ?? null) ?? undefined;
+}
+
+function parseWeekKey(key: string): ResolvedWeek | undefined {
   const texts = key.split(";");
   if (texts.length !== WEEKDAYS.length) return undefined;
   const week: Partial<Record<Weekday, ResolvedDay>> = {};
@@ -206,7 +229,8 @@ export function thermostatContext(
  * Every temperature in force at some instant within `SCHEDULE_SKEW_MS` of `heardAt` in any of
  * `weeks`, saved weeks the valve may still run (R23, a lost day write): read back from their keys,
  * held in the valve's range and rounded to its step. Undefined without `heardAt` or without a week
- * whose key is a `weekKey` text.
+ * whose key is a `weekKey` text. Keys are parsed and results kept by their inputs, so a tick that
+ * asks again for an unchanged valve computes nothing.
  */
 export function savedPointValues(
   spec: ValveSpec,
@@ -214,16 +238,21 @@ export function savedPointValues(
   heardAt: number | undefined,
   timeZone: string,
 ): ReadonlySet<number> | undefined {
-  if (heardAt === undefined) return undefined;
-  const resolved = weeks.flatMap((saved) => {
-    const week = weekOfKey(saved.key);
-    return week === undefined ? [] : [week];
+  if (heardAt === undefined || weeks.length === 0) return undefined;
+  const range = `${String(spec.minTemp)}/${String(spec.maxTemp)}/${String(spec.tempStep)}`;
+  const inputs = [range, String(heardAt), timeZone, ...weeks.map((w) => w.key)].join("|");
+  const points = cached(savedPoints, inputs, () => {
+    const resolved = weeks.flatMap((saved) => {
+      const week = weekOfKey(saved.key);
+      return week === undefined ? [] : [week];
+    });
+    if (resolved.length === 0) return null;
+    return setpointsOf(
+      spec,
+      resolved.flatMap((week) => temperaturesNear(week, heardAt, timeZone)),
+    );
   });
-  if (resolved.length === 0) return undefined;
-  return setpointsOf(
-    spec,
-    resolved.flatMap((week) => temperaturesNear(week, heardAt, timeZone)),
-  );
+  return points ?? undefined;
 }
 
 /** The adapter's wanted state, its setpoint held in the valve's range and rounded to its step. */
