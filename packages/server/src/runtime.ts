@@ -555,8 +555,9 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
    * read). `persisted` is what `pacing.json` holds, undefined when it holds nothing usable.
    * `pacingUnreadableUntil` keeps the problem shown while the made-up empty buckets refill.
    */
-  let buckets: BucketStart = { stamps: new Map(), fallback: 0 };
-  let persisted: PacingStamps | undefined = new Map();
+  type PacingFile = Readonly<{ stamps: PacingStamps; freeAsks: PacingStamps }>;
+  let buckets: BucketStart = { stamps: new Map(), fallback: 0, freeAsks: new Map() };
+  let persisted: PacingFile | undefined = { stamps: new Map(), freeAsks: new Map() };
   let pacingUnreadableUntil: number | undefined;
   /** The error of the last timed or event tick, while it keeps failing; undefined once one runs. */
   let tickError: string | undefined;
@@ -1348,6 +1349,29 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     return outcome;
   }
 
+  /**
+   * The free asks made in the last `REFILL_MS`, by valve, so that a restart loop gets at most one
+   * per valve in that time. A valve with no memory yet keeps the one known of it while configured;
+   * after a file that could not be read every configured valve counts as asked at the start.
+   */
+  function pacingFreeAsks(memory: Memory, nowMs: number): PacingStamps {
+    const kinds = currentMemberships();
+    const recent = (at: number | undefined): at is number =>
+      at !== undefined && nowMs - at < REFILL_MS;
+    const next = new Map<string, number>();
+    for (const [valveId, vm] of memory.valves) {
+      if (recent(vm.freeAskAt)) next.set(valveId, vm.freeAskAt);
+    }
+    for (const [valveId, kind] of kinds) {
+      const configured = kind === "managed" || kind === "releasing" || kind === "frozen";
+      if (next.has(valveId) || memory.valves.has(valveId)) continue;
+      if (!configured && configState === "ok") continue;
+      const at = buckets.freeAsks?.get(valveId) ?? buckets.freeAskFallback;
+      if (recent(at)) next.set(valveId, Math.min(at, nowMs));
+    }
+    return next;
+  }
+
   /** The buckets that are not full, by valve: a full bucket has no entry. */
   function pacingStamps(memory: Memory, nowMs: number): PacingStamps {
     const kinds = currentMemberships();
@@ -1385,14 +1409,14 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
    */
   async function savePacing(memory: Memory, nowMs: number): Promise<void> {
     const next = pacingStamps(memory, nowMs);
-    buckets = { stamps: next, fallback: buckets.fallback };
-    const changed =
-      persisted?.size !== next.size ||
-      [...next].some(([valveId, stamp]) => persisted?.get(valveId) !== stamp);
-    if (!changed) return;
+    const freeAsks = pacingFreeAsks(memory, nowMs);
+    buckets = { ...buckets, stamps: next, freeAsks };
+    const same = (a: PacingStamps | undefined, b: PacingStamps): boolean =>
+      a?.size === b.size && [...b].every(([valveId, stamp]) => a.get(valveId) === stamp);
+    if (same(persisted?.stamps, next) && same(persisted?.freeAsks, freeAsks)) return;
     try {
-      await deps.pacingStore.save(next);
-      persisted = next;
+      await deps.pacingStore.save(next, freeAsks);
+      persisted = { stamps: next, freeAsks };
       storeFailed.pacing = false;
     } catch (error) {
       if (storeFailed.pacing !== true) {
@@ -1505,11 +1529,12 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     // failed read only delays the core by the spacing. A valve with no memory yet starts one with
     // the bucket the tick would start it with.
     const bucketFullAt = buckets.stamps.get(valveId) ?? buckets.fallback;
-    applyCore({ kind: "asked_directly", valveId, at: nowMs, bucketFullAt }, nowMs);
+    const freeAskAt = buckets.freeAsks?.get(valveId) ?? buckets.freeAskFallback;
+    applyCore({ kind: "asked_directly", valveId, at: nowMs, bucketFullAt, freeAskAt }, nowMs);
     await found.transport.read(valveId, payload);
     // And again once it went out, so the spacing is measured from the end of a slow send.
     const sentAt = clock.nowMs();
-    applyCore({ kind: "asked_directly", valveId, at: sentAt, bucketFullAt }, sentAt);
+    applyCore({ kind: "asked_directly", valveId, at: sentAt, bucketFullAt, freeAskAt }, sentAt);
   }
 
   /** Asks each valve directly; a refusal (its limit, an unusable transport) is logged at info. */
@@ -1864,8 +1889,14 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       const startedAt = clock.nowMs();
       const unreadable = pacing.state === "unreadable";
       const emptyAt = startedAt + BUCKET * REFILL_MS;
-      buckets = { stamps: pacing.stamps, fallback: unreadable ? emptyAt : 0 };
-      persisted = unreadable ? undefined : pacing.stamps;
+      // A file that cannot be read may have held a free ask: every valve counts as asked now.
+      buckets = {
+        stamps: pacing.stamps,
+        fallback: unreadable ? emptyAt : 0,
+        freeAsks: pacing.freeAsks,
+        ...(unreadable ? { freeAskFallback: startedAt } : {}),
+      };
+      persisted = unreadable ? undefined : { stamps: pacing.stamps, freeAsks: pacing.freeAsks };
       pacingUnreadableUntil = unreadable ? emptyAt : undefined;
       if (unreadable) log.error("the saved write budget cannot be read; every valve starts empty");
       // R10: while the room states cannot be read, no mode or setpoint is written.

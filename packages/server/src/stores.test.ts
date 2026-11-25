@@ -1109,6 +1109,10 @@ describe("stores — pacing.json", () => {
           "a bucketFullAt that is not finite",
           { version: 1, valves: { a: { bucketFullAt: null } } },
         ],
+        [
+          "a freeAskAt that is not a finite number",
+          { version: 1, valves: { a: { bucketFullAt: 0, freeAskAt: "x" } } },
+        ],
       ])(
         "reports unreadable (%s); the caller starts with empty buckets",
         async (_name, content) => {
@@ -1119,6 +1123,22 @@ describe("stores — pacing.json", () => {
           expect(loaded.stamps.size).toBe(0);
         },
       );
+    });
+    describe("With an entry holding freeAskAt and one without", () => {
+      it("loads the free ask of the first only", async () => {
+        const w = world();
+        put(w.file("pacing.json"), {
+          version: 1,
+          valves: {
+            a: { bucketFullAt: START_MS, freeAskAt: START_MS - 60_000 },
+            b: { bucketFullAt: START_MS },
+          },
+        });
+        const loaded = await createPacingStore(w.dataDir).load();
+        expect(loaded.state).toBe("ok");
+        expect([...loaded.freeAsks]).toEqual([["a", START_MS - 60_000]]);
+        expect(loaded.stamps.size).toBe(2);
+      });
     });
     describe("With version other than 1", () => {
       it.each([0, 2, "1"])("reports unreadable (version %s)", async (version) => {
@@ -1151,6 +1171,32 @@ describe("stores — pacing.json", () => {
       const error = await rejectionOf(store.save(new Map([["z2m:c", START_MS]])));
       expect((error as NodeJS.ErrnoException).code).toBe("EISDIR");
       expect(readFileSync(w.file("pacing.json"), "utf8")).toBe(before);
+    });
+    it("with free asks, writes freeAskAt beside bucketFullAt; a valve with a free ask only gets it as its bucketFullAt (a full bucket)", async () => {
+      const w = world();
+      await createPacingStore(w.dataDir).save(
+        STAMPS,
+        new Map([
+          ["z2m:a", START_MS - 60_000],
+          ["z2m:c", START_MS - 120_000],
+        ]),
+      );
+      expect(jsonOf(w.file("pacing.json"))).toEqual({
+        version: 1,
+        valves: {
+          "z2m:a": { bucketFullAt: START_MS + 3_600_000, freeAskAt: START_MS - 60_000 },
+          "z2m:b": { bucketFullAt: START_MS + 7_200_000 },
+          "z2m:c": { bucketFullAt: START_MS - 120_000, freeAskAt: START_MS - 120_000 },
+        },
+      });
+    });
+    it("round trip save -> load returns the same free asks", async () => {
+      const w = world();
+      const freeAsks = new Map([["z2m:a", START_MS - 60_000]]);
+      await createPacingStore(w.dataDir).save(STAMPS, freeAsks);
+      const loaded = await createPacingStore(w.dataDir).load();
+      expect(new Map(loaded.freeAsks)).toEqual(freeAsks);
+      expect(new Map(loaded.stamps)).toEqual(STAMPS);
     });
     it("round trip save -> load returns the same stamps", async () => {
       const w = world();

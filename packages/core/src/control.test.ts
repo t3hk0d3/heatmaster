@@ -1364,13 +1364,14 @@ describe("control", () => {
         ]);
       });
     });
-    describe("With a valve that has no tokens left", () => {
+    describe("With a valve that has no tokens left and was asked before in this run", () => {
       it("no refresh", () => {
         const spec = makeSpec("trvzb");
         let vm = newValveMemory(spec, NOW_MS - 20 * SECOND_MS);
         for (let i = 0; i < START_TOKENS; i++) {
           vm = charge(vm, "schedule", NOW_MS - (10 - i) * SECOND_MS, false);
         }
+        vm = { ...vm, firstAsk: false };
         const world = withVm(withState(makeManaged(), newState(NOW_MS - HOUR_MS)), vm);
         expect(valveEffects(tick(world))).toEqual([]);
       });
@@ -2978,6 +2979,47 @@ describe("control", () => {
         const full = fresh({ stamps: new Map(), fallback: 0 });
         // The valve has not been heard, so the tick asks it once: one token.
         expect(tokensAt(vmOf(tick(full)), now)).toBe(BUCKET - 1);
+      });
+    });
+    describe("With a valve that has no memory and an empty bucket (a restart)", () => {
+      const now = nowOf(fresh(undefined));
+      const world = fresh({ stamps: new Map([[V, now + BUCKET * REFILL_MS]]), fallback: 0 });
+      it("the first tick asks it to report, without a token", () => {
+        const result = tick(world);
+        expect(valveEffects(result)).toEqual([{ kind: "refresh", valveId: V }]);
+        expect(tokensAt(vmOf(result), now)).toBe(0);
+      });
+      it("the next tick, 2 min later and with the valve not heard again, does not ask again", () => {
+        const first = tick(world);
+        expect(valveEffects(tick(next(world, first, 2 * MINUTE_MS + 1)))).toEqual([]);
+      });
+      it("its memory stamps the free ask now", () => {
+        expect(vmOf(tick(world)).freeAskAt).toBe(now);
+      });
+    });
+    describe("With an empty bucket and a free ask 29 min / 30 min before the start", () => {
+      it("the first tick does not ask / asks", () => {
+        const now = nowOf(fresh(undefined));
+        const empty = (ago: number): World =>
+          fresh({
+            stamps: new Map([[V, now + BUCKET * REFILL_MS]]),
+            fallback: 0,
+            freeAsks: new Map([[V, now - ago]]),
+          });
+        expect(valveEffects(tick(empty(29 * MINUTE_MS)))).toEqual([]);
+        expect(valveEffects(tick(empty(REFILL_MS)))).toEqual([{ kind: "refresh", valveId: V }]);
+      });
+    });
+    describe("With an empty bucket, no free ask stamp and the free ask fallback now (an unreadable file)", () => {
+      it("the first tick does not ask", () => {
+        const now = nowOf(fresh(undefined));
+        const world = fresh({
+          stamps: new Map(),
+          fallback: now + BUCKET * REFILL_MS,
+          freeAsks: new Map(),
+          freeAskFallback: now,
+        });
+        expect(valveEffects(tick(world))).toEqual([]);
       });
     });
     describe("With a valve that already has memory", () => {

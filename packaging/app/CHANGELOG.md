@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- After a start, a valve whose request budget is empty is still asked to report once, without a token, at most once
+  every 30 minutes per valve (kept in `pacing.json` as `freeAskAt`). A change made on a valve while Heatmaster was
+  stopped is seen at once instead of after up to 30 minutes, and the room leaves `unverified` sooner. Writes keep the
+  saved budget. A restart loop can now send a valve up to 6 + 2 × 48 requests a day instead of 6 + 48.
+
 ## 0.3.0
 
 - Each room is one thermostat with a state: following its schedule, an override, or off. Heatmaster now sets

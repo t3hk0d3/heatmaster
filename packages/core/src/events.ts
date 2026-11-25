@@ -8,7 +8,7 @@ import {
 } from "./memory.ts";
 import type { GroupMemory, Memory, ValveMemory } from "./memory.ts";
 import { stopped } from "./feed.ts";
-import { importBucket } from "./pacing.ts";
+import { importBucket, importFreeAsk } from "./pacing.ts";
 import {
   VALVE_SILENT_AFTER_MS,
   countsAsHeard,
@@ -34,10 +34,16 @@ export type Event =
   | Readonly<{ kind: "sent"; valveId: string; what: "refresh" | "publish"; at: number }>
   /**
    * A read a user triggered went out: it counts for the valve's spacing, not for tokens or asks.
-   * A valve with no memory yet starts one with `bucketFullAt` (see `importBucket`), the bucket the
-   * tick would start it with, so that the stamp is kept.
+   * A valve with no memory yet starts one with `bucketFullAt` (see `importBucket`) and `freeAskAt`
+   * (see `importFreeAsk`), as the tick would start it, so that the stamps are kept.
    */
-  | Readonly<{ kind: "asked_directly"; valveId: string; at: number; bucketFullAt: number }>;
+  | Readonly<{
+      kind: "asked_directly";
+      valveId: string;
+      at: number;
+      bucketFullAt: number;
+      freeAskAt: number | undefined;
+    }>;
 
 export type Inbox = Readonly<{
   states: ReadonlyMap<string, DeviceState>;
@@ -158,7 +164,11 @@ function askedDirectly(
     inbox.memory.valves.get(event.valveId) ??
     (spec === undefined
       ? undefined
-      : importBucket(newValveMemory(spec, event.at), event.bucketFullAt, event.at));
+      : importFreeAsk(
+          importBucket(newValveMemory(spec, event.at), event.bucketFullAt, event.at),
+          event.freeAskAt,
+          event.at,
+        ));
   if (vm === undefined) return inbox;
   const lastWriteAt = Math.max(vm.lastWriteAt ?? event.at, event.at);
   return { ...inbox, memory: withValve(inbox.memory, event.valveId, { ...vm, lastWriteAt }) };

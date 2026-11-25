@@ -86,11 +86,15 @@ export type PacingStamps = ReadonlyMap<string, number>;
 
 /**
  * `load` never rejects: no file gives no stamps, a file that cannot be read gives `unreadable`.
- * `save` replaces the whole file.
+ * `save` replaces the whole file. `freeAsks` holds per valve the time of its last free ask (see
+ * `importFreeAsk` in core), kept as an optional `freeAskAt` beside `bucketFullAt`; a valve with a
+ * free ask and a full bucket is written with `bucketFullAt` equal to it, which reads as full.
  */
 export type PacingStore = Readonly<{
-  load(): Promise<Readonly<{ state: "ok" | "unreadable"; stamps: PacingStamps }>>;
-  save(stamps: PacingStamps): Promise<void>;
+  load(): Promise<
+    Readonly<{ state: "ok" | "unreadable"; stamps: PacingStamps; freeAsks: PacingStamps }>
+  >;
+  save(stamps: PacingStamps, freeAsks?: PacingStamps): Promise<void>;
 }>;
 
 /**
@@ -530,20 +534,26 @@ export function createLedgerStore(dirs: StoreDirs, clock: Clock, appVersion: str
   };
 }
 
-function stampsFromData(data: unknown): PacingStamps {
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function stampsFromData(data: unknown): Readonly<{ stamps: PacingStamps; freeAsks: PacingStamps }> {
   if (!isFile(data)) throw new Error("the valves are not an object");
   const stamps = new Map<string, number>();
+  const freeAsks = new Map<string, number>();
   for (const [valveId, entry] of Object.entries(data)) {
-    if (
-      !isFile(entry) ||
-      typeof entry.bucketFullAt !== "number" ||
-      !Number.isFinite(entry.bucketFullAt)
-    ) {
+    if (!isFile(entry) || !isFiniteNumber(entry.bucketFullAt)) {
       throw new Error(`the entry of ${valveId} has no bucketFullAt`);
     }
     stamps.set(valveId, entry.bucketFullAt);
+    if (entry.freeAskAt === undefined) continue;
+    if (!isFiniteNumber(entry.freeAskAt)) {
+      throw new Error(`the entry of ${valveId} has a freeAskAt that is not a number`);
+    }
+    freeAsks.set(valveId, entry.freeAskAt);
   }
-  return stamps;
+  return { stamps, freeAsks };
 }
 
 export function createPacingStore(dataDir: string): PacingStore {
@@ -551,21 +561,23 @@ export function createPacingStore(dataDir: string): PacingStore {
   return {
     async load() {
       const read = await readJson(file);
-      if (read.kind === "missing") return { state: "ok", stamps: new Map() };
+      if (read.kind === "missing") return { state: "ok", stamps: new Map(), freeAsks: new Map() };
       if (read.kind === "ok") {
         try {
-          return { state: "ok", stamps: stampsFromData(migratePacingFile(read.file).valves) };
+          return { state: "ok", ...stampsFromData(migratePacingFile(read.file).valves) };
         } catch {
           // fall through: unreadable
         }
       }
-      return { state: "unreadable", stamps: new Map() };
+      return { state: "unreadable", stamps: new Map(), freeAsks: new Map() };
     },
 
-    async save(stamps) {
-      const valves: Record<string, { bucketFullAt: number }> = {};
-      for (const valveId of [...stamps.keys()].sort()) {
-        valves[valveId] = { bucketFullAt: stamps.get(valveId) ?? 0 };
+    async save(stamps, freeAsks = new Map()) {
+      const valves: Record<string, { bucketFullAt: number; freeAskAt?: number }> = {};
+      for (const valveId of [...new Set([...stamps.keys(), ...freeAsks.keys()])].sort()) {
+        const freeAskAt = freeAsks.get(valveId);
+        const bucketFullAt = stamps.get(valveId) ?? freeAskAt ?? 0;
+        valves[valveId] = freeAskAt === undefined ? { bucketFullAt } : { bucketFullAt, freeAskAt };
       }
       await writeAtomic(file, render({ version: PACING_FILE_VERSION, valves }));
     },

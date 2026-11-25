@@ -10,6 +10,7 @@ import {
   REFILL_MS,
   exportBucket,
   importBucket,
+  importFreeAsk,
   mayAsk,
   maySpend,
   mayWrite,
@@ -365,6 +366,20 @@ describe("pacing", () => {
     });
   });
 
+  describe("importFreeAsk", () => {
+    describe("With no stamp", () => {
+      it("freeAskAt is undefined", () => {
+        expect(importFreeAsk(unmarked(), undefined, T0).freeAskAt).toBeUndefined();
+      });
+    });
+    describe("With a stamp before now / after now (the clock was set back)", () => {
+      it("freeAskAt is the stamp / now", () => {
+        expect(importFreeAsk(unmarked(), T0 - MINUTE_MS, T0).freeAskAt).toBe(T0 - MINUTE_MS);
+        expect(importFreeAsk(unmarked(), T0 + HOUR_MS, T0).freeAskAt).toBe(T0);
+      });
+    });
+  });
+
   describe("mayAsk", () => {
     describe("With a new valve memory", () => {
       it("returns true", () => {
@@ -379,9 +394,23 @@ describe("pacing", () => {
         expect(mayAsk(asks([0]), now)).toBe(false);
       });
     });
-    describe("With no tokens left", () => {
+    describe("With no tokens left, the memory's first ask not sent yet and no free ask before", () => {
+      it("returns true", () => {
+        expect(mayAsk(drained(), T0 + 8 * SECOND_MS)).toBe(true);
+      });
+    });
+    describe("With no tokens left after the memory's first ask", () => {
       it("returns false", () => {
-        expect(mayAsk(drained(), T0 + 8 * SECOND_MS)).toBe(false);
+        const vm = chargeAsk(drained(), TRV_ZBT, T0 + 8 * SECOND_MS);
+        expect(mayAsk(noteHeard(vm), T0 + 10 * SECOND_MS)).toBe(false);
+      });
+    });
+    describe("With no tokens left, the first ask not sent yet and a free ask 29 min / 30 min ago", () => {
+      it("returns false / true", () => {
+        const now = T0 + 8 * SECOND_MS;
+        const at = (ago: number): ValveMemory => importFreeAsk(drained(), now - ago, now);
+        expect(mayAsk(at(29 * MINUTE_MS), now)).toBe(false);
+        expect(mayAsk(at(REFILL_MS), now)).toBe(true);
       });
     });
     describe("With 1 ask, 1 min ago / 3 min ago", () => {
@@ -440,10 +469,31 @@ describe("pacing", () => {
         expect(vm.lastWriteAt).toBe(T0);
         expect(chargeAsk(vm, TRV_ZBT, T0 + 3 * MINUTE_MS).asks).toEqual([T0, T0 + 3 * MINUTE_MS]);
       });
+      it("the memory's first ask is used and no free ask is stamped", () => {
+        expect(before.firstAsk).toBe(true);
+        expect(vm.firstAsk).toBe(false);
+        expect(vm.freeAskAt).toBeUndefined();
+      });
       it("no WriteRecord is added to any group", () => {
         for (const gs of TRV_ZBT.groups) {
           expect(vm.groups[gs.group]?.writes).toEqual([]);
         }
+      });
+    });
+    describe("With no tokens left and the memory's first ask not sent yet", () => {
+      const now = T0 + 8 * SECOND_MS;
+      const before = drained();
+      const vm = chargeAsk(before, TRV_ZBT, now);
+      it("no token is taken: the bucket is as before", () => {
+        expect(exportBucket(vm, now)).toBe(exportBucket(before, now));
+      });
+      it("lastWriteAt is now, now is appended to asks and the first ask is used", () => {
+        expect(vm.lastWriteAt).toBe(now);
+        expect(vm.asks).toEqual([now]);
+        expect(vm.firstAsk).toBe(false);
+      });
+      it("the free ask is stamped now", () => {
+        expect(vm.freeAskAt).toBe(now);
       });
     });
     describe("With a marked readable group", () => {

@@ -404,12 +404,12 @@ function wrapConfig(store: ConfigStore, control: StoreControl): ConfigStore {
 function wrapPacing(store: PacingStore, control: StoreControl): PacingStore {
   return {
     load: () => store.load(),
-    async save(stamps) {
+    async save(stamps, freeAsks) {
       if (control.fail.pacing > 0) {
         control.fail.pacing -= 1;
         throw failure();
       }
-      await store.save(stamps);
+      await store.save(stamps, freeAsks);
       control.pacingSaves.push(control.sendsSoFar());
     },
   };
@@ -4324,20 +4324,51 @@ describe("runtime", () => {
     };
 
     describe("On start with stamps saved by a previous run", () => {
-      it("a valve whose bucket was empty makes no write until its token refills", async () => {
+      it("a valve whose bucket was empty is asked to report once, free, and gets nothing else until its token refills", async () => {
         const rig = await boot({
           seed: { ...managedSeed([A]), pacing: { [A]: T + BUCKET * REFILL_MS } },
         });
         await rig.advance(REFILL_MS - 2 * MINUTE);
-        expect(requests(rig)).toBe(0);
-        expect(rig.z2m.attempts()).toEqual([]);
+        expect(sends(rig, A).map((s) => s.kind)).toEqual(["read"]);
         await rig.advance(3 * MINUTE);
-        expect(requests(rig)).toBe(1);
+        expect(requests(rig)).toBe(2);
+      });
+      it("the free ask is saved in pacing.json as freeAskAt, so a restart within 30 min makes none", async () => {
+        const rig = await boot({
+          seed: { ...managedSeed([A]), pacing: { [A]: T + BUCKET * REFILL_MS } },
+        });
+        const file = readJson(path.join(rig.dataDir, "pacing.json")) as {
+          valves: Record<string, { freeAskAt?: number }>;
+        };
+        expect(file.valves[A]?.freeAskAt).toBe(T);
+        const again = await boot({ after: rig });
+        await again.advance(10 * MINUTE);
+        expect(requests(again)).toBe(0);
+      });
+      it("with a free ask saved 10 min before the start, the valve's free ask waits until 30 min after that one", async () => {
+        const rig = await boot({
+          seed: { ...managedSeed([A]), pacing: { [A]: T + BUCKET * REFILL_MS } },
+          start: false,
+        });
+        const file = path.join(rig.dataDir, "pacing.json");
+        writeFileSync(
+          file,
+          JSON.stringify({
+            version: 1,
+            valves: { [A]: { bucketFullAt: T + BUCKET * REFILL_MS, freeAskAt: T - 10 * MINUTE } },
+          }),
+        );
+        await rig.rt.start();
+        await rig.rt.settled();
+        await rig.advance(REFILL_MS - 10 * MINUTE - TICK_INTERVAL_MS);
+        expect(requests(rig)).toBe(0);
+        await rig.advance(2 * TICK_INTERVAL_MS);
+        expect(sends(rig, A).map((s) => s.kind)).toEqual(["read"]);
       });
     });
 
     describe("Restart loop (start, ask until empty, stop, start again, repeat)", () => {
-      it("total requests to one valve over 24 h of simulated time <= BUCKET + 24 h / REFILL_MS", async () => {
+      it("total requests to one valve over 24 h of simulated time <= BUCKET + 24 h / REFILL_MS, plus one free ask per REFILL_MS", async () => {
         let rig = await boot({ seed: managedSeed([A]) });
         await rig.advance(14 * MINUTE);
         for (let run = 1; run < (24 * HOUR) / (15 * MINUTE); run++) {
@@ -4345,7 +4376,7 @@ describe("runtime", () => {
           await rig.advance(14 * MINUTE);
         }
         const total = rigs.reduce((sum, each) => sum + requests(each), 0);
-        expect(total).toBeLessThanOrEqual(BUCKET + (24 * HOUR) / REFILL_MS);
+        expect(total).toBeLessThanOrEqual(BUCKET + (2 * 24 * HOUR) / REFILL_MS);
         // Not vacuous: the valve did use its budget.
         expect(total).toBeGreaterThanOrEqual(BUCKET);
       }, 120_000);
@@ -4462,14 +4493,14 @@ describe("runtime", () => {
     });
 
     describe("With a stamp later than a whole empty bucket away", () => {
-      it("it counts as an empty bucket: the first token comes after REFILL_MS", async () => {
+      it("it counts as an empty bucket: after the free ask at the start, the first token comes after REFILL_MS", async () => {
         const rig = await boot({
           seed: { ...managedSeed([A]), pacing: { [A]: T + 100 * REFILL_MS } },
         });
         await rig.advance(REFILL_MS - MINUTE);
-        expect(requests(rig)).toBe(0);
-        await rig.advance(2 * MINUTE);
         expect(requests(rig)).toBe(1);
+        await rig.advance(2 * MINUTE);
+        expect(requests(rig)).toBe(2);
       });
     });
   });

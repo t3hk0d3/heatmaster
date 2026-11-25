@@ -146,13 +146,37 @@ export function spend(vm: ValveMemory, nowMs: number): ValveMemory {
   return take(vm, nowMs);
 }
 
-export function mayAsk(vm: ValveMemory, nowMs: number): boolean {
-  return spaced(vm, nowMs) && hasToken(vm, nowMs) && backedOff(vm.asks, nowMs);
+/**
+ * Sets the time of the valve's last free ask from a stamp kept across a restart. A stamp after
+ * `nowMs` (the clock went back) counts as `nowMs`.
+ */
+export function importFreeAsk(
+  vm: ValveMemory,
+  freeAskAt: number | undefined,
+  nowMs: number,
+): ValveMemory {
+  return { ...vm, freeAskAt: freeAskAt === undefined ? undefined : Math.min(freeAskAt, nowMs) };
 }
 
-/** For a refresh: also stamps `askedAt` on the mark of every marked readable group. */
+/** The memory's first ask, with no free ask in the last `REFILL_MS`: it may go without a token. */
+function freeAsk(vm: ValveMemory, nowMs: number): boolean {
+  return vm.firstAsk && (vm.freeAskAt === undefined || since(vm.freeAskAt, nowMs) >= REFILL_MS);
+}
+
+export function mayAsk(vm: ValveMemory, nowMs: number): boolean {
+  return (
+    spaced(vm, nowMs) && (hasToken(vm, nowMs) || freeAsk(vm, nowMs)) && backedOff(vm.asks, nowMs)
+  );
+}
+
+/**
+ * For a refresh: takes a token, or with none left uses the free ask (`freeAskAt` becomes now), and
+ * stamps `askedAt` on the mark of every marked readable group.
+ */
 export function chargeAsk(vm: ValveMemory, spec: ValveSpec, nowMs: number): ValveMemory {
-  let next: ValveMemory = { ...take(vm, nowMs), asks: keptAsks([...vm.asks, nowMs]) };
+  const free = !hasToken(vm, nowMs) && freeAsk(vm, nowMs);
+  const paid = free ? { ...vm, lastWriteAt: nowMs, freeAskAt: nowMs } : take(vm, nowMs);
+  let next: ValveMemory = { ...paid, firstAsk: false, asks: keptAsks([...vm.asks, nowMs]) };
   for (const gs of spec.groups) {
     const gm = next.groups[gs.group];
     if (!gs.readable || gm?.mark === undefined) continue;

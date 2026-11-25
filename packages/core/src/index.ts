@@ -153,6 +153,7 @@ export {
   chargeAsk,
   exportBucket,
   importBucket,
+  importFreeAsk,
   mayAsk,
   maySpend,
   mayWrite,

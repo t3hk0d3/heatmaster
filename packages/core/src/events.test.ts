@@ -595,7 +595,7 @@ describe("events", () => {
       const base = inboxOf([[Z1, live(T0)]], [[Z1, before]]);
       const out = apply(
         base,
-        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt: T0 },
+        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt: T0, freeAskAt: undefined },
         T0 + 1,
       );
       it("no refresh or setpoint write is allowed before t + SPACING_MS", () => {
@@ -622,7 +622,7 @@ describe("events", () => {
       const later = { ...unmarked(), lastWriteAt: t + 5 * SECOND_MS };
       const out = apply(
         inboxOf([[Z1, live(T0)]], [[Z1, later]]),
-        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt: T0 },
+        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt: T0, freeAskAt: undefined },
         T0 + 1,
       );
       it("lastWriteAt is not lowered", () => {
@@ -630,11 +630,30 @@ describe("events", () => {
       });
     });
 
+    describe("With a direct ask to a valve that has no ValveMemory and a free ask stamp", () => {
+      it("its memory starts with that free ask", () => {
+        const t = T0 + 10 * SECOND_MS;
+        const event = {
+          kind: "asked_directly" as const,
+          valveId: Z1,
+          at: t,
+          bucketFullAt: T0,
+          freeAskAt: t - 60 * SECOND_MS,
+        };
+        expect(valve(apply(inboxOf([[Z1, live(T0)]]), event, T0), Z1).freeAskAt).toBe(
+          t - 60 * SECOND_MS,
+        );
+      });
+    });
     describe("With a direct ask to a valve that has no ValveMemory", () => {
       const t = T0 + 10 * SECOND_MS;
       const bucketFullAt = t + 3 * REFILL_MS;
       const base = inboxOf([[Z1, live(T0)]]);
-      const out = apply(base, { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt }, T0);
+      const out = apply(
+        base,
+        { kind: "asked_directly", valveId: Z1, at: t, bucketFullAt, freeAskAt: undefined },
+        T0,
+      );
       it("its memory starts at t with the bucket the event gives, lastWriteAt t", () => {
         const fresh = importBucket(newValveMemory(SPEC, t), bucketFullAt, t);
         expect(valve(out, Z1)).toEqual({ ...fresh, lastWriteAt: t });
@@ -654,7 +673,17 @@ describe("events", () => {
       const base = inboxOf([[SENSOR, live(T0)]]);
       it("the inbox is unchanged", () => {
         expect(
-          apply(base, { kind: "asked_directly", valveId: SENSOR, at: T0, bucketFullAt: T0 }, T0),
+          apply(
+            base,
+            {
+              kind: "asked_directly",
+              valveId: SENSOR,
+              at: T0,
+              bucketFullAt: T0,
+              freeAskAt: undefined,
+            },
+            T0,
+          ),
         ).toEqual(base);
       });
     });

@@ -24,6 +24,9 @@ export type GroupMemory = Readonly<{
  * heard, oldest first (only the newest 4 are kept; a group's `writes` keeps at most 7, see
  * pacing). `lastWriteAt` is the last write, setpoint write or refresh. `lastPushAt` is
  * the last temperature push since this memory was created; `stopped` does not clear it.
+ * `firstAsk` is true until the memory's first refresh. That ask needs no token when the bucket is
+ * empty and no free ask went out in the last `REFILL_MS` (`freeAskAt`, kept across a restart), so a
+ * valve whose bucket ran dry before a restart is still asked to report at the start.
  */
 export type ValveMemory = Readonly<{
   groups: Readonly<Partial<Record<Group, GroupMemory>>>;
@@ -31,6 +34,8 @@ export type ValveMemory = Readonly<{
   tokensAt: number;
   lastWriteAt: number | undefined;
   asks: readonly number[];
+  firstAsk: boolean;
+  freeAskAt: number | undefined;
   nudgeDue: boolean;
   feedValue: number | undefined;
   feedAt: number | undefined;
@@ -92,6 +97,8 @@ export function newValveMemory(spec: ValveSpec, nowMs: number): ValveMemory {
     tokensAt: nowMs,
     lastWriteAt: undefined,
     asks: [],
+    firstAsk: true,
+    freeAskAt: undefined,
     nudgeDue: false,
     feedValue: undefined,
     feedAt: undefined,

@@ -489,10 +489,13 @@ it also sets the valve's mode and setpoint to follow the room's state, and its f
 on release, with one exception: **the setpoint is put back only when the original mode was `heat`**,
 because a setpoint written to a TRVZB in `auto` would switch it to `heat`.
 
-Heatmaster limits how often it writes to a valve: a bucket of 6 writes per valve, one more every 30
-minutes. The time the bucket is full again is kept in `/data/pacing.json`, so a restart, or a
-restart loop, does not refill it. If that file cannot be read, every valve starts with an empty
-bucket and the page shows a problem.
+Heatmaster limits how often it writes to a valve: a bucket of 6 requests (writes and asks to
+report) per valve, one more every 30 minutes. The time the bucket is full again is kept in
+`/data/pacing.json`, so a restart, or a restart loop, does not refill it. One exception: after a
+start, a valve's first ask to report needs no token when its bucket is empty, at most once every
+30 minutes per valve (the time is kept in the same file), so a change made on the valve while
+Heatmaster was stopped is seen at once. If that file cannot be read, every valve starts with an
+empty bucket and no free ask for 30 minutes, and the page shows a problem.
 
 TRV-ZBT: Heatmaster uses schedule group 3 and does not save what it held. A valve whose active
 group is already 3 can join; its group 3 is overwritten. After a release the active group is back;

@@ -33,6 +33,7 @@ import {
   maySpend,
   mayWrite,
   importBucket,
+  importFreeAsk,
   noteDesired,
   notHolding,
   spend,
@@ -128,9 +129,16 @@ export type DeviceView = Readonly<{
 
 /**
  * The buckets a valve starts with when the tick finds no memory for it: `stamps` holds a valve's
- * `bucketFullAt` (see `importBucket`), `fallback` is the stamp of a valve with none.
+ * `bucketFullAt` (see `importBucket`), `fallback` is the stamp of a valve with none. `freeAsks`
+ * holds the time of a valve's last free ask (see `importFreeAsk`), `freeAskFallback` that of a
+ * valve with none (undefined: none was made).
  */
-export type BucketStart = Readonly<{ stamps: ReadonlyMap<string, number>; fallback: number }>;
+export type BucketStart = Readonly<{
+  stamps: ReadonlyMap<string, number>;
+  fallback: number;
+  freeAsks?: ReadonlyMap<string, number>;
+  freeAskFallback?: number;
+}>;
 
 /**
  * Everything one tick reads. `house` says where the rooms come from (`roomsOf`). `ledger`
@@ -856,7 +864,9 @@ function startMemory(world: World, valveId: string, spec: ValveSpec): ValveMemor
   const fresh = newValveMemory(spec, nowMs);
   const buckets = world.buckets;
   if (buckets === undefined) return fresh;
-  return importBucket(fresh, buckets.stamps.get(valveId) ?? buckets.fallback, nowMs);
+  const filled = importBucket(fresh, buckets.stamps.get(valveId) ?? buckets.fallback, nowMs);
+  const freeAskAt = buckets.freeAsks?.get(valveId) ?? buckets.freeAskFallback;
+  return importFreeAsk(filled, freeAskAt, nowMs);
 }
 
 /**
