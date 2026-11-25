@@ -41,3 +41,47 @@ Heatmaster 0.1.0 (`ghcr.io/t3hk0d3/heatmaster:0.1.0`) on the user's Home Assista
 - In `auto` the valve holds Heatmaster's target (18 °C at night). Push: the sensor changed to 19.9 at 00:28:43 and the
   valve's external temperature followed at 00:28:45, with the user's automation no longer feeding this room.
 - Open: the other areas join one at a time by removing `heatmaster_ignore` (live rollout).
+
+## Plan 3a (0.3.0): room thermostat, room Кабинет (2026-11-25)
+
+Times are local (CET). The `chauffage` integration was uninstalled before the test.
+
+- Install: the Supervisor's clone of the repository followed `plan1-foundation`, the default branch when the
+  repository was added, so it never offered 0.3.0. Deleting the merged `plan1-foundation` and
+  `plan2-rooms-from-ha` branches made its pull fail. The user then uninstalled the app and added the
+  repository again. 0.3.0 installed as `6f549332_heatmaster`, a fresh install (log: "a fresh install: the empty
+  config is saved with writes held"). The 0.2.0 data is lost, so the upgrade from 0.2.0 was not verified live.
+- Config again: schedule `mancave` (18 °C, 22 °C from 07:00, 18 °C from 23:00), the default, and the room's
+  sensor `ha:sensor.sensor_th_cabinet_temperature`. Without the sensor entry the config would have taken the
+  `heatmaster_temp_sensor` label off and the valve to its internal sensor. The preview before the apply showed
+  `sensor_source → internal` because no sensor had been read yet; after the apply it was gone.
+- Originals recorded at join: external sensor, frost 7, `heat`, 22. The valve was in `heat` 22 before the
+  release. Applied at 02:55 with writes held; on release the week was written again (the same values)
+  and `heat → auto`; Кабинет `in_sync`, target 18, no problems. Home Assistant has
+  `climate.heatmaster_mancave` and the selects "Override ends" and "Schedule".
+- Climate entity: 21 °C at 03:23:27 became an override (origin `climate`, rule `next_change`, end 07:00); the
+  valve showed `heat` 21 at 03:23:57. The 30 s are the 10 s pause after an override starts plus the tick.
+  `auto` at 03:24:07 resumed the schedule; the valve was `auto` 18 one second later.
+- Knob, valve in `auto`: one click at 03:26:22 switched the valve to `heat` at its last manual setpoint (21);
+  the room became an override at 21 with origin the valve. No write followed.
+- End rule: "For a set time" made the room's rule `timer` (120 min); the running override kept its 07:00
+  end. 20 °C at 03:26:47 ended at 05:26:47; the valve showed 20 at 03:27:29. Resume schedule (the page's
+  route) at 03:28:05: `auto` 18 two seconds later. Putting the select back wrote `override_end:
+  next_change` into the room's entry instead of removing it (a known item, left for later).
+- Restart: an override of 21 from the climate entity, the app stopped at 04:05:58. In `heat` the knob's
+  first click only woke the display; two more set 22 (reported 04:07:14). The app started at 04:07:25 and
+  wrote nothing to the valve. It did not ask the valve either: the saved request budget was 0.38 of a
+  token. The valve's next report (04:18:12, after Heatmaster's push of the room temperature) made the room
+  an override at 22 with origin the valve; the knob's value was never overwritten.
+- Finding: after a start, a valve is not asked to report while its saved budget is empty, so a change made
+  while the app was stopped waits for the valve's own next report, and the room stays `pending` until the
+  first ask (a mark on a readable group clears only on an answer to an ask). The first ask went at
+  04:26:25, when the budget reached one token; its answer confirmed every readable group. The week, which
+  the TRVZB cannot report on request, stays marked until it is written in full, with the next token (about
+  04:56); Кабинет shows `pending` until then. Fix in 0.3.1: a valve's first ask after a start needs no
+  token, at most once every 30 minutes per valve. Writes keep the saved budget, so restarts cannot
+  wear the valve.
+- Afterwards: the override ended at 07:00 and Кабинет went back to its schedule. Later that day it was
+  `in_sync`, the valve `auto` 22, no problems; since the restart one schedule write (the week sent again)
+  and one thermostat write (back to `auto`).
+- The window valve (TRV-ZBT) was not part of this test.
