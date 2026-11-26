@@ -85,3 +85,8 @@ Times are local (CET). The `chauffage` integration was uninstalled before the te
   `in_sync`, the valve `auto` 22, no problems; since the restart one schedule write (the week sent again)
   and one thermostat write (back to `auto`).
 - The window valve (TRV-ZBT) was not part of this test.
+- 0.3.1 (2026-11-26): the budget of Кабинет's valve was run down to 0.1 token with four overrides from
+  the climate entity. With the app stopped, a Zigbee2MQTT `/set` of setpoint 22 stood in for the knob.
+  At the start (15:52:46) the valve was asked at the first tick without a token, and 2 s later the room
+  was an override at 22 with origin the valve (11 minutes under 0.3.0). The week, sent again with the
+  next token, keeps the room `pending` until then.
