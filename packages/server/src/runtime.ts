@@ -1358,16 +1358,26 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const kinds = currentMemberships();
     const recent = (at: number | undefined): at is number =>
       at !== undefined && nowMs - at < REFILL_MS;
+    const configured = (valveId: string): boolean => {
+      const kind = kinds.get(valveId);
+      return kind === "managed" || kind === "releasing" || kind === "frozen";
+    };
     const next = new Map<string, number>();
     for (const [valveId, vm] of memory.valves) {
-      if (recent(vm.freeAskAt)) next.set(valveId, vm.freeAskAt);
+      if (recent(vm.freeAskAt)) next.set(valveId, Math.min(vm.freeAskAt, nowMs));
     }
-    for (const [valveId, kind] of kinds) {
-      const configured = kind === "managed" || kind === "releasing" || kind === "frozen";
-      if (next.has(valveId) || memory.valves.has(valveId)) continue;
-      if (!configured && configState === "ok") continue;
-      const at = buckets.freeAsks?.get(valveId) ?? buckets.freeAskFallback;
-      if (recent(at)) next.set(valveId, Math.min(at, nowMs));
+    // As for the buckets: with an unreadable config nothing known is dropped.
+    for (const [valveId, at] of buckets.freeAsks ?? new Map<string, number>()) {
+      if (next.has(valveId) || memory.valves.has(valveId) || !recent(at)) continue;
+      if (configState !== "ok" || configured(valveId)) next.set(valveId, Math.min(at, nowMs));
+    }
+    const fallback = buckets.freeAskFallback;
+    if (recent(fallback)) {
+      for (const valveId of kinds.keys()) {
+        if (next.has(valveId) || memory.valves.has(valveId)) continue;
+        if (configState !== "ok" || configured(valveId))
+          next.set(valveId, Math.min(fallback, nowMs));
+      }
     }
     return next;
   }

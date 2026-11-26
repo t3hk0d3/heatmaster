@@ -137,6 +137,7 @@ export function clampToNow(vm: ValveMemory, nowMs: number): ValveMemory {
     tokensAt: notAfter(vm.tokensAt, nowMs),
     lastWriteAt: notAfter(vm.lastWriteAt, nowMs),
     asks: vm.asks.map((at) => notAfter(at, nowMs)),
+    freeAskAt: notAfter(vm.freeAskAt, nowMs),
     feedAt: notAfter(vm.feedAt, nowMs),
     lastPushAt: notAfter(vm.lastPushAt, nowMs),
     feedLostSince: notAfter(vm.feedLostSince, nowMs),

@@ -450,6 +450,7 @@ describe("events", () => {
           },
           lastWriteAt: at,
           asks: [at],
+          freeAskAt: at,
           feedValue: 20,
           feedAt: at,
           lastPushAt: at,
@@ -478,15 +479,16 @@ describe("events", () => {
       };
       const out = apply(withRooms, { kind: "link_up", transport: "z2m" }, now);
       const vm = valve(out, Z1);
-      it("lastWriteAt, tokensAt, feedAt, lastPushAt, feedLostSince and equalSince are now", () => {
+      it("lastWriteAt, tokensAt, freeAskAt, feedAt, lastPushAt, feedLostSince and equalSince are now", () => {
         expect([
           vm.lastWriteAt,
           vm.tokensAt,
+          vm.freeAskAt,
           vm.feedAt,
           vm.lastPushAt,
           vm.feedLostSince,
           vm.equalSince,
-        ]).toEqual([now, now, now, now, now, now]);
+        ]).toEqual([now, now, now, now, now, now, now]);
       });
       it("every write record, every ask and every assertedAt is now", () => {
         expect(vm.groups.schedule?.writes).toEqual([{ at: now, marked: true }]);

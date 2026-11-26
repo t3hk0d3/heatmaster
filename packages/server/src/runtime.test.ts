@@ -4367,6 +4367,26 @@ describe("runtime", () => {
       });
     });
 
+    describe("With an unreadable config and a free ask saved 5 min before the start", () => {
+      it("the free ask stays in pacing.json, so a restart once the config is fixed makes none before 30 min", async () => {
+        const rig = await boot({ seed: { config: "unreadable" }, start: false });
+        writeFileSync(
+          path.join(rig.dataDir, "pacing.json"),
+          JSON.stringify({
+            version: 1,
+            valves: { [A]: { bucketFullAt: T + BUCKET * REFILL_MS, freeAskAt: T - 5 * MINUTE } },
+          }),
+        );
+        await rig.rt.start();
+        await rig.rt.settled();
+        await rig.advance(TICK_INTERVAL_MS);
+        const file = readJson(path.join(rig.dataDir, "pacing.json")) as {
+          valves: Record<string, { freeAskAt?: number }>;
+        };
+        expect(file.valves[A]?.freeAskAt).toBe(T - 5 * MINUTE);
+      });
+    });
+
     describe("Restart loop (start, ask until empty, stop, start again, repeat)", () => {
       it("total requests to one valve over 24 h of simulated time <= BUCKET + 24 h / REFILL_MS, plus one free ask per REFILL_MS", async () => {
         let rig = await boot({ seed: managedSeed([A]) });
