@@ -80,6 +80,7 @@ export const TRV_ZBT_SPEC: ValveSpec = {
     groupSpec({ group: "sensor_source", evidence: "acked", capture: true, readable: true }),
     groupSpec({ group: "frost_protection", evidence: "acked", capture: true, readable: true }),
     groupSpec({ group: "thermostat", evidence: "acked", capture: true, readable: true }),
+    groupSpec({ group: "open_window", evidence: "acked", capture: true, readable: true }),
   ],
   activation: "none",
   externalSensor: true,

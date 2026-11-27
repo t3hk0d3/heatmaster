@@ -259,6 +259,7 @@ function trvzbMessage(
     system_mode: "auto",
     occupied_heating_setpoint: 17,
     frost_protection_temperature: 7,
+    open_window: "OFF",
     last_seen: token,
     ...extra,
   };
@@ -2929,6 +2930,7 @@ describe("runtime", () => {
               frost_protection: 7,
               system_mode: "auto",
               setpoint: 17,
+              open_window: "off",
             },
             unreadable: [],
           },
@@ -3837,6 +3839,7 @@ describe("runtime", () => {
         system_mode: "auto",
         occupied_heating_setpoint: 17,
         frost_protection_temperature: 7,
+        open_window: "OFF",
         last_seen: "b-1",
       });
       await rig.advance(EVENT_DEBOUNCE_MS);
@@ -3863,6 +3866,7 @@ describe("runtime", () => {
           frost_protection: 7,
           system_mode: "auto",
           setpoint: 17,
+          open_window: "off",
         });
         expect(rig.stores.calls.slice(-2)).toEqual(["ledger.save", "copy.write"]);
         expect(rig.rt.snapshot().memberships[B]).toBe("managed");
@@ -4134,6 +4138,7 @@ describe("runtime", () => {
           frost_protection: 7,
           system_mode: "auto",
           setpoint: 17,
+          open_window: "off",
           day_mon: ["00:00/16", "07:00/20", "07:00/20", "07:00/20", "07:00/20", "07:00/20"],
         });
       });

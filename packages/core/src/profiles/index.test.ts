@@ -45,9 +45,10 @@ describe("profiles index", () => {
           expect(schedule?.evidence).toBe(spec.profile === "sonoff_trvzb" ? "echoed" : "none");
         }
       });
-      it("every group of every spec has a maximum age of 24 h", () => {
+      it("every group of every spec but open_window has a maximum age of 24 h", () => {
         for (const { spec } of ALL_SPECS)
-          for (const g of spec.groups) expect(g.maxAgeMs).toBe(24 * HOUR_MS);
+          for (const g of spec.groups)
+            if (g.group !== "open_window") expect(g.maxAgeMs).toBe(24 * HOUR_MS);
       });
       it("every spec lists schedule before active_group", () => {
         for (const { spec } of ALL_SPECS) {
@@ -76,20 +77,40 @@ describe("profiles index", () => {
   });
   describe("specs", () => {
     const tail = (groups: readonly { group: string }[]): readonly string[] =>
-      groups.slice(-2).map((g) => g.group);
+      groups.slice(-3, -1).map((g) => g.group);
     describe("TRVZB", () => {
-      it("frost range 4–35, groups end with frost_protection then thermostat", () => {
+      it("frost range 4–35, groups end with frost_protection, thermostat, then open_window", () => {
         expect([TRVZB_SPEC.frostMinTemp, TRVZB_SPEC.frostMaxTemp]).toEqual([4, 35]);
         expect(tail(TRVZB_SPEC.groups)).toEqual(["frost_protection", "thermostat"]);
+      });
+      it("groups list open_window after thermostat, acked, captured, readable", () => {
+        expect(TRVZB_SPEC.groups.at(-1)).toEqual({
+          group: "open_window",
+          evidence: "acked",
+          maxAgeMs: undefined,
+          capture: true,
+          readable: true,
+          atomic: false,
+        });
       });
       it("thermostat is TRVZB_THERMOSTAT", () => {
         expect(TRVZB_SPEC.thermostat).toBe(TRVZB_THERMOSTAT);
       });
     });
     describe("TRV-ZBT", () => {
-      it("frost range 5–15, groups end with frost_protection then thermostat", () => {
+      it("frost range 5–15, groups end with frost_protection, thermostat, then open_window", () => {
         expect([TRV_ZBT_SPEC.frostMinTemp, TRV_ZBT_SPEC.frostMaxTemp]).toEqual([5, 15]);
         expect(tail(TRV_ZBT_SPEC.groups)).toEqual(["frost_protection", "thermostat"]);
+      });
+      it("groups list open_window after thermostat, acked, captured, readable", () => {
+        expect(TRV_ZBT_SPEC.groups.at(-1)).toEqual({
+          group: "open_window",
+          evidence: "acked",
+          maxAgeMs: undefined,
+          capture: true,
+          readable: true,
+          atomic: false,
+        });
       });
       it("thermostat is TRV_ZBT_THERMOSTAT", () => {
         expect(TRV_ZBT_SPEC.thermostat).toBe(TRV_ZBT_THERMOSTAT);

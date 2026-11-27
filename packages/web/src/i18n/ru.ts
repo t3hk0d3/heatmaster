@@ -43,6 +43,7 @@ export const ru: Dictionary = {
   "group.sensor_source": "источник температуры",
   "group.frost_protection": "температура защиты от замерзания",
   "group.thermostat": "режим и целевая температура",
+  "group.open_window": "обнаружение открытого окна",
 
   "rooms.title": "Комнаты",
   "rooms.none": "Пока ни в одной зоне Home Assistant нет клапана, поэтому комнат нет.",
@@ -232,6 +233,7 @@ export const ru: Dictionary = {
   "setting.frost_protection": "Температура защиты от замерзания",
   "setting.system_mode": "Режим",
   "setting.setpoint": "Целевая температура",
+  "setting.open_window": "Обнаружение открытого окна",
 
   "evidence.acked": "подтверждено клапаном",
   "evidence.echoed": "как сообщил Zigbee2MQTT",

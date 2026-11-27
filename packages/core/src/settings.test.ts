@@ -44,6 +44,13 @@ describe("settings", () => {
         expect(valuesEqual("system_mode", "auto", "auto")).toBe(true);
       });
     });
+    describe("For two equal toggles", () => {
+      it("returns true", () => {
+        expect(valuesEqual("open_window", "on", "on")).toBe(true);
+        expect(valuesEqual("open_window", "off", "off")).toBe(true);
+        expect(valuesEqual("open_window", "on", "off")).toBe(false);
+      });
+    });
     describe("For setpoint 20 and 20.5", () => {
       it("false", () => {
         expect(valuesEqual("setpoint", 20, 20.5)).toBe(false);
@@ -145,6 +152,7 @@ describe("settings", () => {
           "frost_protection",
           "system_mode",
           "setpoint",
+          "open_window",
         ]);
         expect(GROUPS).toEqual([
           "schedule",
@@ -152,6 +160,7 @@ describe("settings", () => {
           "sensor_source",
           "frost_protection",
           "thermostat",
+          "open_window",
         ]);
       });
     });
@@ -160,6 +169,12 @@ describe("settings", () => {
         expect(groupOf("system_mode")).toBe("thermostat");
         expect(groupOf("setpoint")).toBe("thermostat");
         expect(members("thermostat")).toEqual(["system_mode", "setpoint"]);
+      });
+    });
+    describe("For open_window", () => {
+      it("returns open_window", () => {
+        expect(groupOf("open_window")).toBe("open_window");
+        expect(members("open_window")).toEqual(["open_window"]);
       });
     });
     describe("For frost_protection", () => {

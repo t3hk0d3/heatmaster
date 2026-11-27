@@ -265,7 +265,7 @@ function groupSpec(
   return {
     group,
     evidence,
-    maxAgeMs: 24 * HOUR_MS,
+    maxAgeMs: group === "open_window" ? undefined : 24 * HOUR_MS,
     capture: captured,
     readable,
     atomic: group === "thermostat",
@@ -296,6 +296,7 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
         groupSpec("sensor_source", "acked", true, true),
         groupSpec("frost_protection", "acked", true, true),
         groupSpec("thermostat", "acked", true, true),
+        groupSpec("open_window", "acked", true, true),
       ],
       thermostat: TRVZB_THERMOSTAT,
     };
@@ -315,6 +316,7 @@ export function makeSpec(model: "trvzb" | "trv_zbt"): ValveSpec {
       groupSpec("sensor_source", "acked", true, true),
       groupSpec("frost_protection", "acked", true, true),
       groupSpec("thermostat", "acked", true, true),
+      groupSpec("open_window", "acked", true, true),
     ],
     thermostat: TRV_ZBT_THERMOSTAT,
   };
@@ -454,13 +456,14 @@ export function makeWorld(
 }
 
 /**
- * What a valve shows of the settings plan 3a captures: frost protection 7, mode auto, setpoint 17.
- * A join needs them observed.
+ * What a valve shows of the settings plans 3a and 3b capture: frost protection 7, mode auto,
+ * setpoint 17, its own open window detection off. A join needs them observed.
  */
 export const BUILDER_THERMOSTAT: SettingValues = {
   frost_protection: 7,
   system_mode: "auto",
   setpoint: 17,
+  open_window: "off",
 };
 
 /**

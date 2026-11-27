@@ -1495,6 +1495,7 @@ describe("api", () => {
       system_mode: "auto",
       occupied_heating_setpoint: 17,
       frost_protection_temperature: 7,
+      open_window: "OFF",
       local_temperature: 19.3,
       battery: 90,
     };

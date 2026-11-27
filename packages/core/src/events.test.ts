@@ -98,6 +98,7 @@ const NONE: Readonly<Record<Group, undefined>> = {
   sensor_source: undefined,
   frost_protection: undefined,
   thermostat: undefined,
+  open_window: undefined,
 };
 
 function unmarked(at = T0): ValveMemory {

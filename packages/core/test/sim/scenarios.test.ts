@@ -1616,6 +1616,7 @@ describe("scenarios", () => {
         activeGroup: undefined,
         select: undefined,
         frostProtection: undefined,
+        openWindow: undefined,
         mode: undefined,
         setpoint: undefined,
         external: undefined,

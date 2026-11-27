@@ -85,6 +85,7 @@ export type {
   GroupSpec,
   Readings,
   SensorSource,
+  Toggle,
   SettingKey,
   SettingValue,
   SettingValues,

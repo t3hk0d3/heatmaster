@@ -103,6 +103,7 @@ describe("TRV-ZBT binding", () => {
           system_mode: "",
           occupied_heating_setpoint: "",
           frost_protection_temperature: "",
+          open_window: "",
         });
       });
       it("holds no day key and no group to edit", () => {

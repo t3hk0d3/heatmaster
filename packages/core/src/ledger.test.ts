@@ -93,9 +93,11 @@ const arbValueFor = (key: SettingKey): fc.Arbitrary<SettingValue | null> => {
         ? fc.integer({ min: 1, max: 3 })
         : key === "system_mode"
           ? fc.constantFrom("off" as const, "auto" as const, "heat" as const)
-          : key === "setpoint" || key === "frost_protection"
-            ? halfDegree
-            : arbDay;
+          : key === "open_window"
+            ? fc.constantFrom("on" as const, "off" as const)
+            : key === "setpoint" || key === "frost_protection"
+              ? halfDegree
+              : arbDay;
   return fc.option(value, { nil: null });
 };
 const arbOriginals = fc
@@ -481,6 +483,33 @@ describe("ledger", () => {
         );
         const raw: unknown = JSON.parse(JSON.stringify(ledgerToRaw(ledger)));
         expect(ledgerFromRaw(raw)).toEqual(ledger);
+      });
+    });
+    describe('With an open_window original "off"', () => {
+      it("keeps it", () => {
+        const ledger = ledgerOf(record(V1, { originals: { open_window: "off" } }));
+        const raw: unknown = JSON.parse(JSON.stringify(ledgerToRaw(ledger)));
+        expect(ledgerFromRaw(raw).records.get(V1)?.originals).toEqual({ open_window: "off" });
+      });
+    });
+    describe("With an open_window original null", () => {
+      it("keeps null", () => {
+        const ledger = ledgerOf(record(V1, { originals: { open_window: null } }));
+        const raw: unknown = JSON.parse(JSON.stringify(ledgerToRaw(ledger)));
+        expect(ledgerFromRaw(raw).records.get(V1)?.originals).toEqual({ open_window: null });
+      });
+    });
+    describe("With an open_window original 3", () => {
+      it("throws LedgerError", () => {
+        const raw = aRawLedger();
+        const records = raw.records as Record<string, Record<string, unknown>>;
+        const bad = {
+          ...raw,
+          records: { [V1]: { ...records[V1], originals: { open_window: 3 } } },
+        };
+        const error = thrown(() => ledgerFromRaw(bad));
+        expect(error).toBeInstanceOf(LedgerError);
+        expect((error as LedgerError).path).toBe(`records.${V1}.originals.open_window`);
       });
     });
     describe("With a version 1 file without the new keys", () => {

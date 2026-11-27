@@ -170,6 +170,9 @@ export function createSimBridge(): SimBridge {
           ? rawSelect
           : undefined;
       const frostProtection = numberOf(payload[Z2M_KEYS.frost]);
+      const rawOpenWindow = payload[Z2M_KEYS.openWindow];
+      const openWindow =
+        rawOpenWindow === "ON" ? "on" : rawOpenWindow === "OFF" ? "off" : undefined;
       const rawMode = payload[Z2M_KEYS.mode];
       const mode =
         rawMode === "off" || rawMode === "auto" || rawMode === "heat" ? rawMode : undefined;
@@ -186,6 +189,7 @@ export function createSimBridge(): SimBridge {
         activeGroup,
         select,
         frostProtection,
+        openWindow,
         mode,
         setpoint,
         external,
@@ -195,6 +199,7 @@ export function createSimBridge(): SimBridge {
         activeGroup === undefined &&
         select === undefined &&
         frostProtection === undefined &&
+        openWindow === undefined &&
         mode === undefined &&
         setpoint === undefined &&
         external === undefined

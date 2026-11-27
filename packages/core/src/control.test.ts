@@ -4104,6 +4104,7 @@ describe("control", () => {
           system_mode: "heat",
           setpoint: 22,
           frost_protection: 10,
+          open_window: "off",
         } as const;
         const joining: World = {
           ...makeManaged({ state: makeState({ values, heardAgoMs: 0 }) }),

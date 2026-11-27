@@ -147,6 +147,7 @@ describe("TRVZB binding", () => {
           system_mode: "",
           occupied_heating_setpoint: "",
           frost_protection_temperature: "",
+          open_window: "",
         });
       });
     });

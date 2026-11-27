@@ -792,11 +792,12 @@ describe("views", () => {
       return { values } as unknown as DeviceState;
     }
 
-    /** What a valve shows of its frost protection, mode and setpoint. */
+    /** What a valve shows of its frost protection, mode, setpoint and open window detection. */
     const THERMOSTAT: DeviceState["values"] = {
       frost_protection: 7,
       system_mode: "auto",
       setpoint: 17,
+      open_window: "off",
     };
 
     function plan(over: Partial<ChangePlan> = {}, holdWrites = false): ChangePlan {
@@ -838,6 +839,7 @@ describe("views", () => {
           { setting: "frost_protection", value: 7, evidence: "acked" },
           { setting: "system_mode", value: "auto", evidence: "acked" },
           { setting: "setpoint", value: 21.5, evidence: "acked" },
+          { setting: "open_window", value: "off", evidence: "acked" },
         ]);
       });
 

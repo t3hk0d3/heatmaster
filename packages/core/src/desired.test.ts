@@ -60,6 +60,7 @@ const TRVZB: ValveSpec = {
     group("sensor_source", { capture: true }),
     group("frost_protection", { capture: true }),
     group("thermostat", { capture: true, atomic: true }),
+    group("open_window", { capture: true }),
   ],
   activation: "none",
   externalSensor: true,
@@ -82,6 +83,7 @@ const TRV_ZBT: ValveSpec = {
     group("sensor_source", { capture: true }),
     group("frost_protection", { capture: true }),
     group("thermostat", { capture: true, atomic: true }),
+    group("open_window", { capture: true }),
   ],
   thermostat: TRV_ZBT_THERMOSTAT,
 };
@@ -291,6 +293,19 @@ describe("desired", () => {
       it("desires system_mode off and no setpoint", () => {
         const desired = releaseDesired(TRV_ZBT, record({ system_mode: "off", setpoint: 17 }));
         expect(desired).toEqual({ system_mode: { value: "off", reason: "release" } });
+      });
+    });
+
+    describe("With a record whose open_window original is on", () => {
+      it("wants open_window on", () => {
+        const desired = releaseDesired(TRVZB, record({ open_window: "on" }));
+        expect(desired.open_window).toEqual({ value: "on", reason: "release" });
+      });
+    });
+    describe("With a record that has no open_window original", () => {
+      it("wants no open_window", () => {
+        const desired = releaseDesired(TRVZB, record({ sensor_source: "internal" }));
+        expect(Object.hasOwn(desired, "open_window")).toBe(false);
       });
     });
 

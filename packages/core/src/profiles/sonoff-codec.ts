@@ -10,6 +10,7 @@ import type {
   SettingKey,
   SettingValue,
   SettingValues,
+  Toggle,
   ValveMode,
 } from "../settings.ts";
 
@@ -73,6 +74,7 @@ export const Z2M_KEYS = {
   setpoint: "occupied_heating_setpoint",
   mode: "system_mode",
   frost: "frost_protection_temperature",
+  openWindow: "open_window",
   activeGroup: "schedule_active_group",
   editGroup: "schedule_group_to_edit",
 } as const;
@@ -113,6 +115,19 @@ function checkMode(value: unknown): ValveMode {
   return mode;
 }
 
+function parseToggle(value: unknown): Toggle | undefined {
+  if (value === "ON") return "on";
+  if (value === "OFF") return "off";
+  return undefined;
+}
+
+/** A toggle to write, as Zigbee2MQTT spells it. Throws `RangeError` for anything else. */
+function checkToggle(value: unknown): "ON" | "OFF" {
+  if (value === "on") return "ON";
+  if (value === "off") return "OFF";
+  throw new RangeError(`unknown toggle: ${JSON.stringify(value)}`);
+}
+
 /** A temperature to write: a finite number. Throws `RangeError` for anything else. */
 function checkTemperature(value: unknown): number {
   const n = finite(value);
@@ -121,8 +136,8 @@ function checkTemperature(value: unknown): number {
 }
 
 /**
- * The frost protection temperature, the mode and the setpoint of `values`, in that order, for the
- * keys present. Throws `RangeError` for a value of the wrong kind.
+ * The frost protection temperature, the mode, the setpoint and the open window detection of
+ * `values`, in that order, for the keys present. Throws `RangeError` for a value of the wrong kind.
  */
 export function encodeThermostat(values: SettingValues): Record<string, unknown> {
   const message: Record<string, unknown> = {};
@@ -130,26 +145,33 @@ export function encodeThermostat(values: SettingValues): Record<string, unknown>
     message[Z2M_KEYS.frost] = checkTemperature(values.frost_protection);
   if (values.system_mode !== undefined) message[Z2M_KEYS.mode] = checkMode(values.system_mode);
   if (values.setpoint !== undefined) message[Z2M_KEYS.setpoint] = checkTemperature(values.setpoint);
+  if (values.open_window !== undefined)
+    message[Z2M_KEYS.openWindow] = checkToggle(values.open_window);
   return message;
 }
 
-/** The refresh keys of the frost protection and thermostat groups, each with an empty text. */
+/** The refresh keys of the frost protection, thermostat and open window groups, each with an empty text. */
 export const THERMOSTAT_REFRESH: Readonly<Record<string, string>> = {
   [Z2M_KEYS.mode]: "",
   [Z2M_KEYS.setpoint]: "",
   [Z2M_KEYS.frost]: "",
+  [Z2M_KEYS.openWindow]: "",
 };
 
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * A group of a spec; every group is trusted for 24 h before it is marked again, and only the
- * `thermostat` group is atomic.
+ * A group of a spec; every group but `open_window` is trusted for 24 h before it is marked again,
+ * and only the `thermostat` group is atomic.
  */
 export function groupSpec(
   spec: Pick<GroupSpec, "group" | "evidence" | "capture" | "readable">,
 ): GroupSpec {
-  return { ...spec, maxAgeMs: 24 * HOUR_MS, atomic: spec.group === "thermostat" };
+  return {
+    ...spec,
+    maxAgeMs: spec.group === "open_window" ? undefined : 24 * HOUR_MS,
+    atomic: spec.group === "thermostat",
+  };
 }
 
 function finite(value: unknown): number | undefined {
@@ -214,6 +236,7 @@ export function decodeCommon(
   decodeKey(values, "frost_protection", payload, Z2M_KEYS.frost, finite);
   decodeKey(values, "system_mode", payload, Z2M_KEYS.mode, parseMode);
   decodeKey(values, "setpoint", payload, Z2M_KEYS.setpoint, finite);
+  decodeKey(values, "open_window", payload, Z2M_KEYS.openWindow, parseToggle);
   const editGroup = parseGroup(payload[Z2M_KEYS.editGroup]);
   return { values, readings: readings(payload, editGroup) };
 }

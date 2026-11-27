@@ -13,6 +13,7 @@ export type ValveWrite = Readonly<{
   activeGroup: number | undefined;
   select: SelectValue | undefined;
   frostProtection: number | undefined;
+  openWindow: "on" | "off" | undefined;
   mode: ValveTruth["mode"] | undefined;
   setpoint: number | undefined;
   external: number | undefined;
@@ -42,6 +43,8 @@ export type ValveTruth = Readonly<{
   mode: "off" | "auto" | "heat";
   setpoint: number;
   frostProtection: number;
+  /** The valve's own open-window detection (M17). */
+  openWindow: "on" | "off";
   select: SelectValue;
   activeGroup: number;
   schedules: Readonly<Record<number, DayTexts>>;
@@ -70,6 +73,7 @@ export type SimValveOptions = Readonly<{
   mode?: ValveTruth["mode"];
   setpoint?: number;
   frostProtection?: number;
+  openWindow?: "on" | "off";
   /** The last setpoint set in `heat`, which `heat` without a setpoint returns to (M12). */
   manualSetpoint?: number;
   /** How far the valve's clock runs ahead of the house's (negative: behind); 0 by default. */
@@ -177,6 +181,7 @@ export function reported(model: ValveModel, truth: ValveTruth): Record<string, u
     [Z2M_KEYS.mode]: truth.mode,
     [Z2M_KEYS.setpoint]: truth.setpoint,
     [Z2M_KEYS.frost]: truth.frostProtection,
+    [Z2M_KEYS.openWindow]: truth.openWindow === "on" ? "ON" : "OFF",
     [Z2M_KEYS.select]: truth.select,
     local_temperature: truth.localTemperature,
     running_state: "idle",
@@ -197,6 +202,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
     setpoint: options.setpoint ?? 17,
     manual: options.manualSetpoint ?? options.setpoint ?? 17,
     frostProtection: options.frostProtection ?? 7,
+    openWindow: options.openWindow ?? "off",
     select: options.select ?? "local_temperature",
     activeGroup: options.activeGroup ?? 1,
     external: undefined as number | undefined,
@@ -416,10 +422,12 @@ export function createSimValve(options: SimValveOptions): SimValve {
       if (model === "trvzb") takeAt = nowMs + TRVZB_WEEK_TAKE_MS;
       else takeSchedule(nowMs);
     }
-    const thermostat = w.mode !== undefined || w.setpoint !== undefined;
-    // The first message after a mode or setpoint write is the valve's, still showing the old state;
-    // Zigbee2MQTT's echo of the new state repeats its `last_seen` (M14).
+    const thermostat =
+      w.mode !== undefined || w.setpoint !== undefined || w.openWindow !== undefined;
+    // The first message after a mode, setpoint or open window write is the valve's, still showing
+    // the old state; Zigbee2MQTT's echo of the new state repeats its `last_seen` (M14, M17).
     if (thermostat) speak({ cause: "write", keys: undefined, wroteDays: false }, nowMs);
+    if (w.openWindow !== undefined) state.openWindow = w.openWindow;
     applyThermostat(w.mode, w.setpoint, nowMs);
     if (w.external !== undefined) {
       state.external = w.external;
@@ -456,6 +464,7 @@ export function createSimValve(options: SimValveOptions): SimValve {
       mode: state.mode,
       setpoint: state.setpoint,
       frostProtection: state.frostProtection,
+      openWindow: state.openWindow,
       select: state.select,
       activeGroup: state.activeGroup,
       schedules: { ...schedules },

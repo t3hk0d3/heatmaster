@@ -274,6 +274,8 @@ function valueToRaw(path: string, key: SettingKey, value: SettingValue | null): 
       if (key === "setpoint")
         return isTemperature(value) ? value : writeFail(path, "expected a temperature");
       return isMode(value) ? value : writeFail(path, "expected off, auto or heat");
+    case "open_window":
+      return value === "on" || value === "off" ? value : writeFail(path, "expected on or off");
   }
 }
 
@@ -378,6 +380,8 @@ function valueFromRaw(path: string, key: SettingKey, value: unknown): SettingVal
       if (key === "setpoint")
         return isTemperature(value) ? value : fail(path, "expected a temperature");
       return isMode(value) ? value : fail(path, "expected off, auto or heat");
+    case "open_window":
+      return value === "on" || value === "off" ? value : fail(path, "expected on or off");
   }
 }
 

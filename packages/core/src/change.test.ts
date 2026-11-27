@@ -328,6 +328,7 @@ describe("change", () => {
           frost_protection: null,
           system_mode: null,
           setpoint: null,
+          open_window: null,
         });
         expect(result.unreadable).toEqual([
           "active_group",
@@ -335,7 +336,19 @@ describe("change", () => {
           "frost_protection",
           "system_mode",
           "setpoint",
+          "open_window",
         ]);
+      });
+    });
+
+    describe("With a valve showing open_window ON", () => {
+      it("records open_window on among the originals", () => {
+        const result = capture(
+          V1,
+          makeSpec("trvzb"),
+          makeState({ values: { ...sevenDays(), ...BUILDER_THERMOSTAT, open_window: "on" } }),
+        );
+        expect(result.originals.open_window).toBe("on");
       });
     });
 
@@ -347,6 +360,7 @@ describe("change", () => {
           system_mode: "heat",
           setpoint: 21.5,
           frost_protection: 7,
+          open_window: "off",
         };
         const result = capture(V1, makeSpec("trvzb"), makeState({ values }));
         expect(result.originals).toEqual({
@@ -354,6 +368,7 @@ describe("change", () => {
           frost_protection: 7,
           system_mode: "heat",
           setpoint: 21.5,
+          open_window: "off",
         });
       });
     });
@@ -364,6 +379,7 @@ describe("change", () => {
           sensor_source: "internal",
           system_mode: "auto",
           setpoint: 17,
+          open_window: "off",
         };
         const result = capture(V1, makeSpec("trvzb"), makeState({ values }));
         expect(result.originals.frost_protection).toBeNull();

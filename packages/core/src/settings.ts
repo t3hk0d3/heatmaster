@@ -6,6 +6,7 @@ import type { ThermostatAdapter } from "./thermostat-adapter.ts";
 
 export type ValveMode = "off" | "auto" | "heat";
 export type SensorSource = "internal" | "external";
+export type Toggle = "on" | "off";
 
 export type SettingKey =
   | "day_mon"
@@ -19,7 +20,8 @@ export type SettingKey =
   | "sensor_source"
   | "frost_protection"
   | "system_mode"
-  | "setpoint";
+  | "setpoint"
+  | "open_window";
 
 /** The day key of each weekday. */
 export const DAY_KEYS: Readonly<Record<Weekday, SettingKey>> = {
@@ -34,7 +36,7 @@ export const DAY_KEYS: Readonly<Record<Weekday, SettingKey>> = {
 
 /**
  * Every setting key: the seven days in weekday order, then the active group, the source, the frost
- * protection temperature, the mode and the setpoint (°C).
+ * protection temperature, the mode, the setpoint (°C) and the valve's own open-window detection.
  */
 export const SETTING_KEYS: readonly SettingKey[] = [
   ...WEEKDAYS.map((d) => DAY_KEYS[d]),
@@ -43,11 +45,12 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   "frost_protection",
   "system_mode",
   "setpoint",
+  "open_window",
 ];
 
 /** `schedule` is the seven days; `thermostat` is the mode and the setpoint. */
 export type Group =
-  "schedule" | "active_group" | "sensor_source" | "frost_protection" | "thermostat";
+  "schedule" | "active_group" | "sensor_source" | "frost_protection" | "thermostat" | "open_window";
 
 export const GROUPS: readonly Group[] = [
   "schedule",
@@ -55,6 +58,7 @@ export const GROUPS: readonly Group[] = [
   "sensor_source",
   "frost_protection",
   "thermostat",
+  "open_window",
 ];
 
 const SCHEDULE_KEYS: readonly SettingKey[] = WEEKDAYS.map((d) => DAY_KEYS[d]);
@@ -65,6 +69,7 @@ export function groupOf(key: SettingKey): Group {
     case "active_group":
     case "sensor_source":
     case "frost_protection":
+    case "open_window":
       return key;
     case "system_mode":
     case "setpoint":
@@ -85,8 +90,8 @@ export function members(group: Group): readonly SettingKey[] {
   }
 }
 
-/** A day, a group number, a temperature (°C), a sensor source, or a mode. */
-export type SettingValue = ResolvedDay | number | SensorSource | ValveMode;
+/** A day, a group number, a temperature (°C), a sensor source, a mode, or a toggle. */
+export type SettingValue = ResolvedDay | number | SensorSource | ValveMode | Toggle;
 
 /** A missing key means "unknown". A key is either absent or holds a value. */
 export type SettingValues = Readonly<Partial<Record<SettingKey, SettingValue>>>;

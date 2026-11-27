@@ -217,6 +217,22 @@ for (const { model, binding, select } of BINDINGS) {
           expect(binding.decode({ occupied_heating_setpoint: "x" }).values.setpoint).toBeNull();
         });
       });
+      describe("With open_window ON", () => {
+        it("yields open_window on", () => {
+          expect(binding.decode({ open_window: "ON" }).values.open_window).toBe("on");
+        });
+      });
+      describe("With open_window OFF", () => {
+        it("yields open_window off", () => {
+          expect(binding.decode({ open_window: "OFF" }).values.open_window).toBe("off");
+        });
+      });
+      describe('With open_window "maybe"', () => {
+        it("leaves open_window out", () => {
+          const values = binding.decode({ open_window: "maybe" }).values;
+          expect(values.open_window ?? null).toBe(null);
+        });
+      });
       describe("With none of the three keys", () => {
         it("none of the three values is present", () => {
           const values = binding.decode({ battery: 80 }).values;
@@ -242,6 +258,11 @@ for (const { model, binding, select } of BINDINGS) {
           });
         });
       });
+      describe("With open_window off", () => {
+        it('writes open_window "OFF"', () => {
+          expect(binding.encode({ open_window: "off" })).toEqual({ open_window: "OFF" });
+        });
+      });
       describe('With system_mode "cool"', () => {
         it("throws RangeError", () => {
           expect(() => binding.encode({ system_mode: "cool" as ValveMode })).toThrow(RangeError);
@@ -262,6 +283,7 @@ for (const { model, binding, select } of BINDINGS) {
             system_mode: "",
             occupied_heating_setpoint: "",
             frost_protection_temperature: "",
+            open_window: "",
           });
         });
       });

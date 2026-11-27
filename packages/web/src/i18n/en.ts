@@ -123,6 +123,7 @@ export const en = {
   "group.sensor_source": "temperature sensor source",
   "group.frost_protection": "frost protection temperature",
   "group.thermostat": "mode and target temperature",
+  "group.open_window": "open window detection",
 
   "rooms.title": "Rooms",
   "rooms.none": "No Home Assistant area holds a valve yet, so there are no rooms.",
@@ -311,6 +312,7 @@ export const en = {
   "setting.frost_protection": "Frost protection temperature",
   "setting.system_mode": "Mode",
   "setting.setpoint": "Target temperature",
+  "setting.open_window": "Open window detection",
 
   "evidence.acked": "confirmed by the valve",
   "evidence.echoed": "as Zigbee2MQTT reported it",
