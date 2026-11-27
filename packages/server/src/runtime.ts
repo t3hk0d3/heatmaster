@@ -434,8 +434,13 @@ export async function executeEffects(
         case "dismissWindowOpen": {
           // Behind a failed save the notice would go out while `notifiedAt` was not saved.
           if (dropped) continue;
-          if (effect.kind === "notifyWindowOpen") await context.notify(effect.roomId);
-          else await context.dismiss(effect.roomId);
+          // Started, not awaited: a Home Assistant that does not answer must not hold back the
+          // valve writes after it. The callee logs its own failure and never rejects.
+          void (
+            effect.kind === "notifyWindowOpen"
+              ? context.notify(effect.roomId)
+              : context.dismiss(effect.roomId)
+          ).catch(() => undefined);
           break;
         }
         case "saveThermostats": {

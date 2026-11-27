@@ -967,6 +967,24 @@ describe("runtime", () => {
       });
     });
 
+    describe("With a notify that never answers, before a thermostat publish", () => {
+      it("the publish goes out and the run finishes", async () => {
+        const rig = execRig();
+        const context: EffectContext = {
+          ...rig.context,
+          notify: () => new Promise(() => undefined),
+        };
+        await executeEffects(
+          [
+            { kind: "notifyWindowOpen", roomId: "bath" },
+            { kind: "publishSetpoint", valveId: A, celsius: 7 },
+          ],
+          context,
+        );
+        expect(rig.publishes).toEqual([{ deviceId: A, payload: TRVZB_BINDING.encodeSetpoint(7) }]);
+      });
+    });
+
     describe("With a failed save before notifyWindowOpen and dismissWindowOpen", () => {
       it("neither notice goes out", async () => {
         const rig = execRig({ fail: { saveThermostats: "state_failed" } });
