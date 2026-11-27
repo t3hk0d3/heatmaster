@@ -63,6 +63,7 @@ import type {
   ChangePlan,
   Config,
   ConfigState,
+  ContactReading,
   Decoded,
   DeviceState,
   DeviceView,
@@ -291,6 +292,13 @@ export type EffectContext = Readonly<{
   onConfigSaved: (stored: StoredConfig) => void;
   onThermostatsSaved: (thermostats: ThermostatState) => void;
   onSent: (valveId: string, what: "refresh" | "publish") => void;
+  /**
+   * Posts a room's window-limit notification (W7). Never rejects: a failure is logged by the
+   * callee.
+   */
+  notify: (roomId: string) => Promise<void>;
+  /** Dismisses it; never rejects. */
+  dismiss: (roomId: string) => Promise<void>;
 }>;
 
 type StoreName = "config" | "ledger" | "copy" | "pacing" | "state";
@@ -423,9 +431,13 @@ export async function executeEffects(
           break;
         }
         case "notifyWindowOpen":
-        case "dismissWindowOpen":
-          // F4: Task 7 calls Home Assistant's persistent notifications here.
+        case "dismissWindowOpen": {
+          // Behind a failed save the notice would go out while `notifiedAt` was not saved.
+          if (dropped) continue;
+          if (effect.kind === "notifyWindowOpen") await context.notify(effect.roomId);
+          else await context.dismiss(effect.roomId);
           break;
+        }
         case "saveThermostats": {
           if (dropped) continue;
           try {
@@ -508,6 +520,50 @@ function roomSensors(config: Config | undefined): readonly SensorRef[] {
     }
   }
   return sensors;
+}
+
+const UNKNOWN_CONTACT: ContactReading = {
+  open: undefined,
+  changedAt: undefined,
+  lastOpen: undefined,
+  lastAt: undefined,
+};
+
+function noticeId(roomId: string): string {
+  return `heatmaster_window_${roomId}`;
+}
+
+/** A limit as the notice says it: whole hours as `2 h` (`2 ч`), else minutes. */
+function limitText(limitMs: number, language: "en" | "ru"): string {
+  const minutes = Math.round(limitMs / 60000);
+  const hours = minutes % 60 === 0;
+  const count = String(hours ? minutes / 60 : minutes);
+  if (language === "ru") return `${count} ${hours ? "ч" : "мин"}`;
+  return `${count} ${hours ? "h" : "min"}`;
+}
+
+/** The title and text of a room's window-limit notification, in the entity language. */
+export function windowNotice(
+  language: "en" | "ru",
+  roomName: string,
+  limitMs: number,
+  afterLimit: "heat" | "stay",
+): Readonly<{ title: string; message: string }> {
+  const limit = limitText(limitMs, language);
+  if (language === "ru") {
+    return {
+      title: `Окно открыто: ${roomName}`,
+      message: `Окно открыто уже ${limit} в ${roomName}; ${
+        afterLimit === "stay" ? "защита от замерзания сохранена" : "отопление снова включено"
+      }.`,
+    };
+  }
+  return {
+    title: `Window open in ${roomName}`,
+    message: `A window has been open for ${limit} in ${roomName}; ${
+      afterLimit === "stay" ? "freeze protection kept" : "heating resumed"
+    }.`,
+  };
 }
 
 function entityOf(ref: string): string | undefined {
@@ -782,6 +838,18 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       readings.set(id, { sensorId: id, value: found.celsius, seenAt, pending: false });
     }
     return { sensors: readings, unobservable };
+  }
+
+  /** Every configured contact as Home Assistant shows it; unknown while the link is not up. */
+  function readContacts(config: Config | undefined): ReadonlyMap<string, ContactReading> {
+    const readings = new Map<string, ContactReading>();
+    for (const entity of config === undefined ? [] : configuredContacts(config)) {
+      readings.set(
+        `${HA_PREFIX}${entity}`,
+        (ha?.up() === true ? ha.contact(entity) : undefined) ?? UNKNOWN_CONTACT,
+      );
+    }
+    return readings;
   }
 
   // ---- rooms from Home Assistant ---------------------------------------------------------------
@@ -1083,8 +1151,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       deviceLists: deviceLists(),
       sensors,
       unobservableSensors: unobservable,
-      // F4: Task 7 reads the window contacts from Home Assistant.
-      contacts: new Map(),
+      contacts: readContacts(readable?.config),
       memory: inbox.memory,
       buckets,
       now: Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(zone()),
@@ -1150,6 +1217,10 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       for (const sensor of roomSensors(readableStored()?.config)) {
         const entity = entityOf(sensor.ref);
         if (entity !== undefined) entities.add(entity);
+      }
+      const config = readableStored()?.config;
+      for (const entity of config === undefined ? [] : configuredContacts(config)) {
+        entities.add(entity);
       }
       ha.watch(entities);
     }
@@ -1290,7 +1361,38 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       onSent: (valveId, what) => {
         applyCore({ kind: "sent", valveId, what, at: clock.nowMs() }, clock.nowMs());
       },
+      notify: notifyWindowOpen,
+      dismiss: dismissWindowOpen,
     };
+  }
+
+  /** The window-limit notice of a room (W7); a failure is logged and not retried. */
+  async function notifyWindowOpen(roomId: string): Promise<void> {
+    const room = roomsOf(configState, stored, houseInput())?.find((found) => found.id === roomId);
+    if (ha === undefined || room?.window.limitMs === undefined) {
+      log.warn("a window notification was not sent: the room is unknown", { roomId });
+      return;
+    }
+    const text = windowNotice(
+      readableStored()?.config.settings.language ?? "en",
+      room.name,
+      room.window.limitMs,
+      room.window.afterLimit,
+    );
+    try {
+      await ha.notify(noticeId(roomId), text.title, text.message);
+    } catch (error) {
+      log.warn("a window notification failed", { roomId, error: errorText(error) });
+    }
+  }
+
+  async function dismissWindowOpen(roomId: string): Promise<void> {
+    if (ha === undefined) return;
+    try {
+      await ha.dismiss(noticeId(roomId));
+    } catch (error) {
+      log.warn("dismissing a window notification failed", { roomId, error: errorText(error) });
+    }
   }
 
   /** What a tick's effects need besides the effects: see `execute`. */

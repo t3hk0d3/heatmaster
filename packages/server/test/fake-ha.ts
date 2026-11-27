@@ -92,6 +92,8 @@ export type FakeHa = Readonly<{
    * `id`.
    */
   writes(): readonly Readonly<Record<string, unknown>>[];
+  /** Every `call_service` received, in order, as sent without its `id`. */
+  services(): readonly Readonly<Record<string, unknown>>[];
   /** While on, every label write fails with `unauthorized`, as for a user who is not an admin. */
   answerUnauthorized(on: boolean): void;
   /** The next label write is received and never answered. */
@@ -162,6 +164,7 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
   let refusing = false;
   let acceptedCount = 0;
   const written: Readonly<Record<string, unknown>>[] = [];
+  const serviceCalls: Readonly<Record<string, unknown>>[] = [];
   let unauthorized = false;
   let stalling = false;
   const coalesced = new Map<string, () => void>();
@@ -334,6 +337,10 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
       else send(socket, { id, type: "result", success: false, error: { ...outcome } });
       return;
     }
+    if (type === "call_service") {
+      result(socket, id, { context: {} });
+      return;
+    }
     if (type === "supported_features") {
       result(socket, id, null);
       return;
@@ -416,6 +423,11 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
           socket.close();
         }
         return;
+      }
+      if (type === "call_service") {
+        serviceCalls.push(
+          Object.fromEntries(Object.entries(message).filter(([key]) => key !== "id")),
+        );
       }
       if (LABEL_WRITES.includes(type)) {
         written.push(Object.fromEntries(Object.entries(message).filter(([key]) => key !== "id")));
@@ -513,6 +525,7 @@ export async function startFakeHa(options: Readonly<{ token?: string }> = {}): P
       emit("label_registry_updated", { action: "remove", label_id: labelId });
     },
     commands: () => received,
+    services: () => serviceCalls,
     requests: () => requested,
     tokens: () => tokens,
     upgrades: () => upgraded,

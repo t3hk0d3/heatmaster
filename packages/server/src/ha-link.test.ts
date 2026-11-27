@@ -1040,6 +1040,147 @@ describe("ha-link", () => {
     });
   });
 
+  describe("contact", () => {
+    const WINDOW = "binary_sensor.window";
+    const TEN = T - 2 * 60 * 60 * 1000;
+    const NINE = T - 3 * 60 * 60 * 1000;
+
+    describe("With binary_sensor.x on, last_changed 10:00", () => {
+      it("returns open true, changedAt 10:00", async () => {
+        const w = await world({
+          watch: [TEMP, WINDOW],
+          seed: (ha) => {
+            seed(ha);
+            ha.setState(WINDOW, "on", {}, TEN);
+          },
+        });
+        expect(w.link.contact(WINDOW)).toEqual({
+          open: true,
+          changedAt: TEN,
+          lastOpen: true,
+          lastAt: TEN,
+        });
+      });
+    });
+
+    describe("With binary_sensor.x unavailable after being on since 09:00", () => {
+      it("returns open undefined, lastOpen true, lastAt 09:00", async () => {
+        const w = await world({
+          watch: [TEMP, WINDOW, "sensor.probe"],
+          probe: true,
+          seed: (ha) => {
+            seed(ha);
+            ha.setState(WINDOW, "on", {}, NINE);
+          },
+        });
+        w.ha.setState(WINDOW, "unavailable", {}, TEN);
+        await until(() => {
+          expect(w.link.contact(WINDOW)?.open).toBeUndefined();
+        });
+        expect(w.link.contact(WINDOW)).toEqual({
+          open: undefined,
+          changedAt: TEN,
+          lastOpen: true,
+          lastAt: NINE,
+        });
+      });
+    });
+
+    describe("With an entity never seen", () => {
+      it("returns undefined", async () => {
+        const w = await world({ watch: [TEMP, "binary_sensor.nothing"] });
+        expect(w.link.contact("binary_sensor.nothing")).toBeUndefined();
+      });
+    });
+
+    describe("With a watched contact that changes", () => {
+      it("sends a changed event", async () => {
+        const w = await world({ watch: [TEMP, WINDOW], seed });
+        const before = w.changedCount();
+        w.ha.setState(WINDOW, "on", {}, TEN);
+        await until(() => {
+          expect(w.changedCount()).toBeGreaterThan(before);
+        });
+      });
+    });
+  });
+
+  describe("notify", () => {
+    describe("With the link up", () => {
+      it("sends call_service persistent_notification create with the id, title and message", async () => {
+        const w = await world();
+        await w.link.notify("heatmaster_window_bath", "Window open", "Close it");
+        expect(w.ha.services()).toEqual([
+          {
+            type: "call_service",
+            domain: "persistent_notification",
+            service: "create",
+            service_data: {
+              notification_id: "heatmaster_window_bath",
+              title: "Window open",
+              message: "Close it",
+            },
+          },
+        ]);
+      });
+    });
+
+    describe("With the link down", () => {
+      it("rejects", async () => {
+        const w = await world({ start: false });
+        await expect(w.link.notify("a", "b", "c")).rejects.toThrow();
+      });
+    });
+
+    describe("With Home Assistant answering an error", () => {
+      it("rejects", async () => {
+        const w = await world();
+        w.ha.failNext("call_service");
+        await expect(w.link.notify("a", "b", "c")).rejects.toThrow();
+      });
+    });
+  });
+
+  describe("dismiss", () => {
+    describe("With the link up", () => {
+      it("sends call_service persistent_notification dismiss with the id", async () => {
+        const w = await world();
+        await w.link.dismiss("heatmaster_window_bath");
+        expect(w.ha.services()).toEqual([
+          {
+            type: "call_service",
+            domain: "persistent_notification",
+            service: "dismiss",
+            service_data: { notification_id: "heatmaster_window_bath" },
+          },
+        ]);
+      });
+    });
+
+    describe("With the link down", () => {
+      it("rejects", async () => {
+        const w = await world({ start: false });
+        await expect(w.link.dismiss("a")).rejects.toThrow();
+      });
+    });
+  });
+
+  describe("watch with contacts", () => {
+    describe("With contacts and sensors configured", () => {
+      it("watches both", async () => {
+        const w = await world({
+          watch: [TEMP, "binary_sensor.window"],
+          seed: (ha) => {
+            seed(ha);
+            ha.setState("binary_sensor.window", "off", {}, T);
+          },
+        });
+        expect(celsiusOf(w)).toBe(19.6);
+        expect(w.link.contact("binary_sensor.window")?.open).toBe(false);
+      });
+    });
+  });
+
   describe("names", () => {
     describe("With a sensor whose state has a friendly_name", () => {
       it("entityName returns it", async () => {

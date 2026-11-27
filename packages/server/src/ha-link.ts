@@ -1,12 +1,14 @@
 /**
  * The optional Home Assistant link: the house's settings, the registries and the states of the room
- * sensors, over Home Assistant's websocket and, for liveness, its REST API. Its only writes are the
- * five label commands of `writeLabels` (`LABEL_COMMANDS`). It never calls a service and is never
- * used for valves.
+ * sensors and window contacts, over Home Assistant's websocket and, for liveness, its REST API. Its
+ * only writes are the five label commands of `writeLabels` (`LABEL_COMMANDS`) and the service calls
+ * `persistent_notification.create` and `persistent_notification.dismiss` (`notify`, `dismiss`).
+ * It is never used for valves.
  */
 
 import type {
   ContactInfo,
+  ContactReading,
   HaArea,
   HaEntity,
   HaSnapshot,
@@ -79,6 +81,16 @@ export type HaLink = Readonly<{
   sensorInfo(entityId: string, valveAddresses: ReadonlySet<string>): SensorInfo;
   /** `exists`: Home Assistant has a state or a registry entry for the entity; `isBinary`: a `binary_sensor`. */
   contactInfo(entityId: string): ContactInfo;
+  /**
+   * A watched contact as Home Assistant shows it: `open` is true for `on`, false for `off`, else
+   * undefined; `changedAt` is `last_changed`; `lastOpen` and `lastAt` are the last `on`/`off` and
+   * its instant, kept through `unavailable` and `unknown`. Undefined while there is no state.
+   */
+  contact(entityId: string): ContactReading | undefined;
+  /** `persistent_notification.create`; rejects when the link is down or Home Assistant errs. */
+  notify(id: string, title: string, message: string): Promise<void>;
+  /** `persistent_notification.dismiss`; rejects as `notify` does. */
+  dismiss(id: string): Promise<void>;
   entityName(entityId: string): string | undefined;
   areaName(areaId: string): string | undefined;
   /** Areas, device areas and labels as loaded; undefined before `ready()`, the last value while down. */
@@ -119,6 +131,7 @@ type StateRecord = Readonly<{
   deviceClass: string | undefined;
   friendlyName: string | undefined;
   reportedAt: number | undefined;
+  changedAt: number | undefined;
 }>;
 type Kept = Readonly<{ celsius: number | undefined; lastReportedAt: number | undefined }>;
 type RegistryKind = "config" | "entities" | "devices" | "areas" | "labels";
@@ -346,6 +359,7 @@ function parseState(raw: unknown): { entityId: string; record: StateRecord } | u
       deviceClass: text(attributes.device_class),
       friendlyName: text(attributes.friendly_name),
       reportedAt: parseTime(raw.last_reported) ?? parseTime(raw.last_updated),
+      changedAt: parseTime(raw.last_changed),
     },
   };
 }
@@ -405,6 +419,9 @@ export function createHaLink(
   let watched: ReadonlySet<string> = new Set();
   const kept = new Map<string, Kept>();
   let view: ReadonlyMap<string, HaSensor> = new Map();
+  // The last `on`/`off` of each watched contact and its `last_changed`, through `unavailable`.
+  const keptContacts = new Map<string, Readonly<{ open: boolean; at: number | undefined }>>();
+  let contactView: ReadonlyMap<string, ContactReading> = new Map();
   const warnedNoDevice = new Set<string>();
 
   let connection: Connection | undefined;
@@ -485,16 +502,52 @@ export function createHaLink(
     return { celsius, lastReportedAt, observable };
   }
 
-  /** Recomputes every watched sensor; true when any of them differs from before. */
+  function computeContact(entityId: string): ContactReading | undefined {
+    const own = states.get(entityId);
+    if (own === undefined) return undefined;
+    if (own.state === "on" || own.state === "off") {
+      keptContacts.set(entityId, { open: own.state === "on", at: own.changedAt });
+    }
+    const last = keptContacts.get(entityId);
+    return {
+      open: own.state === "on" ? true : own.state === "off" ? false : undefined,
+      changedAt: own.changedAt,
+      lastOpen: last?.open,
+      lastAt: last?.at,
+    };
+  }
+
+  function sameContact(a: ContactReading | undefined, b: ContactReading | undefined): boolean {
+    return (
+      a === b ||
+      (a !== undefined &&
+        b !== undefined &&
+        a.open === b.open &&
+        a.changedAt === b.changedAt &&
+        a.lastOpen === b.lastOpen &&
+        a.lastAt === b.lastAt)
+    );
+  }
+
+  /** Recomputes every watched sensor and contact; true when any of them differs from before. */
   function refresh(): boolean {
     const next = new Map<string, HaSensor>();
+    const nextContacts = new Map<string, ContactReading>();
     let differs = false;
     for (const id of watched) {
+      if (id.startsWith("binary_sensor.")) {
+        const contact = computeContact(id);
+        if (contact !== undefined) nextContacts.set(id, contact);
+        if (!sameContact(contact, contactView.get(id))) differs = true;
+        continue;
+      }
       const sensor = computeSensor(id);
       if (sensor !== undefined) next.set(id, sensor);
       if (!sameSensor(sensor, view.get(id))) differs = true;
     }
+    for (const id of contactView.keys()) if (!nextContacts.has(id)) differs = true;
     view = next;
+    contactView = nextContacts;
     return differs;
   }
 
@@ -913,6 +966,27 @@ export function createHaLink(
     }
   }
 
+  /** A `persistent_notification` service call; rejects with `link_down`, `timeout` or HA's code. */
+  async function callService(
+    service: "create" | "dismiss",
+    data: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const conn = connection;
+    if (conn === undefined || stopped || state !== "up") throw new Error(LINK_DOWN);
+    try {
+      await timed(
+        conn.sendMessagePromise<unknown>({
+          type: "call_service",
+          domain: "persistent_notification",
+          service,
+          service_data: data,
+        }),
+      );
+    } catch (error) {
+      throw new Error(errorCode(error));
+    }
+  }
+
   async function load(conn: Connection, id: number): Promise<void> {
     try {
       await subscribeAll(conn);
@@ -1067,6 +1141,7 @@ export function createHaLink(
       const added = [...entityIds].filter((id) => !watched.has(id));
       watched = new Set(entityIds);
       for (const id of kept.keys()) if (!watched.has(id)) kept.delete(id);
+      for (const id of keptContacts.keys()) if (!watched.has(id)) keptContacts.delete(id);
       refresh();
       if (state === "up" && added.length > 0) void fetchStates(entitiesToAsk(added));
     },
@@ -1095,6 +1170,13 @@ export function createHaLink(
         exists: entities.has(entityId) || states.has(entityId),
         isBinary: entityId.startsWith("binary_sensor."),
       };
+    },
+    contact: (entityId) => contactView.get(entityId),
+    async notify(id, title, message) {
+      await callService("create", { notification_id: id, title, message });
+    },
+    async dismiss(id) {
+      await callService("dismiss", { notification_id: id });
     },
     entityName(entityId) {
       return (

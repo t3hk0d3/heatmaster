@@ -1,5 +1,11 @@
 import { applyLabelOps } from "@heatmaster/core";
-import type { ContactInfo, HaSnapshot, LabelOp, SensorInfo } from "@heatmaster/core";
+import type {
+  ContactInfo,
+  ContactReading,
+  HaSnapshot,
+  LabelOp,
+  SensorInfo,
+} from "@heatmaster/core";
 import type { Clock } from "../src/clock.ts";
 import {
   HA_LABEL_TIMEOUT_MS,
@@ -20,6 +26,16 @@ export type StubHaLink = HaLink &
     setSensor(entityId: string, sensor: HaSensor | undefined): void;
     setSensorInfo(entityId: string, info: SensorInfo): void;
     setContactInfo(entityId: string, info: ContactInfo): void;
+    setContact(entityId: string, reading: ContactReading | undefined): void;
+    /** From now on `notify` and `dismiss` reject with this message; undefined: they succeed. */
+    failNotices(message: string | undefined): void;
+    /** Every `notify` (`create`) and `dismiss` call, in order. */
+    notices(): readonly Readonly<{
+      service: "create" | "dismiss";
+      id: string;
+      title?: string;
+      message?: string;
+    }>[];
     setEntityName(entityId: string, name: string): void;
     setAreaName(areaId: string, name: string): void;
     /** What `snapshot()` answers from now on. */
@@ -107,6 +123,14 @@ export function createStubHaLink(): StubHaLink {
   const sensors = new Map<string, HaSensor>();
   const infos = new Map<string, SensorInfo>();
   const contactInfos = new Map<string, ContactInfo>();
+  const contacts = new Map<string, ContactReading>();
+  const noticeCalls: {
+    service: "create" | "dismiss";
+    id: string;
+    title?: string;
+    message?: string;
+  }[] = [];
+  let noticeFailure: string | undefined;
   const names = new Map<string, string>();
   const areas = new Map<string, string>();
   const watched: ReadonlySet<string>[] = [];
@@ -201,6 +225,27 @@ export function createStubHaLink(): StubHaLink {
       return infos.get(entityId) ?? UNKNOWN;
     },
     contactInfo: (entityId) => contactInfos.get(entityId) ?? UNKNOWN_CONTACT,
+    contact: (entityId) => contacts.get(entityId),
+    notify(id, title, message) {
+      noticeCalls.push({ service: "create", id, title, message });
+      return noticeFailure === undefined
+        ? Promise.resolve()
+        : Promise.reject(new Error(noticeFailure));
+    },
+    dismiss(id) {
+      noticeCalls.push({ service: "dismiss", id });
+      return noticeFailure === undefined
+        ? Promise.resolve()
+        : Promise.reject(new Error(noticeFailure));
+    },
+    setContact(entityId, reading) {
+      if (reading === undefined) contacts.delete(entityId);
+      else contacts.set(entityId, reading);
+    },
+    failNotices(message) {
+      noticeFailure = message;
+    },
+    notices: () => [...noticeCalls],
     entityName: (entityId) => names.get(entityId),
     areaName: (areaId) => areas.get(areaId),
     snapshot() {

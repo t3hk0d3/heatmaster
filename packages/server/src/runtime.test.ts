@@ -143,6 +143,8 @@ type RoomSpec = Readonly<{
   id?: string;
   valves?: readonly string[];
   sensors?: readonly string[];
+  /** Entity ids of window contacts, listed as `ha:<entity id>`. */
+  contacts?: readonly string[];
 }>;
 
 /** Area id to the valves Home Assistant puts in it, in any order. */
@@ -226,9 +228,14 @@ function raw(
     rooms: Object.fromEntries(
       specs.map((room) => [
         room.id,
-        room.sensors === undefined || room.sensors.length === 0
-          ? {}
-          : { sensors: room.sensors.map((ref) => ({ ref })) },
+        {
+          ...(room.sensors === undefined || room.sensors.length === 0
+            ? {}
+            : { sensors: room.sensors.map((ref) => ({ ref })) }),
+          ...(room.contacts === undefined || room.contacts.length === 0
+            ? {}
+            : { contacts: room.contacts.map((entity) => ({ ref: `ha:${entity}` })) }),
+        },
       ]),
     ),
   };
@@ -803,6 +810,14 @@ function execRig(
     onConfigSaved: () => order.push("onConfigSaved"),
     onThermostatsSaved: () => order.push("onThermostatsSaved"),
     onSent: (valveId, what) => order.push(`onSent ${valveId} ${what}`),
+    notify: (roomId) => {
+      order.push(`notify ${roomId}`);
+      return Promise.resolve();
+    },
+    dismiss: (roomId) => {
+      order.push(`dismiss ${roomId}`);
+      return Promise.resolve();
+    },
   };
   return { context, order, publishes, reads, overwrite };
 }
@@ -930,6 +945,42 @@ describe("runtime", () => {
           held: [],
           stores: { ledger: true, copy: true, config: true },
         });
+      });
+    });
+
+    describe("With saveThermostats, notifyWindowOpen and dismissWindowOpen", () => {
+      const effects: Effect[] = [
+        { kind: "saveThermostats", state: EMPTY_THERMOSTAT_STATE },
+        { kind: "notifyWindowOpen", roomId: "bath" },
+        { kind: "dismissWindowOpen", roomId: "hall" },
+      ];
+
+      it("each runs after the save, in order", async () => {
+        const rig = execRig();
+        await executeEffects(effects, rig.context);
+        expect(rig.order.filter((line) => !line.startsWith("on"))).toEqual([
+          "start saveThermostats",
+          "end saveThermostats",
+          "notify bath",
+          "dismiss hall",
+        ]);
+      });
+    });
+
+    describe("With a failed save before notifyWindowOpen and dismissWindowOpen", () => {
+      it("neither notice goes out", async () => {
+        const rig = execRig({ fail: { saveThermostats: "state_failed" } });
+        await executeEffects(
+          [
+            { kind: "saveThermostats", state: EMPTY_THERMOSTAT_STATE },
+            { kind: "notifyWindowOpen", roomId: "bath" },
+            { kind: "dismissWindowOpen", roomId: "hall" },
+          ],
+          rig.context,
+        );
+        expect(
+          rig.order.some((line) => line.startsWith("notify") || line.startsWith("dismiss")),
+        ).toBe(false);
       });
     });
 
@@ -5351,6 +5402,188 @@ describe("runtime", () => {
             config: { rooms: { living: { sensors: [{ ref: `ha:${LIVING_T}`, weight: 1 }] } } },
           });
         });
+      });
+    });
+  });
+
+  describe("window contacts", () => {
+    const CONTACT = "binary_sensor.window";
+    const CONTACT_REF = "ha:binary_sensor.window";
+    const windowSeed = (state?: ThermostatState): Seed => ({
+      config: raw({ rooms: [{ valves: [A], contacts: [CONTACT] }] }),
+      ledger: [record(A)],
+      ...(state === undefined ? {} : { state }),
+    });
+    const opened = (ha: StubHaLink, at: number): void => {
+      ha.setContact(CONTACT, { open: true, changedAt: at, lastOpen: true, lastAt: at });
+    };
+    const savedWindows = (rig: Rig): Record<string, Record<string, unknown>> =>
+      readJson(path.join(rig.dataDir, "state.json")).windows as Record<
+        string,
+        Record<string, unknown>
+      >;
+    /** The valve in sync, then the window opens now and stays open for the given time. */
+    async function openFor(ms: number, ha = createStubHaLink()): Promise<Rig> {
+      const rig = await boot({ devices: [trvzb(A)], seed: windowSeed(), ha });
+      await inSync(rig, [A]);
+      opened(ha, rig.clock.nowMs());
+      await rig.advance(ms);
+      return rig;
+    }
+    const roomName = areaName("living");
+
+    describe("With a contact open in Home Assistant for a minute", () => {
+      it("publishes freeze protection to the room's valve", async () => {
+        const rig = await openFor(MINUTE + 30 * 1000);
+        expect(sends(rig, A).map((send) => send.payload)).toContainEqual({
+          system_mode: "heat",
+          occupied_heating_setpoint: 7,
+        });
+      });
+
+      it("saves the opening in state.json", async () => {
+        const rig = await openFor(MINUTE + 30 * 1000);
+        expect(savedWindows(rig).living?.started_at).toBeTypeOf("number");
+      });
+    });
+
+    describe("With an opening reaching its limit", () => {
+      it("calls notify with heatmaster_window_<room> and the English text", async () => {
+        const ha = createStubHaLink();
+        await openFor(2 * HOUR + 5 * MINUTE, ha);
+        expect(ha.notices()).toEqual([
+          {
+            service: "create",
+            id: "heatmaster_window_living",
+            title: `Window open in ${roomName}`,
+            message: `A window has been open for 2 h in ${roomName}; heating resumed.`,
+          },
+        ]);
+      });
+    });
+
+    describe("With notify failing", () => {
+      it("logs a warning", async () => {
+        const ha = createStubHaLink();
+        ha.failNotices("link_down");
+        const rig = await openFor(2 * HOUR + 5 * MINUTE, ha);
+        expect(
+          rig.logged.some((line) => line.level === "warn" && /notif/i.test(line.message)),
+        ).toBe(true);
+      });
+
+      it("still saves the state", async () => {
+        const ha = createStubHaLink();
+        ha.failNotices("link_down");
+        const rig = await openFor(2 * HOUR + 5 * MINUTE, ha);
+        expect(savedWindows(rig).living?.notified_at).toBeTypeOf("number");
+      });
+    });
+
+    describe("With the opening ending after its limit", () => {
+      it("calls dismiss", async () => {
+        const ha = createStubHaLink();
+        const rig = await openFor(2 * HOUR + 5 * MINUTE, ha);
+        const closedAt = rig.clock.nowMs();
+        ha.setContact(CONTACT, {
+          open: false,
+          changedAt: closedAt,
+          lastOpen: false,
+          lastAt: closedAt,
+        });
+        await rig.advance(3 * MINUTE);
+        expect(ha.notices().at(-1)).toEqual({
+          service: "dismiss",
+          id: "heatmaster_window_living",
+        });
+      });
+    });
+
+    describe("With the language set to Russian", () => {
+      it("the notification is in Russian", async () => {
+        const ha = createStubHaLink();
+        const config = raw({ rooms: [{ valves: [A], contacts: [CONTACT] }] });
+        const russian = {
+          ...config,
+          settings: { ...config.settings, language: "ru" },
+        } as RawConfig;
+        housesOf.set(russian, DEFAULT_HOUSE);
+        const rig = await boot({
+          devices: [trvzb(A)],
+          seed: { config: russian, ledger: [record(A)] },
+          ha,
+        });
+        await inSync(rig, [A]);
+        opened(ha, rig.clock.nowMs());
+        await rig.advance(2 * HOUR + 5 * MINUTE);
+        const notice = ha.notices().at(0);
+        expect(notice?.title).toBe(`Окно открыто: ${roomName}`);
+        expect(notice?.message).toBe(
+          `Окно открыто уже 2 ч в ${roomName}; отопление снова включено.`,
+        );
+      });
+    });
+
+    describe("With HA down at start", () => {
+      it("reads every contact as unknown", async () => {
+        const ha = createStubHaLink();
+        opened(ha, T - HOUR);
+        ha.setState("down");
+        await boot({ devices: [trvzb(A)], seed: windowSeed(), ha });
+        expect(tickWorlds.at(-1)?.contacts.get(CONTACT_REF)).toEqual({
+          open: undefined,
+          changedAt: undefined,
+          lastOpen: undefined,
+          lastAt: undefined,
+        });
+      });
+    });
+
+    describe("With a saved opening and its contact open in Home Assistant at the start", () => {
+      const opening = {
+        startedAt: T - 10 * MINUTE,
+        temperatureSince: undefined,
+        temperatureEndedAt: undefined,
+        suspendedAt: undefined,
+        limitAt: undefined,
+        notifiedAt: undefined,
+        droppedAt: undefined,
+        endedAt: undefined,
+      };
+      const saved: ThermostatState = {
+        ...EMPTY_THERMOSTAT_STATE,
+        windows: new Map([["living", opening]]),
+      };
+
+      it("the opening survives the start with its start kept", async () => {
+        const ha = createStubHaLink();
+        opened(ha, T - 10 * MINUTE);
+        const rig = await boot({ devices: [trvzb(A)], seed: windowSeed(saved), ha });
+        await rig.advance(TICK_INTERVAL_MS);
+        expect(savedWindows(rig).living?.started_at).toBe(T - 10 * MINUTE);
+        expect(savedWindows(rig).living?.ended_at).toBeUndefined();
+      });
+
+      it("nothing is written back to the schedule", async () => {
+        const ha = createStubHaLink();
+        opened(ha, T - 10 * MINUTE);
+        const rig = await boot({ devices: [trvzb(A)], seed: windowSeed(saved), ha });
+        await inSync(rig, [A]);
+        await rig.advance(TICK_INTERVAL_MS);
+        const setpoints = sends(rig, A).map(
+          (send) => (send.payload as Record<string, unknown>).occupied_heating_setpoint,
+        );
+        expect(setpoints).not.toContain(20);
+      });
+
+      it("while Home Assistant is not loaded the house stays frozen and the opening is kept", async () => {
+        const ha = createStubHaLink();
+        ha.setReady(false);
+        const rig = await boot({ devices: [trvzb(A)], seed: windowSeed(saved), ha });
+        await rig.advance(5 * TICK_INTERVAL_MS);
+        expect(rig.rt.snapshot().houseFrozenReason).toBe("not_loaded");
+        expect(tickWorlds.at(-1)?.contacts.get(CONTACT_REF)?.open).toBeUndefined();
+        expect(savedWindows(rig).living?.ended_at).toBeUndefined();
       });
     });
   });
