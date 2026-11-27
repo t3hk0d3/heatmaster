@@ -6,7 +6,16 @@
 import type { UnplacedReason } from "./house.ts";
 import type { PendingReason } from "./join.ts";
 import type { ConfigState, DroppedRoomReason, HaChangeKind, Membership } from "./ledger.ts";
-import type { EndRule, PresetName } from "./model.ts";
+import type {
+  AfterLimit,
+  EndRule,
+  ManualChange,
+  PresetName,
+  ValveDetection,
+  WindowAction,
+  WindowEnd,
+  WindowTarget,
+} from "./model.ts";
 import type { Liveness } from "./observation.ts";
 import type { Evidence, SettingKey, ValveMode } from "./settings.ts";
 import type { ProblemKind, Severity, Subject, SyncState } from "./status.ts";
@@ -34,6 +43,42 @@ export type ThermostatView = Readonly<{
   endsAt?: number;
   origin?: OriginView;
   since?: number;
+}>;
+
+/**
+ * A room's active opening: `since` is epoch milliseconds, `openContacts` are contact refs
+ * (`ha:<entity id>`), `holdsValves` says whether its valves are held at the window's action.
+ */
+export type WindowView = Readonly<{
+  state: "open" | "suspended" | "limit_reached" | "dropped";
+  triggers: readonly ("contact" | "temperature")[];
+  openContacts: readonly string[];
+  since: number;
+  holdsValves: boolean;
+}>;
+
+/** A room's merged window settings as JSON: durations in milliseconds, `limitMs` null for none. */
+export type WindowSettingsView = Readonly<{
+  enabled: boolean;
+  action: WindowAction;
+  target: WindowTarget;
+  openDebounceMs: number;
+  closeDebounceMs: number;
+  contactUnavailableMs: number;
+  temperature: Readonly<{
+    enabled: boolean;
+    dropC: number;
+    withinMs: number;
+    end: WindowEnd;
+    fixedMs: number;
+    stillMs: number;
+    rejoinMs: number;
+  }>;
+  limitMs: number | null;
+  afterLimit: AfterLimit;
+  notify: boolean;
+  manualChange: ManualChange;
+  valveDetection: ValveDetection;
 }>;
 
 /**
@@ -66,6 +111,10 @@ export type RoomView = Readonly<{
   /** The room's end settings for a change that names none. */
   overrideEnd?: EndRule;
   overrideDurationMs?: number;
+  /** Left out when the room has no active opening. */
+  window?: WindowView;
+  /** Left out while the room is not resolved from a readable config. */
+  windowSettings?: WindowSettingsView;
 }>;
 
 /**

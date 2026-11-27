@@ -2,14 +2,21 @@
 
 import {
   END_RULES,
+  MANUAL_CHANGES,
   PRESET_NAMES,
+  WINDOW_ACTIONS,
+  WINDOW_ENDS,
+  WINDOW_LIMIT_CHOICES_MS,
   type EndRule,
+  type ManualChange,
   type ProblemView,
   type RoomChoice,
   type RoomView,
   type StateView,
   type SyncState,
   type ThermostatCommand,
+  type WindowAction,
+  type WindowEnd,
 } from "@heatmaster/core";
 import { consoleErrorLog, type ErrorLog } from "./errors.ts";
 import { STATUS_OFFLINE, STATUS_ONLINE, STATUS_TOPIC, type MqttClient } from "./mqtt.ts";
@@ -49,6 +56,19 @@ export type EntityTexts = Readonly<{
   overrideEnd: string;
   /** The select's options, one text per end rule. */
   overrideEndOptions: Readonly<Record<EndRule, string>>;
+  /** The window entities' names. */
+  window: string;
+  windowEnabled: string;
+  windowTemperature: string;
+  windowAction: string;
+  windowEnd: string;
+  windowLimit: string;
+  windowManualChange: string;
+  /** The window selects' options: one text per value; the limit's are `WINDOW_LIMIT_CHOICES_MS` and then none. */
+  windowActionOptions: Readonly<Record<WindowAction, string>>;
+  windowEndOptions: Readonly<Record<WindowEnd, string>>;
+  windowLimitOptions: readonly string[];
+  windowManualChangeOptions: Readonly<Record<ManualChange, string>>;
 }>;
 
 export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
@@ -69,6 +89,17 @@ export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
       timer: "For a set time",
       manual: "Until cancelled",
     },
+    window: "Window",
+    windowEnabled: "Open-window mode",
+    windowTemperature: "Detect by temperature drop",
+    windowAction: "Window action",
+    windowEnd: "Window end",
+    windowLimit: "Window limit",
+    windowManualChange: "Manual change during window",
+    windowActionOptions: { frost_heat: "Frost heat", off: "Valves off" },
+    windowEndOptions: { fixed: "After a set time", stopped_falling: "Stopped falling" },
+    windowLimitOptions: ["30 min", "1 h", "2 h", "4 h", "8 h", "none"],
+    windowManualChangeOptions: { resume_heating: "Resume heating", ignore: "Ignore" },
   },
   ru: {
     temperature: "Температура",
@@ -87,6 +118,17 @@ export const ENTITY_TEXTS: Readonly<Record<"en" | "ru", EntityTexts>> = {
       timer: "На заданное время",
       manual: "До отмены",
     },
+    window: "Окно",
+    windowEnabled: "Режим открытого окна",
+    windowTemperature: "Определять по падению температуры",
+    windowAction: "Действие при открытом окне",
+    windowEnd: "Конец режима окна",
+    windowLimit: "Предел времени окна",
+    windowManualChange: "Ручное изменение при открытом окне",
+    windowActionOptions: { frost_heat: "Защита от мороза", off: "Клапаны выключены" },
+    windowEndOptions: { fixed: "Через заданное время", stopped_falling: "Падение прекратилось" },
+    windowLimitOptions: ["30 мин", "1 ч", "2 ч", "4 ч", "8 ч", "нет"],
+    windowManualChangeOptions: { resume_heating: "Вернуть отопление", ignore: "Игнорировать" },
   },
 };
 
@@ -96,7 +138,7 @@ export function roomStateTopic(roomId: string): string {
   return `heatmaster/rooms/${roomId}/state`;
 }
 
-/** Where Home Assistant sends a room's command: `what` is mode, temperature, preset, schedule or override_end. */
+/** Where Home Assistant sends a room's command: `what` is mode, temperature, preset, schedule, override_end or a `window_` field. */
 export function roomCommandTopic(roomId: string, what: string): string {
   return `heatmaster/rooms/${roomId}/set/${what}`;
 }
@@ -137,6 +179,45 @@ function template(key: string): string {
 /** The climate's attributes: the keys of the room state that describe how its state ends. */
 const ATTRIBUTES_TEMPLATE =
   "{{ {" + ATTRIBUTE_KEYS.map((key) => `"${key}": value_json.${key}`).join(", ") + "} | tojson }}";
+
+/** A window switch: its state is the room payload's `field`, its command goes to the set topic. */
+function windowSwitch(
+  room: RoomView,
+  id: string,
+  field: string,
+  name: string,
+): Record<string, unknown> {
+  return {
+    platform: "switch",
+    unique_id: `${id}_${field}`,
+    name,
+    default_entity_id: entityId("switch", room.roomId, field),
+    state_topic: roomStateTopic(room.roomId),
+    value_template: template(field),
+    command_topic: roomCommandTopic(room.roomId, field),
+    payload_on: "ON",
+    payload_off: "OFF",
+  };
+}
+
+function windowSelect(
+  room: RoomView,
+  id: string,
+  field: string,
+  name: string,
+  options: readonly string[],
+): Record<string, unknown> {
+  return {
+    platform: "select",
+    unique_id: `${id}_${field}`,
+    name,
+    default_entity_id: entityId("select", room.roomId, field),
+    options,
+    state_topic: roomStateTopic(room.roomId),
+    value_template: template(field),
+    command_topic: roomCommandTopic(room.roomId, field),
+  };
+}
 
 function roomConfig(
   room: RoomView,
@@ -252,6 +333,45 @@ function roomConfig(
         value_template: template("override_end"),
         command_topic: roomCommandTopic(room.roomId, "override_end"),
       },
+      window: {
+        platform: "binary_sensor",
+        unique_id: `${id}_window`,
+        name: texts.window,
+        default_entity_id: entityId("binary_sensor", room.roomId, "window"),
+        state_topic: stateTopic,
+        device_class: "window",
+        value_template: template("window"),
+      },
+      window_enabled: windowSwitch(room, id, "window_enabled", texts.windowEnabled),
+      window_temperature: windowSwitch(room, id, "window_temperature", texts.windowTemperature),
+      window_action: windowSelect(
+        room,
+        id,
+        "window_action",
+        texts.windowAction,
+        WINDOW_ACTIONS.map((action) => texts.windowActionOptions[action]),
+      ),
+      window_end: windowSelect(
+        room,
+        id,
+        "window_end",
+        texts.windowEnd,
+        WINDOW_ENDS.map((end) => texts.windowEndOptions[end]),
+      ),
+      window_limit: windowSelect(
+        room,
+        id,
+        "window_limit",
+        texts.windowLimit,
+        texts.windowLimitOptions,
+      ),
+      window_manual_change: windowSelect(
+        room,
+        id,
+        "window_manual_change",
+        texts.windowManualChange,
+        MANUAL_CHANGES.map((change) => texts.windowManualChangeOptions[change]),
+      ),
     },
   });
 }
@@ -373,7 +493,12 @@ function thermostatPayload(room: RoomView, state: StateView): Record<string, unk
   return {
     mode: thermostat === undefined ? null : MODES[thermostat.kind],
     preset: thermostat?.preset ?? "none",
-    action: thermostat?.kind === "off" ? "off" : room.heating === true ? "heating" : "idle",
+    action:
+      thermostat?.kind === "off" || room.window?.holdsValves === true
+        ? "off"
+        : room.heating === true
+          ? "heating"
+          : "idle",
     rule: thermostat?.rule ?? null,
     ends_at: isoOrNull(thermostat?.endsAt),
     origin: originText(room, state),
@@ -382,6 +507,33 @@ function thermostatPayload(room: RoomView, state: StateView): Record<string, unk
     schedule: room.scheduleName ?? null,
     override_end:
       room.overrideEnd === undefined ? null : texts.overrideEndOptions[room.overrideEnd],
+    ...windowPayload(room, texts),
+  };
+}
+
+/** The room's limit as an option text; a limit off the list (set in the editor) has none (W10). */
+function limitText(limitMs: number | null, texts: EntityTexts): string | null {
+  if (limitMs === null) return texts.windowLimitOptions[WINDOW_LIMIT_CHOICES_MS.length] ?? null;
+  const index = WINDOW_LIMIT_CHOICES_MS.indexOf(limitMs);
+  return index < 0 ? null : (texts.windowLimitOptions[index] ?? null);
+}
+
+/** The part of a room's state message that belongs to its window entities. */
+function windowPayload(room: RoomView, texts: EntityTexts): Record<string, unknown> {
+  const settings = room.windowSettings;
+  const opening = room.window;
+  return {
+    window: onOff(opening?.holdsValves === true),
+    window_state: opening?.state ?? null,
+    window_triggers: opening?.triggers ?? [],
+    window_since: isoOrNull(opening?.since),
+    window_enabled: settings === undefined ? null : onOff(settings.enabled),
+    window_temperature: settings === undefined ? null : onOff(settings.temperature.enabled),
+    window_action: settings === undefined ? null : texts.windowActionOptions[settings.action],
+    window_end: settings === undefined ? null : texts.windowEndOptions[settings.temperature.end],
+    window_limit: settings === undefined ? null : limitText(settings.limitMs, texts),
+    window_manual_change:
+      settings === undefined ? null : texts.windowManualChangeOptions[settings.manualChange],
   };
 }
 
@@ -569,6 +721,34 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
         const options = ENTITY_TEXTS[state.language].overrideEndOptions;
         const rule = END_RULES.find((candidate) => options[candidate] === text);
         return rule === undefined ? undefined : { kind: "override_end", rule };
+      }
+      case "window_enabled":
+      case "window_temperature": {
+        if (text !== "ON" && text !== "OFF") return undefined;
+        return { kind: what, on: text === "ON" };
+      }
+      case "window_action": {
+        const options = ENTITY_TEXTS[state.language].windowActionOptions;
+        const action = WINDOW_ACTIONS.find((candidate) => options[candidate] === text);
+        return action === undefined ? undefined : { kind: "window_action", action };
+      }
+      case "window_end": {
+        const options = ENTITY_TEXTS[state.language].windowEndOptions;
+        const end = WINDOW_ENDS.find((candidate) => options[candidate] === text);
+        return end === undefined ? undefined : { kind: "window_end", end };
+      }
+      case "window_limit": {
+        const options = ENTITY_TEXTS[state.language].windowLimitOptions;
+        const index = options.indexOf(text);
+        if (index < 0) return undefined;
+        return { kind: "window_limit", limitMs: WINDOW_LIMIT_CHOICES_MS[index] };
+      }
+      case "window_manual_change": {
+        const options = ENTITY_TEXTS[state.language].windowManualChangeOptions;
+        const manualChange = MANUAL_CHANGES.find((candidate) => options[candidate] === text);
+        return manualChange === undefined
+          ? undefined
+          : { kind: "window_manual_change", manualChange };
       }
       default:
         return undefined;

@@ -73,6 +73,15 @@ export const VALVE_DETECTIONS: readonly ValveDetection[] = [
   "leave",
 ];
 
+/** The window limits the Home Assistant select offers, in milliseconds; "none" is the sixth option. */
+export const WINDOW_LIMIT_CHOICES_MS: readonly number[] = [
+  30 * 60 * 1000,
+  60 * 60 * 1000,
+  2 * 60 * 60 * 1000,
+  4 * 60 * 60 * 1000,
+  8 * 60 * 60 * 1000,
+];
+
 /** What an open window holds the room's valves at: a preset's temperature or a number of degrees. */
 export type WindowTarget =
   Readonly<{ kind: "preset"; preset: PresetName }> | Readonly<{ kind: "celsius"; celsius: number }>;

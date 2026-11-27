@@ -97,6 +97,7 @@ import type {
   UnplacedReason,
   UpgradeReport,
   ValveSpec,
+  WindowSettings,
   World,
 } from "@heatmaster/core";
 import type { Clock } from "./clock.ts";
@@ -170,6 +171,8 @@ export type RoomSnapshot = Readonly<{
   scheduleName: string | undefined;
   valveIds: readonly string[];
   sensorIds: readonly string[];
+  /** The room's merged window settings; undefined while the room is not resolved. */
+  window: WindowSettings | undefined;
   status: RoomStatus | undefined;
 }>;
 
@@ -1783,6 +1786,7 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
           scheduleName: config.schedules.find((schedule) => schedule.id === scheduleId)?.name,
           valveIds: area.valveIds,
           sensorIds: sensors.map((sensor) => sensorId(sensor)),
+          window: room?.window,
           status: lastTick?.rooms.get(areaId),
         };
       },

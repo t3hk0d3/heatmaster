@@ -14,6 +14,7 @@ export {
   WEEKDAYS,
   WINDOW_ACTIONS,
   WINDOW_ENDS,
+  WINDOW_LIMIT_CHOICES_MS,
   contactId,
   effectivePresets,
   sensorId,
@@ -442,5 +443,7 @@ export type {
   UnassignedValveView,
   UpgradeView,
   ValveView,
+  WindowSettingsView,
+  WindowView,
   WriteView,
 } from "./wire.ts";

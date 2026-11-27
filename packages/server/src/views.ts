@@ -22,6 +22,8 @@ import type {
   UpgradeView,
   ValveStatus,
   ValveView,
+  WindowSettings,
+  WindowSettingsView,
   WriteView,
 } from "@heatmaster/core";
 import type { DeviceSnapshot, RoomSnapshot, Snapshot } from "./runtime.ts";
@@ -47,6 +49,10 @@ function thermostatView(thermostat: Thermostat): ThermostatView {
     origin: present({ source: origin.source, valveId: origin.valveId }),
     since,
   });
+}
+
+function windowSettingsView(settings: WindowSettings): WindowSettingsView {
+  return { ...settings, limitMs: settings.limitMs ?? null };
 }
 
 function roomView(room: RoomSnapshot, snapshot: Snapshot): RoomView {
@@ -79,6 +85,8 @@ function roomView(room: RoomSnapshot, snapshot: Snapshot): RoomView {
     maxTemp: status?.limits?.max,
     overrideEnd: status?.overrideEnd,
     overrideDurationMs: status?.overrideDurationMs,
+    window: status?.window,
+    windowSettings: room.window === undefined ? undefined : windowSettingsView(room.window),
   });
 }
 

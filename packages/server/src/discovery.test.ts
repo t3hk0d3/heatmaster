@@ -1,9 +1,11 @@
+import { DEFAULT_WINDOW_SETTINGS } from "@heatmaster/core";
 import type {
   ProblemView,
   RoomChoice,
   RoomView,
   StateView,
   ThermostatCommand,
+  WindowView,
 } from "@heatmaster/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startFakeZ2m, type FakeZ2m } from "../test/fake-z2m.ts";
@@ -140,7 +142,7 @@ describe("discovery", () => {
       it("availability_topic is heatmaster/status", () => {
         expect(config.availability_topic).toBe("heatmaster/status");
       });
-      it("components holds exactly temperature, target, problem, sync, climate, schedule and override_end", () => {
+      it("components holds exactly the seven plain ones and the seven window ones", () => {
         expect(Object.keys(config.components)).toEqual([
           "temperature",
           "target",
@@ -149,6 +151,13 @@ describe("discovery", () => {
           "climate",
           "schedule",
           "override_end",
+          "window",
+          "window_enabled",
+          "window_temperature",
+          "window_action",
+          "window_end",
+          "window_limit",
+          "window_manual_change",
         ]);
       });
       it("every sensor's and select's state_topic is the room's state topic", () => {
@@ -225,6 +234,13 @@ describe("discovery", () => {
             climate: texts.thermostat,
             schedule: texts.schedule,
             override_end: texts.overrideEnd,
+            window: texts.window,
+            window_enabled: texts.windowEnabled,
+            window_temperature: texts.windowTemperature,
+            window_action: texts.windowAction,
+            window_end: texts.windowEnd,
+            window_limit: texts.windowLimit,
+            window_manual_change: texts.windowManualChange,
           });
         });
         it("every system component is named from the language's texts", () => {
@@ -343,6 +359,13 @@ describe("discovery", () => {
           climate: "climate.heatmaster_a",
           schedule: "select.heatmaster_a_schedule",
           override_end: "select.heatmaster_a_override_end",
+          window: "binary_sensor.heatmaster_a_window",
+          window_enabled: "switch.heatmaster_a_window_enabled",
+          window_temperature: "switch.heatmaster_a_window_temperature",
+          window_action: "select.heatmaster_a_window_action",
+          window_end: "select.heatmaster_a_window_end",
+          window_limit: "select.heatmaster_a_window_limit",
+          window_manual_change: "select.heatmaster_a_window_manual_change",
         });
       });
       it("a hyphen in the room id becomes an underscore", () => {
@@ -534,6 +557,187 @@ describe("discovery", () => {
     });
   });
 
+  describe("configMessages (windows)", () => {
+    const configOf = (language: "en" | "ru" = "en"): Config =>
+      parse(
+        configMessages(view({ language, rooms: [room("a")] }), OPTIONS).get(
+          roomConfigTopic("homeassistant", "a"),
+        ),
+      );
+    describe("For a managed room", () => {
+      const config = configOf();
+      it("adds a window binary_sensor with device class window and unique id heatmaster_room_<id>_window", () => {
+        expect(config.components.window).toMatchObject({
+          platform: "binary_sensor",
+          device_class: "window",
+          unique_id: "heatmaster_room_a_window",
+          default_entity_id: "binary_sensor.heatmaster_a_window",
+          state_topic: "heatmaster/rooms/a/state",
+          value_template: "{{ value_json.window }}",
+        });
+      });
+      it("adds the two switches with their command topics", () => {
+        expect(config.components.window_enabled).toMatchObject({
+          platform: "switch",
+          unique_id: "heatmaster_room_a_window_enabled",
+          default_entity_id: "switch.heatmaster_a_window_enabled",
+          state_topic: "heatmaster/rooms/a/state",
+          value_template: "{{ value_json.window_enabled }}",
+          command_topic: "heatmaster/rooms/a/set/window_enabled",
+          payload_on: "ON",
+          payload_off: "OFF",
+        });
+        expect(config.components.window_temperature).toMatchObject({
+          platform: "switch",
+          unique_id: "heatmaster_room_a_window_temperature",
+          value_template: "{{ value_json.window_temperature }}",
+          command_topic: "heatmaster/rooms/a/set/window_temperature",
+          payload_on: "ON",
+          payload_off: "OFF",
+        });
+      });
+      it("adds the four selects with their options in the entity language", () => {
+        for (const language of ["en", "ru"] as const) {
+          const texts = ENTITY_TEXTS[language];
+          const components = configOf(language).components;
+          expect(components.window_action.options).toEqual([
+            texts.windowActionOptions.frost_heat,
+            texts.windowActionOptions.off,
+          ]);
+          expect(components.window_end.options).toEqual([
+            texts.windowEndOptions.fixed,
+            texts.windowEndOptions.stopped_falling,
+          ]);
+          expect(components.window_limit.options).toEqual(texts.windowLimitOptions);
+          expect(components.window_manual_change.options).toEqual([
+            texts.windowManualChangeOptions.resume_heating,
+            texts.windowManualChangeOptions.ignore,
+          ]);
+        }
+        expect(ENTITY_TEXTS.en.windowLimitOptions).toEqual([
+          "30 min",
+          "1 h",
+          "2 h",
+          "4 h",
+          "8 h",
+          "none",
+        ]);
+        for (const key of ["action", "end", "limit", "manual_change"]) {
+          expect(config.components[`window_${key}`]).toMatchObject({
+            platform: "select",
+            unique_id: `heatmaster_room_a_window_${key}`,
+            value_template: `{{ value_json.window_${key} }}`,
+            command_topic: `heatmaster/rooms/a/set/window_${key}`,
+          });
+        }
+      });
+    });
+  });
+
+  describe("stateMessages (windows)", () => {
+    const payload = (extra: Partial<RoomView>): Config =>
+      parse(stateMessages(view({ rooms: [room("a", extra)] })).get(roomStateTopic("a")));
+    const settings = {
+      ...DEFAULT_WINDOW_SETTINGS,
+      limitMs: 2 * 60 * 60 * 1000,
+    };
+    const holding: WindowView = {
+      state: "open",
+      triggers: ["contact", "temperature"],
+      openContacts: ["ha:binary_sensor.w"],
+      since: Date.UTC(2026, 10, 27, 10, 0, 0),
+      holdsValves: true,
+    };
+    describe("With an opening holding the valves", () => {
+      const state = payload({
+        window: holding,
+        thermostat: { kind: "schedule" },
+        heating: true,
+        windowSettings: settings,
+      });
+      it("sets window ON and window_state open", () => {
+        expect(state).toMatchObject({ window: "ON", window_state: "open" });
+      });
+      it("sets the climate action off", () => {
+        expect(state.action).toBe("off");
+      });
+      it("sets window_triggers and window_since", () => {
+        expect(state.window_triggers).toEqual(["contact", "temperature"]);
+        expect(state.window_since).toBe("2026-11-27T10:00:00.000Z");
+      });
+    });
+    describe("With the room's limit 90 min", () => {
+      it("sets window_limit null", () => {
+        expect(
+          payload({ windowSettings: { ...settings, limitMs: 90 * 60 * 1000 } }).window_limit,
+        ).toBeNull();
+      });
+    });
+    describe("With the room's limit 4 h", () => {
+      it("sets window_limit 4 h", () => {
+        expect(
+          payload({ windowSettings: { ...settings, limitMs: 4 * 60 * 60 * 1000 } }).window_limit,
+        ).toBe("4 h");
+      });
+    });
+    describe("With no limit", () => {
+      it("sets window_limit none", () => {
+        expect(payload({ windowSettings: { ...settings, limitMs: null } }).window_limit).toBe(
+          "none",
+        );
+      });
+    });
+    describe("With no opening", () => {
+      const state = payload({ windowSettings: settings });
+      it("sets window OFF and window_state null", () => {
+        expect(state).toMatchObject({ window: "OFF", window_state: null });
+      });
+      it("sets window_triggers empty and window_since null", () => {
+        expect(state.window_triggers).toEqual([]);
+        expect(state.window_since).toBeNull();
+      });
+    });
+    describe("With a suspended opening", () => {
+      it("sets window OFF and window_state suspended", () => {
+        expect(
+          payload({ window: { ...holding, state: "suspended", holdsValves: false } }),
+        ).toMatchObject({ window: "OFF", window_state: "suspended" });
+      });
+    });
+    describe("With the room's settings", () => {
+      it("sets the switches and the selects from them", () => {
+        const state = payload({
+          windowSettings: {
+            ...settings,
+            enabled: false,
+            action: "off",
+            temperature: { ...settings.temperature, enabled: true, end: "stopped_falling" },
+            manualChange: "ignore",
+          },
+        });
+        expect(state).toMatchObject({
+          window_enabled: "OFF",
+          window_temperature: "ON",
+          window_action: "Valves off",
+          window_end: "Stopped falling",
+          window_manual_change: "Ignore",
+        });
+      });
+    });
+    describe("With no window settings known", () => {
+      it("sets the switches and selects null", () => {
+        expect(payload({})).toMatchObject({
+          window_enabled: null,
+          window_temperature: null,
+          window_action: null,
+          window_end: null,
+          window_limit: null,
+          window_manual_change: null,
+        });
+      });
+    });
+  });
+
   describe("stateMessages", () => {
     const one = (state: StateView, topic: string): string | undefined =>
       stateMessages(state).get(topic);
@@ -554,6 +758,16 @@ describe("discovery", () => {
           next_target: null,
           schedule: null,
           override_end: null,
+          window: "OFF",
+          window_state: null,
+          window_triggers: [],
+          window_since: null,
+          window_enabled: null,
+          window_temperature: null,
+          window_action: null,
+          window_end: null,
+          window_limit: null,
+          window_manual_change: null,
         });
       });
     });
@@ -1264,6 +1478,95 @@ describe("discovery (createDiscovery)", () => {
           kind: "override_end",
           rule: "manual",
         });
+      });
+    });
+    describe("With window_enabled OFF", () => {
+      it("calls roomChoice with window_enabled false", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_enabled", "OFF");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_enabled",
+          on: false,
+        });
+      });
+    });
+    describe("With window_temperature ON", () => {
+      it("calls roomChoice with window_temperature true", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_temperature", "ON");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_temperature",
+          on: true,
+        });
+      });
+    });
+    describe('With window_action "Valves off"', () => {
+      it("calls roomChoice with window_action off", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_action", "Valves off");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_action",
+          action: "off",
+        });
+      });
+    });
+    describe('With window_limit "4 h"', () => {
+      it("calls roomChoice with window_limit 4 h", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_limit", "4 h");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_limit",
+          limitMs: 4 * 60 * 60 * 1000,
+        });
+      });
+    });
+    describe('With window_limit "none"', () => {
+      it("calls roomChoice with window_limit undefined", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_limit", "none");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_limit",
+          limitMs: undefined,
+        });
+      });
+    });
+    describe('With window_end "Stopped falling"', () => {
+      it("calls roomChoice with window_end stopped_falling", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_end", "Stopped falling");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_end",
+          end: "stopped_falling",
+        });
+      });
+    });
+    describe('With window_manual_change "Ignore"', () => {
+      it("calls roomChoice with window_manual_change ignore", async () => {
+        const { roomChoice, send } = await ready();
+        send("window_manual_change", "Ignore");
+        expect(roomChoice).toHaveBeenCalledExactlyOnceWith("mancave", {
+          kind: "window_manual_change",
+          manualChange: "ignore",
+        });
+      });
+    });
+    describe("With an unknown window option", () => {
+      it("calls nothing and logs a warning", async () => {
+        const { roomChoice, roomCommand, warn, send } = await ready();
+        send("window_limit", "3 days");
+        send("window_end", "never");
+        send("window_enabled", "maybe");
+        expect(roomChoice).not.toHaveBeenCalled();
+        expect(roomCommand).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(3);
+      });
+    });
+    describe("With a retained window command", () => {
+      it("calls nothing", async () => {
+        const { roomChoice, warn, send } = await ready();
+        send("window_enabled", "OFF", true);
+        expect(roomChoice).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
       });
     });
     describe('With set/temperature "warm"', () => {

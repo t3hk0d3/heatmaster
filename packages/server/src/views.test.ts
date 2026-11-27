@@ -1,4 +1,10 @@
-import { EMPTY_CONFIG, FRESH_STORED, capture, findProfile } from "@heatmaster/core";
+import {
+  DEFAULT_WINDOW_SETTINGS,
+  EMPTY_CONFIG,
+  FRESH_STORED,
+  capture,
+  findProfile,
+} from "@heatmaster/core";
 import type {
   ChangePlan,
   DeviceState,
@@ -78,6 +84,7 @@ function room(roomId: string, over: Partial<RoomSnapshot> = {}): RoomSnapshot {
     scheduleName: undefined,
     valveIds: [],
     sensorIds: [],
+    window: undefined,
     status: undefined,
     ...over,
   };
@@ -181,6 +188,49 @@ describe("views", () => {
             battery: 88,
           },
         ]);
+      });
+    });
+
+    describe("With a room status holding a window opening", () => {
+      it("includes window with state open and the open contacts", () => {
+        const opening = {
+          state: "open",
+          triggers: ["contact"],
+          openContacts: ["ha:binary_sensor.window"],
+          since: 5000,
+          holdsValves: true,
+        } as const;
+        const view = viewOf({
+          rooms: [
+            room("living", {
+              valveIds: [A],
+              status: status("living", [valveStatus(A)], { window: opening }),
+            }),
+          ],
+        });
+        expect(view.rooms[0]?.window).toEqual(opening);
+      });
+    });
+
+    describe("With no opening", () => {
+      it("leaves window out", () => {
+        expect(Object.hasOwn(stateView(oneRoom()).rooms[0] ?? {}, "window")).toBe(false);
+      });
+    });
+
+    describe("For every managed room", () => {
+      it("includes windowSettings with the merged values", () => {
+        const view = viewOf({
+          rooms: [
+            room("living", { window: { ...DEFAULT_WINDOW_SETTINGS, limitMs: 90 * 60 * 1000 } }),
+            room("hall", { window: { ...DEFAULT_WINDOW_SETTINGS, limitMs: undefined } }),
+          ],
+        });
+        expect(view.rooms[0]?.windowSettings).toEqual({
+          ...DEFAULT_WINDOW_SETTINGS,
+          limitMs: 90 * 60 * 1000,
+        });
+        expect(view.rooms[1]?.windowSettings?.limitMs).toBeNull();
       });
     });
 
