@@ -234,8 +234,11 @@ export {
   problemEntryUnavailable,
   problemLabelForeign,
   problemLegacyLabelPresent,
+  problemContactLabelUnused,
+  problemContactUnavailable,
   problemSensorLabelUnused,
   problemSensorUnlabellable,
+  problemWindowOpenTooLong,
   problemTransportUnusable,
   problemValveNotInHa,
   problemValveOrphan,
@@ -261,6 +264,7 @@ export {
   SCHEDULE_LABEL_PREFIX,
   NO_WINDOW_PATCH,
   SENSOR_LABEL,
+  WINDOW_SENSOR_LABEL,
   mergeWindow,
   membershipFrom,
   resolveRooms,
@@ -373,6 +377,7 @@ export type {
   ChangeOptions,
   ChangePlan,
   ChangeRefusedCode,
+  ContactInfo,
   SensorInfo,
 } from "./change.ts";
 export { acceptUnknownOriginals, reconcile } from "./join.ts";

@@ -46,7 +46,10 @@ export type ProblemKind =
   | "label_foreign"
   | "entry_unavailable"
   | "ha_label_failed"
-  | "sensor_unlabellable";
+  | "sensor_unlabellable"
+  | "contact_label_unused"
+  | "contact_unavailable"
+  | "window_open_too_long";
 
 export type Problem = Readonly<{
   kind: ProblemKind;
@@ -383,4 +386,23 @@ export function problemHaLabelFailed(op: LabelOp, error: string): Problem {
 /** A configured sensor that Home Assistant has no registry entry for, so it cannot be labelled. */
 export function problemSensorUnlabellable(entityId: string): Problem {
   return problem("sensor_unlabellable", "sensor", sensorSubject(entityId), "warning");
+}
+
+/**
+ * An entity carries `heatmaster_window_sensor` but no entry lists it, and it cannot be added:
+ * `reason` is `no_area`, `area_not_room`, `entry_unavailable`, `contact_unknown`,
+ * `contact_not_binary` or `contact_limit`.
+ */
+export function problemContactLabelUnused(entityId: string, reason: string): Problem {
+  return problem("contact_label_unused", "sensor", sensorSubject(entityId), "warning", { reason });
+}
+
+/** A room's window contact has been unavailable too long; `contactId` is its ref, `ha:<entity id>`. */
+export function problemContactUnavailable(contactId: string): Problem {
+  return problem("contact_unavailable", "sensor", contactId, "warning");
+}
+
+/** A room's window has been open past the room's limit. */
+export function problemWindowOpenTooLong(roomId: string): Problem {
+  return problem("window_open_too_long", "room", roomId, "warning");
 }

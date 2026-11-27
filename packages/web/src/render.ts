@@ -514,6 +514,7 @@ const PROBLEM_CODE_PARAMS: Readonly<Record<string, string>> = {
 /** The `reason` of these problems has its own texts; any other reason is a link's. */
 const PROBLEM_REASON_PREFIX: Readonly<Record<string, string>> = {
   sensor_label_unused: "problem.sensor_label_unused",
+  contact_label_unused: "problem.contact_label_unused",
   valve_pending: "pending.reason",
   rooms_frozen: "frozen_reason",
 };

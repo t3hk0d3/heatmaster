@@ -10,7 +10,7 @@ import type {
 } from "@heatmaster/core";
 import { describe, expect, it, vi } from "vitest";
 import { createStubHaLink, type StubHaLink } from "../test/stub-ha-link.ts";
-import { createLabelSync, type LabelSync } from "./label-sync.ts";
+import { contactInfos, createLabelSync, type LabelSync } from "./label-sync.ts";
 
 // ---- fixtures ------------------------------------------------------------------------------------
 
@@ -600,6 +600,35 @@ describe("label-sync", () => {
         await mirrored;
         relabelArea(ha, "office", [NIGHT]);
         expect(sync.pull(config(), MEMBERSHIP)).toBeUndefined();
+      });
+    });
+  });
+
+  describe("contactInfos", () => {
+    const WINDOW = "binary_sensor.office_window";
+    const LISTED = "binary_sensor.hall_window";
+    const snapshot: HaSnapshot = {
+      areas: new Map(),
+      valveAreas: new Map(),
+      entities: new Map([
+        [WINDOW, { areaId: "office", labels: ["heatmaster_window_sensor"] }],
+        ["binary_sensor.other", { areaId: "office", labels: [] }],
+      ]),
+      labels: new Map(),
+    };
+
+    describe("With a labelled entity and a configured contact", () => {
+      const ha = createStubHaLink();
+      ha.setContactInfo(WINDOW, { exists: true, isBinary: true });
+      const infos = contactInfos(ha, snapshot, [LISTED]);
+      it("holds the info of the entity wearing heatmaster_window_sensor", () => {
+        expect(infos.get(WINDOW)).toEqual({ exists: true, isBinary: true });
+      });
+      it("holds the info of the configured contact, unknown to Home Assistant here", () => {
+        expect(infos.get(LISTED)).toEqual({ exists: false, isBinary: false });
+      });
+      it("holds nothing for an entity that is neither", () => {
+        expect(infos.has("binary_sensor.other")).toBe(false);
       });
     });
   });

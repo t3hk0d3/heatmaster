@@ -5,7 +5,14 @@
  * used for valves.
  */
 
-import type { HaArea, HaEntity, HaSnapshot, LabelOp, SensorInfo } from "@heatmaster/core";
+import type {
+  ContactInfo,
+  HaArea,
+  HaEntity,
+  HaSnapshot,
+  LabelOp,
+  SensorInfo,
+} from "@heatmaster/core";
 import {
   createConnection,
   createLongLivedTokenAuth,
@@ -70,6 +77,8 @@ export type HaLink = Readonly<{
   watch(entityIds: ReadonlySet<string>): void;
   sensor(entityId: string): HaSensor | undefined;
   sensorInfo(entityId: string, valveAddresses: ReadonlySet<string>): SensorInfo;
+  /** `exists`: Home Assistant has a state or a registry entry for the entity; `isBinary`: a `binary_sensor`. */
+  contactInfo(entityId: string): ContactInfo;
   entityName(entityId: string): string | undefined;
   areaName(areaId: string): string | undefined;
   /** Areas, device areas and labels as loaded; undefined before `ready()`, the last value while down. */
@@ -1078,6 +1087,13 @@ export function createHaLink(
             value.startsWith(Z2M_IDENTIFIER_PREFIX) &&
             valveAddresses.has(value.slice(Z2M_IDENTIFIER_PREFIX.length)),
         ),
+      };
+    },
+    contactInfo(entityId) {
+      if (!loadedOnce) return { exists: false, isBinary: false };
+      return {
+        exists: entities.has(entityId) || states.has(entityId),
+        isBinary: entityId.startsWith("binary_sensor."),
       };
     },
     entityName(entityId) {

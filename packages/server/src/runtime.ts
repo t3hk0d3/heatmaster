@@ -85,6 +85,7 @@ import type {
   RoomChoice,
   RoomStatus,
   SensorInfo,
+  ContactInfo,
   SensorReading,
   SensorRef,
   SettingKey,
@@ -100,7 +101,13 @@ import type {
 import type { Clock } from "./clock.ts";
 import { HeatmasterError } from "./errors.ts";
 import type { HaEvent, HaLink } from "./ha-link.ts";
-import { createLabelSync, sensorInfos, type LabelScope } from "./label-sync.ts";
+import {
+  configuredContacts,
+  contactInfos,
+  createLabelSync,
+  sensorInfos,
+  type LabelScope,
+} from "./label-sync.ts";
 import type {
   ConfigStore,
   LedgerStore,
@@ -1581,7 +1588,14 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       overwriteUnreadable: options.overwriteUnreadable,
       haLinked: ha?.ready() === true,
     };
-    const result = planChange(world, raw, changeOptions, infos);
+    const contacts = new Map<string, ContactInfo>();
+    for (const entityId of configuredContacts(config)) {
+      contacts.set(
+        entityId,
+        ha === undefined ? { exists: false, isBinary: false } : ha.contactInfo(entityId),
+      );
+    }
+    const result = planChange(world, raw, changeOptions, infos, contacts);
     // The joining valves, and those that wait because they have not reported, are asked to report.
     const unobserved = result.pending.filter((p) => p.reason === "valve_not_observed");
     const asked = [...result.joining, ...unobserved].map((entry) => entry.valveId);
@@ -1618,7 +1632,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
     const snapshot = ha.snapshot();
     if (snapshot === undefined) return [];
     const infos = sensorInfos(ha, snapshot, valveAddresses());
-    return [...labelProblems(readable.config, house.membership, snapshot, infos)];
+    const contacts = contactInfos(ha, snapshot, configuredContacts(readable.config));
+    return [...labelProblems(readable.config, house.membership, snapshot, infos, contacts)];
   }
 
   function makeSnapshot(): Snapshot {

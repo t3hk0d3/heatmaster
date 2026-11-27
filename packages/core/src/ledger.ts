@@ -39,6 +39,8 @@ export type HaChangeKind =
   | "sensor_added"
   | "sensor_removed"
   | "sensors_imported"
+  | "contact_added"
+  | "contact_removed"
   | "override_end"
   | "window_setting";
 
@@ -513,6 +515,8 @@ const HA_CHANGE_KINDS: readonly HaChangeKind[] = [
   "sensor_added",
   "sensor_removed",
   "sensors_imported",
+  "contact_added",
+  "contact_removed",
   "override_end",
   "window_setting",
 ];

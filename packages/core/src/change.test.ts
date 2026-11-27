@@ -21,7 +21,13 @@ import {
   strandedValve,
   withHold,
 } from "./change.ts";
-import type { ChangeOptions, ChangePlan, ChangeRefusedCode, SensorInfo } from "./change.ts";
+import type {
+  ChangeOptions,
+  ChangePlan,
+  ChangeRefusedCode,
+  ContactInfo,
+  SensorInfo,
+} from "./change.ts";
 import type { DeviceView, Effect, World } from "./control.ts";
 import { EMPTY_LEDGER, FRESH_STORED, withRecord } from "./ledger.ts";
 import type { HaChangeItem, Ledger, StoredConfig, ValveRecord } from "./ledger.ts";
@@ -216,8 +222,9 @@ function plan(
   raw: unknown,
   overrides: Partial<ChangeOptions> = {},
   sensors: ReadonlyMap<string, SensorInfo> = sensorsOf(),
+  contacts: ReadonlyMap<string, ContactInfo> = new Map(),
 ): ChangePlan {
-  return planChange(world, raw, options(overrides), sensors);
+  return planChange(world, raw, options(overrides), sensors, contacts);
 }
 
 function refusal(run: () => unknown): ChangeRefused {
@@ -540,6 +547,27 @@ describe("change", () => {
         const refused = refusal(() => plan(world, doc({ attic: { sensors: [BEDROOM_SENSOR] } })));
         expect(refused.code).toBe("sensor_unknown");
         expect(refused.data).toEqual({ sensor: BEDROOM_SENSOR_ID });
+      });
+    });
+
+    describe("With a config listing a contact Home Assistant does not have", () => {
+      it("refuses with contact_unknown", () => {
+        const world = first(devicesOf({ [V1]: observedView() }));
+        const raw = doc({ living: { contacts: [{ ref: "ha:binary_sensor.window" }] } });
+        const refused = refusal(() => plan(world, raw));
+        expect(refused.code).toBe("contact_unknown");
+        expect(refused.data).toEqual({ contact: "ha:binary_sensor.window" });
+      });
+    });
+
+    describe("With a config listing a contact that is not a binary_sensor", () => {
+      it("refuses with contact_not_binary", () => {
+        const world = first(devicesOf({ [V1]: observedView() }));
+        const raw = doc({ living: { contacts: [{ ref: "ha:binary_sensor.window" }] } });
+        const infos = new Map([["binary_sensor.window", { exists: true, isBinary: false }]]);
+        const refused = refusal(() => plan(world, raw, {}, sensorsOf(), infos));
+        expect(refused.code).toBe("contact_not_binary");
+        expect(refused.data).toEqual({ contact: "ha:binary_sensor.window" });
       });
     });
 

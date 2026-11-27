@@ -15,6 +15,7 @@ import {
   LEGACY_SENSOR_LABEL,
   SCHEDULE_LABEL_PREFIX,
   SENSOR_LABEL,
+  WINDOW_SENSOR_LABEL,
   applyLabelOps,
   labelEdits,
   mirrorLabels,
@@ -24,6 +25,7 @@ import {
 import type {
   AreaMembership,
   Config,
+  ContactInfo,
   HaEdit,
   HaSnapshot,
   LabelOp,
@@ -71,9 +73,42 @@ export function sensorInfos(
   return infos;
 }
 
+/** The entity ids of every contact the config lists, in the config's order, without repeats. */
+export function configuredContacts(config: Config): readonly string[] {
+  const ids = new Set<string>();
+  for (const entry of config.rooms.values()) {
+    for (const contact of entry.contacts) {
+      if (contact.ref.startsWith("ha:")) ids.add(contact.ref.slice("ha:".length));
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * The contact info of every entity in the snapshot that carries `heatmaster_window_sensor` and of
+ * every entity in `contacts` (the configured contacts), keyed by entity id.
+ */
+export function contactInfos(
+  ha: HaLink,
+  snapshot: HaSnapshot,
+  contacts: Iterable<string>,
+): ReadonlyMap<string, ContactInfo> {
+  const infos = new Map<string, ContactInfo>();
+  for (const [entityId, entity] of snapshot.entities) {
+    if (entity.labels.includes(WINDOW_SENSOR_LABEL)) infos.set(entityId, ha.contactInfo(entityId));
+  }
+  for (const entityId of contacts) {
+    if (!infos.has(entityId)) infos.set(entityId, ha.contactInfo(entityId));
+  }
+  return infos;
+}
+
 /** The ops of a schedules-scope mirror leave these alone, so their failures are kept. */
 function sensorSide(op: LabelOp): boolean {
-  return op.kind === "labelEntity" || (op.kind === "createLabel" && op.name === SENSOR_LABEL);
+  return (
+    op.kind === "labelEntity" ||
+    (op.kind === "createLabel" && (op.name === SENSOR_LABEL || op.name === WINDOW_SENSOR_LABEL))
+  );
 }
 
 /** The registry entries an op writes, keyed `label:`, `area:` or `entity:`. */
@@ -269,7 +304,8 @@ export function createLabelSync(ha: HaLink, valveAddresses: () => ReadonlySet<st
       // compared: like one the user added, such an echo stays until the next full mirror.
       moved = scheduleLabelsDiffer(before, snapshot);
       const infos = sensorInfos(ha, snapshot, valveAddresses());
-      return labelEdits(compared, snapshot, config, membership, infos);
+      const contacts = contactInfos(ha, snapshot, configuredContacts(config));
+      return labelEdits(compared, snapshot, config, membership, infos, contacts);
     },
 
     scheduleLabelsMoved: () => moved,

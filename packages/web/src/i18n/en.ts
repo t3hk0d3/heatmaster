@@ -15,6 +15,15 @@ import type {
   ValveMode,
 } from "@heatmaster/core";
 
+/** Why a contact carries the Heatmaster label but is used by no room (`problemContactLabelUnused`). */
+type ContactUnusedReason =
+  | "no_area"
+  | "area_not_room"
+  | "entry_unavailable"
+  | "contact_unknown"
+  | "contact_not_binary"
+  | "contact_limit";
+
 /** Why a sensor carries the Heatmaster label but is used by no room (`problemSensorLabelUnused`). */
 type SensorUnusedReason =
   | "no_area"
@@ -34,6 +43,7 @@ type LabelOpKind = LabelOp["kind"];
 type CodedKey =
   | `problem.${ProblemKind}`
   | `problem.sensor_label_unused.${SensorUnusedReason}`
+  | `problem.contact_label_unused.${ContactUnusedReason}`
   | `pending.reason.${PendingReason}`
   | `unassigned.reason.${UnplacedReason}`
   | `upgrade.dropped.${DroppedRoomReason}`
@@ -222,6 +232,8 @@ export const en = {
   "ha_changes.item.sensor_removed": "Sensor {entity} removed from {area}",
   "ha_changes.item.sensors_imported":
     "Sensors of {area} imported from the room_temperature_sensor label",
+  "ha_changes.item.contact_added": "Window contact {entity} added to {area}",
+  "ha_changes.item.contact_removed": "Window contact {entity} removed from {area}",
   "ha_changes.item.override_end": "Override end in {area}",
   "ha_changes.item.window_setting": "Window setting {setting} in {area}: {value}",
 
@@ -382,6 +394,19 @@ export const en = {
   "label_op.labelEntity": "label a sensor",
   "problem.sensor_unlabellable":
     "Sensor {name} is in the configuration, but Home Assistant has no registry entry for it, so Heatmaster cannot label it",
+  "problem.contact_label_unused":
+    "Window contact {name} has the heatmaster_window_sensor label, but no room uses it: {reason}",
+  "problem.contact_label_unused.no_area": "the contact is in no area",
+  "problem.contact_label_unused.area_not_room": "its area holds no valve, so it is no room",
+  "problem.contact_label_unused.entry_unavailable":
+    "its room cannot have an entry in the configuration (there are 64 entries already, or its area id is not one Heatmaster accepts)",
+  "problem.contact_label_unused.contact_unknown": "Home Assistant does not know the contact",
+  "problem.contact_label_unused.contact_not_binary": "it is not a binary sensor",
+  "problem.contact_label_unused.contact_limit":
+    "the room already has the most window contacts it can have",
+  "problem.contact_unavailable":
+    "Window contact {name} has been unavailable for too long, so it no longer counts",
+  "problem.window_open_too_long": "The window of {name} has been open longer than its limit",
 
   "error.config_unreadable":
     "The configuration cannot be read, so it cannot be changed. See the notice at the top of the page.",
@@ -393,6 +418,8 @@ export const en = {
   "error.sensor_unknown": "Sensor {sensor} does not exist in Home Assistant.",
   "error.sensor_not_temperature": "{sensor} is not a temperature sensor.",
   "error.sensor_on_valve": "{sensor} belongs to a valve and cannot be a room sensor.",
+  "error.contact_unknown": "Window contact {contact} does not exist in Home Assistant.",
+  "error.contact_not_binary": "{contact} is not a binary sensor and cannot be a window contact.",
   "error.valve_unknown": "Valve {valveId} is not known to Heatmaster.",
   "error.valve_unsupported": "Valve {valveId} is not a supported model.",
   "error.ledger_unreadable":

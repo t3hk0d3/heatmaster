@@ -1,10 +1,11 @@
-import type { SensorInfo } from "./change.ts";
+import type { ContactInfo, SensorInfo } from "./change.ts";
 import {
   LEGACY_SENSOR_LABEL,
   NO_PRESETS,
   NO_WINDOW_PATCH,
   SCHEDULE_LABEL_PREFIX,
   SENSOR_LABEL,
+  WINDOW_SENSOR_LABEL,
   ascending,
   scheduleLabelId,
   scheduleLabelName,
@@ -15,13 +16,14 @@ import {
 import { HA_CHANGES_KEPT, type HaChangeItem, type StoredConfig } from "./ledger.ts";
 import type { Config, RoomEntry } from "./model.ts";
 import {
+  problemContactLabelUnused,
   problemEntryUnavailable,
   problemLabelForeign,
   problemLegacyLabelPresent,
   problemSensorLabelUnused,
   type Problem,
 } from "./status.ts";
-import { AREA_ID_PATTERN, MAX_ROOMS, MAX_SENSORS } from "./validation.ts";
+import { AREA_ID_PATTERN, MAX_CONTACTS, MAX_ROOMS, MAX_SENSORS } from "./validation.ts";
 
 /** One label write to Home Assistant. */
 export type LabelOp =
@@ -44,7 +46,7 @@ export type LabelOp =
 /**
  * The label writes that make Home Assistant match the config, in order. `foreign` lists the
  * numbered labels (`heatmaster_schedule_<x>_<digits>`, as from a clash), which no op names;
- * `unlabellable` lists the configured sensor entities Home Assistant has no registry entry for.
+ * `unlabellable` lists the configured sensor and contact entities Home Assistant has no registry entry for.
  */
 export type LabelPlan = Readonly<{
   ops: readonly LabelOp[];
@@ -71,8 +73,9 @@ function isOwned(labelId: string): boolean {
 
 /**
  * Plans the label writes that mirror the config onto Home Assistant: schedule labels created,
- * renamed and deleted, each area wearing its schedule's label, and `heatmaster_temp_sensor` on
- * exactly the configured sensor entities. Scope `schedules` leaves out the sensor label. With no
+ * renamed and deleted, each area wearing its schedule's label, `heatmaster_temp_sensor` on exactly
+ * the configured sensor entities and `heatmaster_window_sensor` on exactly the configured contact
+ * entities. Scope `schedules` leaves out both. With no
  * schedule in the config nothing is managed, labels included: no op is planned (and nothing is
  * unlabellable), so a fresh install never removes labels the user's automations rely on.
  */
@@ -122,9 +125,21 @@ export function mirrorLabels(
       ),
     ),
   ];
+  const wantedContacts = [
+    ...new Set(
+      [...config.rooms.values()].flatMap((entry) =>
+        entry.contacts
+          .filter((contact) => contact.ref.startsWith(SENSOR_PREFIX))
+          .map((contact) => contact.ref.slice(SENSOR_PREFIX.length)),
+      ),
+    ),
+  ];
   const withSensors = scope === "all";
   if (withSensors && wantedSensors.length > 0 && !snapshot.labels.has(SENSOR_LABEL)) {
     labelOps.push({ kind: "createLabel", name: SENSOR_LABEL });
+  }
+  if (withSensors && wantedContacts.length > 0 && !snapshot.labels.has(WINDOW_SENSOR_LABEL)) {
+    labelOps.push({ kind: "createLabel", name: WINDOW_SENSOR_LABEL });
   }
 
   const areaOps: LabelOp[] = [];
@@ -141,17 +156,26 @@ export function mirrorLabels(
   const entityOps: LabelOp[] = [];
   const unlabellable: string[] = [];
   if (withSensors) {
-    const wantedSet = new Set(wantedSensors);
-    for (const [entityId, entity] of snapshot.entities) {
-      const has = entity.labels.includes(SENSOR_LABEL);
-      const wants = wantedSet.has(entityId);
-      if (wants && !has) {
-        entityOps.push({ kind: "labelEntity", entityId, add: [SENSOR_LABEL], remove: [] });
-      } else if (!wants && has) {
-        entityOps.push({ kind: "labelEntity", entityId, add: [], remove: [SENSOR_LABEL] });
+    for (const [label, wantedList] of [
+      [SENSOR_LABEL, wantedSensors],
+      [WINDOW_SENSOR_LABEL, wantedContacts],
+    ] as const) {
+      const wantedSet = new Set(wantedList);
+      for (const [entityId, entity] of snapshot.entities) {
+        const has = entity.labels.includes(label);
+        const wants = wantedSet.has(entityId);
+        if (wants && !has) {
+          entityOps.push({ kind: "labelEntity", entityId, add: [label], remove: [] });
+        } else if (!wants && has) {
+          entityOps.push({ kind: "labelEntity", entityId, add: [], remove: [label] });
+        }
       }
     }
-    unlabellable.push(...wantedSensors.filter((entityId) => !snapshot.entities.has(entityId)));
+    unlabellable.push(
+      ...[...wantedSensors, ...wantedContacts].filter(
+        (entityId) => !snapshot.entities.has(entityId),
+      ),
+    );
   }
 
   const deleteOps: LabelOp[] = [...snapshot.labels.keys()]
@@ -257,6 +281,15 @@ type UnusedReason =
   | "sensor_on_valve"
   | "sensor_limit";
 
+/** Why an entity carrying `heatmaster_window_sensor` cannot be added to a room's entry. */
+type ContactUnusedReason =
+  | "no_area"
+  | "area_not_room"
+  | "entry_unavailable"
+  | "contact_unknown"
+  | "contact_not_binary"
+  | "contact_limit";
+
 /** An entry that sets nothing: the default schedule, no sensor, the house presets and rules. */
 export const EMPTY_ENTRY: RoomEntry = {
   scheduleId: undefined,
@@ -312,12 +345,32 @@ function unusedReason(
   return undefined;
 }
 
+/** Why the entity cannot join its room's entry as a contact, or undefined when it can. */
+function contactUnusedReason(
+  entityId: string,
+  entity: HaEntity,
+  rooms: ReadonlyMap<string, RoomEntry>,
+  membership: AreaMembership,
+  infos: ReadonlyMap<string, ContactInfo>,
+): ContactUnusedReason | undefined {
+  const areaId = entity.areaId;
+  if (areaId === undefined) return "no_area";
+  if (!membership.rooms.has(areaId)) return "area_not_room";
+  if (!mayHoldEntry(rooms, areaId)) return "entry_unavailable";
+  const info = infos.get(entityId);
+  if (info?.exists !== true) return "contact_unknown";
+  if (!info.isBinary) return "contact_not_binary";
+  if ((rooms.get(areaId)?.contacts.length ?? 0) >= MAX_CONTACTS) return "contact_limit";
+  return undefined;
+}
+
 /**
  * The config revision the user's label edits in Home Assistant make, from `before` to `after`
  * (see the task's pseudocode): a schedule label added to or removed from an area sets the area's
  * entry's schedule (R9, R10); `heatmaster_temp_sensor` added to an entity in a room adds it to the
- * room's entry with weight 1, removed drops it from every entry. Undefined when nothing changes.
- * `infos` is keyed by entity id.
+ * room's entry with weight 1, removed drops it from every entry; `heatmaster_window_sensor` does the
+ * same for a room's contacts. Undefined when nothing changes. `infos` and `contactInfos` are keyed
+ * by entity id.
  */
 export function labelEdits(
   before: HaSnapshot,
@@ -325,6 +378,7 @@ export function labelEdits(
   config: Config,
   membership: AreaMembership,
   infos: ReadonlyMap<string, SensorInfo>,
+  contactInfos: ReadonlyMap<string, ContactInfo>,
 ): HaEdit | undefined {
   const rooms = new Map(config.rooms);
   const items: HaChangeItem[] = [];
@@ -402,6 +456,53 @@ export function labelEdits(
         rooms.set(areaId, { ...entry, sensors });
         items.push({
           kind: "sensor_removed",
+          areaId,
+          entityId,
+          scheduleId: undefined,
+          rule: undefined,
+          setting: undefined,
+          value: undefined,
+        });
+      }
+    }
+  }
+
+  for (const entityId of ascending(after.entities.keys())) {
+    const was = before.entities.get(entityId);
+    const entity = after.entities.get(entityId);
+    if (was === undefined || entity === undefined) continue;
+    const has = entity.labels.includes(WINDOW_SENSOR_LABEL);
+    if (was.labels.includes(WINDOW_SENSOR_LABEL) === has) continue;
+    const ref = SENSOR_PREFIX + entityId;
+    if (has) {
+      // As for a sensor: a contact an entry already lists stays where it is.
+      if ([...rooms.values()].some((e) => e.contacts.some((contact) => contact.ref === ref))) {
+        continue;
+      }
+      const areaId = entity.areaId;
+      if (areaId === undefined) continue;
+      if (contactUnusedReason(entityId, entity, rooms, membership, contactInfos) !== undefined) {
+        continue;
+      }
+      const entry = rooms.get(areaId);
+      const contacts = [...(entry?.contacts ?? []), { ref }];
+      rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), contacts });
+      items.push({
+        kind: "contact_added",
+        areaId,
+        entityId,
+        scheduleId: undefined,
+        rule: undefined,
+        setting: undefined,
+        value: undefined,
+      });
+    } else {
+      for (const [areaId, entry] of [...rooms]) {
+        if (!entry.contacts.some((contact) => contact.ref === ref)) continue;
+        const contacts = entry.contacts.filter((contact) => contact.ref !== ref);
+        rooms.set(areaId, { ...entry, contacts });
+        items.push({
+          kind: "contact_removed",
           areaId,
           entityId,
           scheduleId: undefined,
@@ -491,13 +592,15 @@ export function importSensors(
  * waiting for the next pull); `legacy_label_present` for each room whose entry has a sensor while
  * entities in its area still carry `room_temperature_sensor`; `entry_unavailable` for each area,
  * in area-id order, that cannot hold an entry while it wears a label one would take in;
- * `label_foreign` for each numbered label, in registry order. `infos` is keyed by entity id.
+ * `label_foreign` for each numbered label, in registry order; `contact_label_unused` the same for
+ * `heatmaster_window_sensor`. `infos` and `contactInfos` are keyed by entity id.
  */
 export function labelProblems(
   config: Config,
   membership: AreaMembership,
   snapshot: HaSnapshot,
   infos: ReadonlyMap<string, SensorInfo>,
+  contactInfos: ReadonlyMap<string, ContactInfo>,
 ): readonly Problem[] {
   const problems: Problem[] = [];
   const listed = new Set(
@@ -509,6 +612,16 @@ export function labelProblems(
     if (listed.has(SENSOR_PREFIX + entityId)) continue;
     const reason = unusedReason(entityId, entity, config.rooms, membership, infos);
     if (reason !== undefined) problems.push(problemSensorLabelUnused(entityId, reason));
+  }
+  const listedContacts = new Set(
+    [...config.rooms.values()].flatMap((entry) => entry.contacts.map((contact) => contact.ref)),
+  );
+  for (const entityId of ascending(snapshot.entities.keys())) {
+    const entity = snapshot.entities.get(entityId);
+    if (entity?.labels.includes(WINDOW_SENSOR_LABEL) !== true) continue;
+    if (listedContacts.has(SENSOR_PREFIX + entityId)) continue;
+    const reason = contactUnusedReason(entityId, entity, config.rooms, membership, contactInfos);
+    if (reason !== undefined) problems.push(problemContactLabelUnused(entityId, reason));
   }
   for (const areaId of ascending(membership.rooms.keys())) {
     if ((config.rooms.get(areaId)?.sensors.length ?? 0) === 0) continue;

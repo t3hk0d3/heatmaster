@@ -1,5 +1,5 @@
 import { applyLabelOps } from "@heatmaster/core";
-import type { HaSnapshot, LabelOp, SensorInfo } from "@heatmaster/core";
+import type { ContactInfo, HaSnapshot, LabelOp, SensorInfo } from "@heatmaster/core";
 import type { Clock } from "../src/clock.ts";
 import {
   HA_LABEL_TIMEOUT_MS,
@@ -19,6 +19,7 @@ export type StubHaLink = HaLink &
     setHouse(house: HaHouse | undefined): void;
     setSensor(entityId: string, sensor: HaSensor | undefined): void;
     setSensorInfo(entityId: string, info: SensorInfo): void;
+    setContactInfo(entityId: string, info: ContactInfo): void;
     setEntityName(entityId: string, name: string): void;
     setAreaName(areaId: string, name: string): void;
     /** What `snapshot()` answers from now on. */
@@ -61,6 +62,7 @@ export type StubHaLink = HaLink &
     labelBatches(): readonly (readonly LabelOp[])[];
   }>;
 
+const UNKNOWN_CONTACT: ContactInfo = { exists: false, isBinary: false };
 const UNKNOWN: SensorInfo = { exists: false, isTemperature: false, onValve: false };
 
 export const EMPTY_HA_SNAPSHOT: HaSnapshot = {
@@ -104,6 +106,7 @@ export function createStubHaLink(): StubHaLink {
   let listener: ((event: HaEvent) => void) | undefined;
   const sensors = new Map<string, HaSensor>();
   const infos = new Map<string, SensorInfo>();
+  const contactInfos = new Map<string, ContactInfo>();
   const names = new Map<string, string>();
   const areas = new Map<string, string>();
   const watched: ReadonlySet<string>[] = [];
@@ -197,6 +200,7 @@ export function createStubHaLink(): StubHaLink {
       infoAddresses.push(new Set(valveAddresses));
       return infos.get(entityId) ?? UNKNOWN;
     },
+    contactInfo: (entityId) => contactInfos.get(entityId) ?? UNKNOWN_CONTACT,
     entityName: (entityId) => names.get(entityId),
     areaName: (areaId) => areas.get(areaId),
     snapshot() {
@@ -260,6 +264,9 @@ export function createStubHaLink(): StubHaLink {
     },
     setSensorInfo(entityId, info) {
       infos.set(entityId, info);
+    },
+    setContactInfo(entityId, info) {
+      contactInfos.set(entityId, info);
     },
     setEntityName(entityId, name) {
       names.set(entityId, name);

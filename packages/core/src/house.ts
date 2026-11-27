@@ -3,6 +3,7 @@ import type { Config, Room, RoomPresets, WindowPatch, WindowSettings } from "./m
 
 export const IGNORE_LABEL = "heatmaster_ignore";
 export const SENSOR_LABEL = "heatmaster_temp_sensor";
+export const WINDOW_SENSOR_LABEL = "heatmaster_window_sensor";
 export const LEGACY_SENSOR_LABEL = "room_temperature_sensor";
 export const SCHEDULE_LABEL_PREFIX = "heatmaster_schedule_";
 

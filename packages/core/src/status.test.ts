@@ -5,6 +5,8 @@ import { activePoint, type ResolvedWeek } from "./schedule.ts";
 import {
   SYSTEM_ID,
   problemConfigUnreadable,
+  problemContactLabelUnused,
+  problemContactUnavailable,
   problemFeedLost,
   problemHaLabelFailed,
   problemHaLinkRequired,
@@ -34,6 +36,7 @@ import {
   problemValvePending,
   problemValveSilent,
   problemValveUnsupported,
+  problemWindowOpenTooLong,
   roomStatus,
   valveSync,
   type Problem,
@@ -319,8 +322,23 @@ describe("status", () => {
             "warning",
             [],
           ],
+          [
+            problemContactLabelUnused("binary_sensor.window", "area_not_room"),
+            "contact_label_unused",
+            "sensor",
+            "warning",
+            ["reason"],
+          ],
+          [
+            problemContactUnavailable("ha:binary_sensor.window"),
+            "contact_unavailable",
+            "sensor",
+            "warning",
+            [],
+          ],
+          [problemWindowOpenTooLong("living"), "window_open_too_long", "room", "warning", []],
         ];
-        expect(new Set(table.map((row) => row[1])).size).toBe(29);
+        expect(new Set(table.map((row) => row[1])).size).toBe(32);
         for (const [problem, kind, subjectKind, severity, dataKeys] of table) {
           expect(problem.kind).toBe(kind);
           expect(problem.subject.kind).toBe(subjectKind);
@@ -455,6 +473,41 @@ describe("status", () => {
         expect(problemId(problemScheduleClamped(V1, 5, 30))).toBe(
           problemId(problemScheduleClamped(V1, 5, 30)),
         );
+      });
+    });
+  });
+
+  describe("problemContactLabelUnused", () => {
+    describe('With entity "binary_sensor.window" and reason "contact_limit"', () => {
+      it('the subject is the sensor "ha:binary_sensor.window"', () => {
+        expect(problemContactLabelUnused("binary_sensor.window", "contact_limit").subject).toEqual({
+          kind: "sensor",
+          id: "ha:binary_sensor.window",
+        });
+      });
+      it("data.reason is the reason", () => {
+        expect(problemContactLabelUnused("binary_sensor.window", "contact_limit").data).toEqual({
+          reason: "contact_limit",
+        });
+      });
+    });
+  });
+
+  describe("problemContactUnavailable", () => {
+    describe('With the contact id "ha:binary_sensor.window"', () => {
+      it("the subject is the sensor with that id", () => {
+        expect(problemContactUnavailable("ha:binary_sensor.window").subject).toEqual({
+          kind: "sensor",
+          id: "ha:binary_sensor.window",
+        });
+      });
+    });
+  });
+
+  describe("problemWindowOpenTooLong", () => {
+    describe('With room "living"', () => {
+      it("the subject is the room", () => {
+        expect(problemWindowOpenTooLong("living").subject).toEqual({ kind: "room", id: "living" });
       });
     });
   });

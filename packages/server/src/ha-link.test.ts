@@ -986,6 +986,60 @@ describe("ha-link", () => {
     });
   });
 
+  describe("contactInfo", () => {
+    describe("With a binary_sensor Home Assistant has a state for", () => {
+      it("returns { exists: true, isBinary: true }", async () => {
+        const w = await world({
+          seed: (ha) => {
+            ha.setState("binary_sensor.window", "off", {}, T);
+          },
+        });
+        expect(w.link.contactInfo("binary_sensor.window")).toEqual({
+          exists: true,
+          isBinary: true,
+        });
+      });
+    });
+
+    describe("With a binary_sensor that has a registry entry and no state", () => {
+      it("exists is true", async () => {
+        const w = await world({
+          seed: (ha) => {
+            ha.setEntity({ entity_id: "binary_sensor.quiet" });
+          },
+        });
+        expect(w.link.contactInfo("binary_sensor.quiet").exists).toBe(true);
+      });
+    });
+
+    describe("With an entity that is not a binary_sensor", () => {
+      it("isBinary is false", async () => {
+        const w = await world();
+        expect(w.link.contactInfo(TEMP)).toEqual({ exists: true, isBinary: false });
+      });
+    });
+
+    describe("With an entity Home Assistant does not know", () => {
+      it("returns { exists: false, isBinary: true } for a binary_sensor id", async () => {
+        const w = await world();
+        expect(w.link.contactInfo("binary_sensor.nothing")).toEqual({
+          exists: false,
+          isBinary: true,
+        });
+      });
+    });
+
+    describe("Before ready", () => {
+      it("both are false", async () => {
+        const w = await world({ start: false });
+        expect(w.link.contactInfo("binary_sensor.window")).toEqual({
+          exists: false,
+          isBinary: false,
+        });
+      });
+    });
+  });
+
   describe("names", () => {
     describe("With a sensor whose state has a friendly_name", () => {
       it("entityName returns it", async () => {

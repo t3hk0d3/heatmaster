@@ -6,8 +6,8 @@ import { reconcile } from "./join.ts";
 import type { Pending } from "./join.ts";
 import { FRESH_STORED, memberships, withoutRecord } from "./ledger.ts";
 import type { Ledger, Membership, StoredConfig } from "./ledger.ts";
-import { sensorId } from "./model.ts";
-import type { Config, SensorRef } from "./model.ts";
+import { contactId, sensorId } from "./model.ts";
+import type { Config, ContactRef, SensorRef } from "./model.ts";
 import type { DeviceState } from "./observation.ts";
 import { members } from "./settings.ts";
 import type { SettingKey, SettingValue, ValveSpec } from "./settings.ts";
@@ -21,8 +21,13 @@ export type ChangeOptions = Readonly<{
   haLinked: boolean;
 }>;
 
+const CONTACT_PREFIX = "ha:";
+
 /** What the server knows about one sensor reference. */
 export type SensorInfo = Readonly<{ exists: boolean; isTemperature: boolean; onValve: boolean }>;
+
+/** What the server knows about one contact entity. */
+export type ContactInfo = Readonly<{ exists: boolean; isBinary: boolean }>;
 
 export type ChangeRefusedCode =
   | "config_unreadable"
@@ -32,6 +37,8 @@ export type ChangeRefusedCode =
   | "sensor_unknown"
   | "sensor_not_temperature"
   | "sensor_on_valve"
+  | "contact_unknown"
+  | "contact_not_binary"
   | "valve_unknown"
   | "valve_unsupported"
   | "ledger_unreadable"
@@ -101,6 +108,32 @@ function entrySensors(config: Config | undefined): readonly SensorRef[] {
   return [...(config?.rooms.values() ?? [])].flatMap((entry) => entry.sensors);
 }
 
+/** Every contact of every entry, used or not, in the config's order. */
+function entryContacts(config: Config | undefined): readonly ContactRef[] {
+  return [...(config?.rooms.values() ?? [])].flatMap((entry) => entry.contacts);
+}
+
+/**
+ * Refuses on the first new contact, in document order, that fails a check. A contact is new when
+ * no entry of the current config lists it. `contacts` is keyed by entity id.
+ */
+function checkContacts(
+  config: Config,
+  before: Config | undefined,
+  haLinked: boolean,
+  contacts: ReadonlyMap<string, ContactInfo>,
+): void {
+  const known = new Set(entryContacts(before).map((contact) => contactId(contact)));
+  const fresh = entryContacts(config).filter((contact) => !known.has(contactId(contact)));
+  for (const contact of fresh) {
+    const id = contactId(contact);
+    if (!haLinked) throw new ChangeRefused("ha_link_missing", { sensor: id });
+    const info = contacts.get(id.slice(CONTACT_PREFIX.length));
+    if (info?.exists !== true) throw new ChangeRefused("contact_unknown", { contact: id });
+    if (!info.isBinary) throw new ChangeRefused("contact_not_binary", { contact: id });
+  }
+}
+
 /** The rooms of the world's house and the entries of the config, as area ids in ascending order. */
 function known(world: World, config: Config): readonly string[] {
   const rooms =
@@ -148,6 +181,7 @@ export function planChange(
   raw: unknown,
   options: ChangeOptions,
   sensors: ReadonlyMap<string, SensorInfo>,
+  contacts: ReadonlyMap<string, ContactInfo>,
 ): ChangePlan {
   const config = validateConfig(raw);
   const old = readable(world);
@@ -174,6 +208,7 @@ export function planChange(
     throw new ChangeRefused("timezone_missing");
   }
   checkSensors(config, old?.config, options.haLinked, sensors);
+  checkContacts(config, old?.config, options.haLinked, contacts);
   const inUse = roomsOf(world.configState, world.stored, world.house)?.[0];
   if (config.schedules.length === 0 && inUse !== undefined) {
     throw new ChangeRefused("schedule_in_use", { roomId: inUse.id });

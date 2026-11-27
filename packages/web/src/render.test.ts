@@ -794,6 +794,23 @@ describe("render", () => {
         );
       });
     });
+    describe("With contact_label_unused and the reason contact_limit", () => {
+      it("shows the reason in words", () => {
+        const state = stateView({
+          problems: [
+            problemView({
+              kind: "contact_label_unused",
+              subject: { kind: "sensor", id: "ha:binary_sensor.a" },
+              name: "Window A",
+              data: { reason: "contact_limit" },
+            }),
+          ],
+        });
+        expect(text(renderProblems(state, t))).toContain(
+          en["problem.contact_label_unused.contact_limit"],
+        );
+      });
+    });
     describe("With valve_pending for a valve and its room", () => {
       it("names the valve, the room's name and the reason in words", () => {
         const state = stateView({
@@ -1037,6 +1054,8 @@ describe("render", () => {
           sensor_unknown: { sensor: "s" },
           sensor_not_temperature: { sensor: "s" },
           sensor_on_valve: { sensor: "s" },
+          contact_unknown: { contact: "c" },
+          contact_not_binary: { contact: "c" },
           valve_unknown: { valveId: ID },
           valve_unsupported: { valveId: ID },
           ledger_unreadable: { valveId: ID },

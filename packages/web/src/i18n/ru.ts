@@ -143,6 +143,8 @@ export const ru: Dictionary = {
   "ha_changes.item.sensor_removed": "Датчик {entity} убран из зоны «{area}»",
   "ha_changes.item.sensors_imported":
     "Датчики зоны «{area}» импортированы по метке room_temperature_sensor",
+  "ha_changes.item.contact_added": "Датчик окна {entity} добавлен в зону «{area}»",
+  "ha_changes.item.contact_removed": "Датчик окна {entity} убран из зоны «{area}»",
   "ha_changes.item.override_end": "Конец ручной настройки в {area}",
   "ha_changes.item.window_setting": "Настройка окна {setting} в {area}: {value}",
 
@@ -302,6 +304,18 @@ export const ru: Dictionary = {
   "label_op.deleteLabel": "удаление метки",
   "label_op.labelArea": "назначение метки зоне",
   "label_op.labelEntity": "назначение метки датчику",
+  "problem.contact_label_unused":
+    "У датчика окна {name} есть метка heatmaster_window_sensor, но ни одна комната его не использует: {reason}",
+  "problem.contact_label_unused.no_area": "датчик не отнесён ни к одной зоне",
+  "problem.contact_label_unused.area_not_room": "в его зоне нет клапана, поэтому это не комната",
+  "problem.contact_label_unused.entry_unavailable":
+    "для его комнаты нельзя завести запись в конфигурации (записей уже 64 или идентификатор зоны не подходит Heatmaster)",
+  "problem.contact_label_unused.contact_unknown": "Home Assistant не знает такого датчика",
+  "problem.contact_label_unused.contact_not_binary": "это не бинарный датчик",
+  "problem.contact_label_unused.contact_limit": "в комнате уже максимальное число датчиков окон",
+  "problem.contact_unavailable":
+    "Датчик окна {name} слишком долго недоступен, поэтому его больше не учитывают",
+  "problem.window_open_too_long": "Окно в комнате {name} открыто дольше положенного срока",
   "problem.sensor_unlabellable":
     "Датчик {name} есть в конфигурации, но в реестре Home Assistant его нет, поэтому Heatmaster не может его пометить",
 
@@ -315,6 +329,9 @@ export const ru: Dictionary = {
   "error.sensor_unknown": "Датчика {sensor} нет в Home Assistant.",
   "error.sensor_not_temperature": "{sensor} не является датчиком температуры.",
   "error.sensor_on_valve": "{sensor} принадлежит клапану и не может быть датчиком комнаты.",
+  "error.contact_unknown": "Датчика окна {contact} нет в Home Assistant.",
+  "error.contact_not_binary":
+    "{contact} не является бинарным датчиком и не может быть датчиком окна.",
   "error.valve_unknown": "Клапан {valveId} неизвестен Heatmaster.",
   "error.valve_unsupported": "Модель клапана {valveId} не поддерживается.",
   "error.ledger_unreadable":

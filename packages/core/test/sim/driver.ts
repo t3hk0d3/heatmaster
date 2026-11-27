@@ -22,6 +22,7 @@ import {
   roomsOf,
   thermostatCommand,
   tick,
+  validateConfig,
   withRecord,
   withRoomChoice,
 } from "../../src/index.ts";
@@ -47,6 +48,7 @@ import type {
   Origin,
   Room,
   RoomChoice,
+  ContactInfo,
   SensorInfo,
   SensorReading,
   StoredConfig,
@@ -491,6 +493,21 @@ export function createSimDriver(setup: SimSetup): SimDriver {
     return info;
   };
 
+  /** Every contact of the document exists and is a binary_sensor, keyed by entity id. */
+  const contactInfo = (raw: unknown): ReadonlyMap<string, ContactInfo> => {
+    const info = new Map<string, ContactInfo>();
+    try {
+      for (const entry of validateConfig(raw).rooms.values()) {
+        for (const contact of entry.contacts) {
+          info.set(contact.ref.slice("ha:".length), { exists: true, isBinary: true });
+        }
+      }
+    } catch {
+      // planChange refuses the document with the same error.
+    }
+    return info;
+  };
+
   /** A crash armed by `crashAfterEffects` also cuts a change's effects: the rest is lost. */
   const executeAll = (effects: readonly Effect[]): void => {
     const limit = crashAfter !== undefined && effects.length >= crashAfter ? crashAfter : undefined;
@@ -597,7 +614,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
         ...options,
       };
       try {
-        const plan = planChange(buildWorld(), raw, full, sensorInfo());
+        const plan = planChange(buildWorld(), raw, full, sensorInfo(), contactInfo(raw));
         // The server's direct ask of pending valves is not simulated: the tick asks them.
         executeAll(plan.effects);
         return { ok: true, plan };

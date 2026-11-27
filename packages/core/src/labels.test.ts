@@ -1,12 +1,13 @@
 import { fc, test as fcTest } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import { arbConfig, makeConfig, makeMembership, makeSnapshot, weekOf } from "../test/builders.ts";
-import type { SensorInfo } from "./change.ts";
+import type { ContactInfo, SensorInfo } from "./change.ts";
 import {
   NO_WINDOW_PATCH,
   IGNORE_LABEL,
   LEGACY_SENSOR_LABEL,
   SENSOR_LABEL,
+  WINDOW_SENSOR_LABEL,
   scheduleLabelId,
   scheduleLabelName,
   type AreaMembership,
@@ -26,6 +27,7 @@ import {
 import { FRESH_STORED, type HaChange, type HaChangeItem, type StoredConfig } from "./ledger.ts";
 import type { Config, RoomEntry, Schedule } from "./model.ts";
 import {
+  problemContactLabelUnused,
   problemEntryUnavailable,
   problemLabelForeign,
   problemLegacyLabelPresent,
@@ -184,8 +186,16 @@ function edits(
   after: HaSnapshot,
   entries: Readonly<Record<string, RoomEntry>> = {},
   infos: ReadonlyMap<string, SensorInfo> = infosOf([OFFICE_T]),
+  contactInfos: ReadonlyMap<string, ContactInfo> = new Map(),
 ): HaEdit | undefined {
-  return labelEdits(before, after, configOf(entries, [DAY, NIGHT, EVE]), ROOMS, infos);
+  return labelEdits(
+    before,
+    after,
+    configOf(entries, [DAY, NIGHT, EVE]),
+    ROOMS,
+    infos,
+    contactInfos,
+  );
 }
 
 /** A stored config at `revision` over schedules day and night, rooms office and hall. */
@@ -586,7 +596,12 @@ describe("labels", () => {
               for (const id of labelsOf(op)) expect(isForeign(id), what).toBe(false);
               switch (op.kind) {
                 case "createLabel":
-                  expect(current.has(op.name) || op.name === SENSOR_LABEL, what).toBe(true);
+                  expect(
+                    current.has(op.name) ||
+                      op.name === SENSOR_LABEL ||
+                      op.name === WINDOW_SENSOR_LABEL,
+                    what,
+                  ).toBe(true);
                   break;
                 case "renameLabel":
                   expect(current.has(op.labelId), what).toBe(true);
@@ -604,7 +619,10 @@ describe("labels", () => {
                   expect(op.remove.every(isOwnedScheduleLabel), what).toBe(true);
                   break;
                 case "labelEntity":
-                  expect([...op.add, ...op.remove], what).toEqual([SENSOR_LABEL]);
+                  expect([SENSOR_LABEL, WINDOW_SENSOR_LABEL], what).toContain(
+                    [...op.add, ...op.remove][0],
+                  );
+                  expect([...op.add, ...op.remove], what).toHaveLength(1);
                   break;
               }
             }
@@ -1266,7 +1284,7 @@ describe("labels", () => {
       entries: Readonly<Record<string, RoomEntry>>,
       snapshot: HaSnapshot,
       infos: ReadonlyMap<string, SensorInfo> = infosOf([OFFICE_T]),
-    ) => labelProblems(configOf(entries), ROOMS, snapshot, infos);
+    ) => labelProblems(configOf(entries), ROOMS, snapshot, infos, new Map());
 
     describe("With an entity carrying heatmaster_temp_sensor in an area that is no room, listed nowhere", () => {
       it("sensor_label_unused with reason area_not_room", () => {
@@ -1305,6 +1323,7 @@ describe("labels", () => {
           entities: { "sensor.old": { areaId: long, labels: LEGACY } },
         }),
         infosOf([]),
+        new Map(),
       );
       it("entry_unavailable for the room naming the other schedule's label and room_temperature_sensor", () => {
         expect(problems).toContainEqual(
@@ -1325,6 +1344,7 @@ describe("labels", () => {
             makeMembership({ [long]: ["z2m:c"] }),
             scene({ areas: { [long]: [DAY_LABEL] } }),
             infosOf([]),
+            new Map(),
           ),
         ).toEqual([]);
       });
@@ -1394,6 +1414,207 @@ describe("labels", () => {
           labels: labelsWith({ [DAY_CLASH]: "Heatmaster: Day", kids: "Kids" }),
         });
         expect(problemsOf({}, snapshot)).toEqual([problemLabelForeign(DAY_CLASH)]);
+      });
+    });
+  });
+  describe("mirrorLabels (contacts)", () => {
+    const WINDOW = "binary_sensor.office_window";
+    const withContact = (over: Partial<RoomEntry> = {}): RoomEntry => ({
+      ...entry(undefined),
+      contacts: [{ ref: `ha:${WINDOW}` }],
+      ...over,
+    });
+    const labelled = (labels: string[]) =>
+      makeSnapshot({
+        entities: { [WINDOW]: { areaId: "office", labels } },
+        labels: labelsWith({ [WINDOW_SENSOR_LABEL]: WINDOW_SENSOR_LABEL }),
+      });
+
+    describe("With a contact listed in a room and not labelled", () => {
+      it("plans labelEntity adding heatmaster_window_sensor", () => {
+        const plan = mirrorLabels(configOf({ office: withContact() }), ROOMS, labelled([]));
+        expect(plan.ops).toContainEqual({
+          kind: "labelEntity",
+          entityId: WINDOW,
+          add: [WINDOW_SENSOR_LABEL],
+          remove: [],
+        });
+      });
+    });
+
+    describe("With a labelled entity no room lists", () => {
+      it("plans labelEntity removing it", () => {
+        const plan = mirrorLabels(configOf(), ROOMS, labelled([WINDOW_SENSOR_LABEL]));
+        expect(plan.ops).toContainEqual({
+          kind: "labelEntity",
+          entityId: WINDOW,
+          add: [],
+          remove: [WINDOW_SENSOR_LABEL],
+        });
+      });
+    });
+
+    describe("With no heatmaster_window_sensor label in Home Assistant", () => {
+      const plan = mirrorLabels(
+        configOf({ office: withContact() }),
+        ROOMS,
+        makeSnapshot({
+          entities: { [WINDOW]: { areaId: "office" } },
+          labels: labelsWith(),
+        }),
+      );
+      it("plans createLabel before the entity ops", () => {
+        const created = plan.ops.findIndex(
+          (op) => op.kind === "createLabel" && op.name === WINDOW_SENSOR_LABEL,
+        );
+        const entityOps = plan.ops.flatMap((op, i) => (op.kind === "labelEntity" ? [i] : []));
+        expect(created).toBeGreaterThanOrEqual(0);
+        expect(entityOps).toHaveLength(1);
+        expect(entityOps.every((i) => i > created)).toBe(true);
+      });
+    });
+
+    describe("With scope schedules", () => {
+      it("plans no contact op", () => {
+        const plan = mirrorLabels(
+          configOf({ office: withContact() }),
+          ROOMS,
+          makeSnapshot({
+            entities: { [WINDOW]: { areaId: "office" } },
+            labels: labelsWith(),
+          }),
+          "schedules",
+        );
+        expect(naming(plan.ops, WINDOW_SENSOR_LABEL)).toEqual([]);
+        expect(naming(plan.ops, WINDOW)).toEqual([]);
+      });
+    });
+
+    describe("With a configured contact Home Assistant has no entry for", () => {
+      it("lists it as unlabellable", () => {
+        const plan = mirrorLabels(
+          configOf({ office: withContact() }),
+          ROOMS,
+          makeSnapshot({ labels: labelsWith() }),
+        );
+        expect(plan.unlabellable).toEqual([WINDOW]);
+      });
+    });
+  });
+
+  describe("labelEdits (contacts)", () => {
+    const WINDOW = "binary_sensor.office_window";
+    const GOOD_CONTACT: ContactInfo = { exists: true, isBinary: true };
+    const contacts = new Map([[WINDOW, GOOD_CONTACT]]);
+    const listing = (): Record<string, RoomEntry> => ({
+      office: { ...entry(undefined), contacts: [{ ref: `ha:${WINDOW}` }] },
+    });
+    const sceneOf = (entityId: string, labels: string[]) =>
+      scene({ entities: { [entityId]: { areaId: "office", labels } } });
+    const item = (kind: "contact_added" | "contact_removed"): HaChangeItem => ({
+      kind,
+      areaId: "office",
+      entityId: WINDOW,
+      scheduleId: undefined,
+      rule: undefined,
+      setting: undefined,
+      value: undefined,
+    });
+
+    describe("With the label added to a binary_sensor in a room's area", () => {
+      const edit = edits(
+        sceneOf(WINDOW, []),
+        sceneOf(WINDOW, [WINDOW_SENSOR_LABEL]),
+        {},
+        new Map(),
+        contacts,
+      );
+      it("adds the contact to that room's entry", () => {
+        expect(required(edit).config.rooms.get("office")?.contacts).toEqual([
+          { ref: `ha:${WINDOW}` },
+        ]);
+      });
+      it("records an item contact_added", () => {
+        expect(required(edit).items).toEqual([item("contact_added")]);
+      });
+    });
+
+    describe("With the label removed from a listed contact", () => {
+      const edit = edits(
+        sceneOf(WINDOW, [WINDOW_SENSOR_LABEL]),
+        sceneOf(WINDOW, []),
+        listing(),
+        new Map(),
+        contacts,
+      );
+      it("removes it from every entry", () => {
+        expect(required(edit).config.rooms.get("office")?.contacts).toEqual([]);
+      });
+      it("records an item contact_removed", () => {
+        expect(required(edit).items).toEqual([item("contact_removed")]);
+      });
+    });
+
+    describe("With the label added to a sensor.* entity", () => {
+      it("changes nothing", () => {
+        const sensor = "sensor.office_t";
+        expect(
+          edits(
+            sceneOf(sensor, []),
+            sceneOf(sensor, [WINDOW_SENSOR_LABEL]),
+            {},
+            new Map(),
+            new Map([[sensor, { exists: true, isBinary: false }]]),
+          ),
+        ).toBeUndefined();
+      });
+    });
+  });
+
+  describe("labelProblems (contacts)", () => {
+    const WINDOW = "binary_sensor.office_window";
+    const GOOD_CONTACT: ContactInfo = { exists: true, isBinary: true };
+    const problemsOf = (
+      snapshot: HaSnapshot,
+      contacts: ReadonlyMap<string, ContactInfo>,
+      entries: Readonly<Record<string, RoomEntry>> = {},
+    ) => labelProblems(configOf(entries), ROOMS, snapshot, new Map(), contacts);
+
+    describe("With a labelled binary_sensor in an area that is no room", () => {
+      it("raises contact_label_unused with reason area_not_room", () => {
+        expect(
+          problemsOf(
+            scene({ entities: { [WINDOW]: { areaId: "attic", labels: [WINDOW_SENSOR_LABEL] } } }),
+            new Map([[WINDOW, GOOD_CONTACT]]),
+          ),
+        ).toEqual([problemContactLabelUnused(WINDOW, "area_not_room")]);
+      });
+    });
+
+    describe("With a labelled entity that is not a binary_sensor", () => {
+      it("raises contact_label_unused with reason contact_not_binary", () => {
+        const id = "sensor.office_t";
+        expect(
+          problemsOf(
+            scene({ entities: { [id]: { areaId: "office", labels: [WINDOW_SENSOR_LABEL] } } }),
+            new Map([[id, { exists: true, isBinary: false }]]),
+          ),
+        ).toEqual([problemContactLabelUnused(id, "contact_not_binary")]);
+      });
+    });
+
+    describe("With a labelled entity whose room already lists 16 contacts", () => {
+      it("raises contact_label_unused with reason contact_limit", () => {
+        const full = Array.from({ length: 16 }, (_, n) => ({
+          ref: `ha:binary_sensor.c${String(n)}`,
+        }));
+        expect(
+          problemsOf(
+            scene({ entities: { [WINDOW]: { areaId: "office", labels: [WINDOW_SENSOR_LABEL] } } }),
+            new Map([[WINDOW, GOOD_CONTACT]]),
+            { office: { ...entry(undefined), contacts: full } },
+          ),
+        ).toEqual([problemContactLabelUnused(WINDOW, "contact_limit")]);
       });
     });
   });
