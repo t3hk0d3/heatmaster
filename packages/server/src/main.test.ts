@@ -1095,6 +1095,32 @@ const WEEK_BLOCK: Shape = {
   fields: { days: "leaf", temperature: { mapOf: "leaf", keys: (key) => TIME_KEY.test(key) } },
 };
 const AREA_ID = /^[a-z0-9_]{1,64}$/;
+const WINDOW: Shape = {
+  fields: {
+    enabled: "leaf",
+    action: "leaf",
+    target: "leaf",
+    open_debounce_s: "leaf",
+    close_debounce_s: "leaf",
+    contact_unavailable_min: "leaf",
+    temperature: {
+      fields: {
+        enabled: "leaf",
+        drop_c: "leaf",
+        within_min: "leaf",
+        end: "leaf",
+        fixed_min: "leaf",
+        still_min: "leaf",
+        rejoin_min: "leaf",
+      },
+    },
+    limit_min: "leaf",
+    after_limit: "leaf",
+    notify: "leaf",
+    manual_change: "leaf",
+    valve_detection: "leaf",
+  },
+};
 const CONFIG_DOCUMENT: Shape = {
   fields: {
     version: "leaf",
@@ -1108,6 +1134,7 @@ const CONFIG_DOCUMENT: Shape = {
         language: "leaf",
         override_end: "leaf",
         override_duration_min: "leaf",
+        window: WINDOW,
       },
     },
     presets: PRESETS,
@@ -1128,6 +1155,8 @@ const CONFIG_DOCUMENT: Shape = {
           presets: PRESETS,
           override_end: "leaf",
           override_duration_min: "leaf",
+          contacts: { listOf: { fields: { ref: "leaf" } } },
+          window: WINDOW,
         },
       },
       keys: (key) => AREA_ID.test(key),
@@ -1165,6 +1194,8 @@ const CONFIG_FILE: Shape = {
                     entity_id: "leaf",
                     schedule_id: "leaf",
                     rule: "leaf",
+                    setting: "leaf",
+                    value: "leaf",
                   },
                 },
               },

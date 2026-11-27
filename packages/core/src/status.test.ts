@@ -1,3 +1,4 @@
+import { DEFAULT_WINDOW_SETTINGS } from "./model.ts";
 import { describe, expect, it } from "vitest";
 import { points } from "../test/builders.ts";
 import { activePoint, type ResolvedWeek } from "./schedule.ts";
@@ -61,6 +62,8 @@ const ROOM: Room = {
   presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
   overrideEnd: "next_change",
   overrideDurationMs: 2 * 60 * 60 * 1000,
+  contacts: [],
+  window: DEFAULT_WINDOW_SETTINGS,
 };
 
 const DAY = points("00:00/18 06:30/21 22:00/18");

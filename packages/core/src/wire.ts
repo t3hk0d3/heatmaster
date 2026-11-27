@@ -108,6 +108,8 @@ export type HaChangeItemView = Readonly<{
   entityId?: string;
   scheduleId?: string;
   rule?: EndRule;
+  setting?: string;
+  value?: string;
 }>;
 
 /** A config revision made from label edits in Home Assistant; `at` is epoch milliseconds. */

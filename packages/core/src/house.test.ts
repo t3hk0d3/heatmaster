@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { makeConfig, makeMembership, makeSnapshot, weekOf } from "../test/builders.ts";
 import {
   byCodeUnit,
+  NO_WINDOW_PATCH,
   membershipFrom,
   resolveRooms,
   roomOfValves,
@@ -13,6 +14,7 @@ import {
 } from "./house.ts";
 import { FRESH_STORED } from "./ledger.ts";
 import type { StoredConfig } from "./ledger.ts";
+import { DEFAULT_WINDOW_SETTINGS } from "./model.ts";
 import type { Config, Room, RoomEntry, Schedule } from "./model.ts";
 
 const A = "z2m:0x00124b0000000001";
@@ -38,6 +40,8 @@ const OFFICE_ENTRY: RoomEntry = {
   presets: { ...NO_PRESETS, comfort: 22 },
   overrideEnd: undefined,
   overrideDurationMs: undefined,
+  contacts: [],
+  window: NO_WINDOW_PATCH,
 };
 
 function storedWith(config: Config): StoredConfig {
@@ -63,6 +67,8 @@ describe("house", () => {
       presets: NO_PRESETS,
       overrideEnd: "next_change",
       overrideDurationMs: 2 * 60 * 60 * 1000,
+      contacts: [],
+      window: DEFAULT_WINDOW_SETTINGS,
     });
 
     describe("With rooms that each list their own valves", () => {
@@ -321,6 +327,8 @@ describe("house", () => {
             presets: { ...NO_PRESETS, comfort: 22 },
             overrideEnd: "next_change",
             overrideDurationMs: 2 * 60 * 60 * 1000,
+            contacts: [],
+            window: DEFAULT_WINDOW_SETTINGS,
           },
         ]);
       });
@@ -367,8 +375,74 @@ describe("house", () => {
             presets: NO_PRESETS,
             overrideEnd: "next_change",
             overrideDurationMs: 2 * 60 * 60 * 1000,
+            contacts: [],
+            window: DEFAULT_WINDOW_SETTINGS,
           },
         ]);
+      });
+    });
+
+    describe("With a house limit of 2 h and a room limit of 4 h", () => {
+      it("gives the room 4 h", () => {
+        const base = configWith({
+          office: { ...OFFICE_ENTRY, window: { ...NO_WINDOW_PATCH, limitMs: 4 * 60 * 60 * 1000 } },
+        });
+        const config: Config = {
+          ...base,
+          settings: {
+            ...base.settings,
+            window: { ...DEFAULT_WINDOW_SETTINGS, limitMs: 2 * 60 * 60 * 1000 },
+          },
+        };
+        const room = resolveRooms(config, makeMembership({ office: [A] })).rooms[0];
+        expect(room?.window.limitMs).toBe(4 * 60 * 60 * 1000);
+      });
+    });
+
+    describe('With a room limit of "none"', () => {
+      it("gives the room no limit", () => {
+        const config = configWith({
+          office: { ...OFFICE_ENTRY, window: { ...NO_WINDOW_PATCH, limitMs: "none" } },
+        });
+        const room = resolveRooms(config, makeMembership({ office: [A] })).rooms[0];
+        expect(room?.window.limitMs).toBeUndefined();
+      });
+    });
+
+    describe("With a room patch of temperature.enabled false only", () => {
+      it("keeps the house drop and within", () => {
+        const base = configWith({
+          office: {
+            ...OFFICE_ENTRY,
+            window: {
+              ...NO_WINDOW_PATCH,
+              temperature: { ...NO_WINDOW_PATCH.temperature, enabled: false },
+            },
+          },
+        });
+        const house = {
+          ...DEFAULT_WINDOW_SETTINGS.temperature,
+          dropC: 0.8,
+          withinMs: 10 * 60 * 1000,
+        };
+        const config: Config = {
+          ...base,
+          settings: {
+            ...base.settings,
+            window: { ...DEFAULT_WINDOW_SETTINGS, temperature: house },
+          },
+        };
+        const room = resolveRooms(config, makeMembership({ office: [A] })).rooms[0];
+        expect(room?.window.temperature).toEqual({ ...house, enabled: false });
+      });
+    });
+
+    describe("With an entry that lists contacts", () => {
+      it("the room lists them", () => {
+        const contacts = [{ ref: "ha:binary_sensor.door" }];
+        const config = configWith({ office: { ...OFFICE_ENTRY, contacts } });
+        const room = resolveRooms(config, makeMembership({ office: [A] })).rooms[0];
+        expect(room?.contacts).toEqual(contacts);
       });
     });
 
@@ -441,6 +515,8 @@ describe("house", () => {
             presets: { ...NO_PRESETS, comfort: 22 },
             overrideEnd: "next_change",
             overrideDurationMs: 2 * 60 * 60 * 1000,
+            contacts: [],
+            window: DEFAULT_WINDOW_SETTINGS,
           },
         ]);
       });

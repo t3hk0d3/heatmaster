@@ -144,6 +144,7 @@ export const ru: Dictionary = {
   "ha_changes.item.sensors_imported":
     "Датчики зоны «{area}» импортированы по метке room_temperature_sensor",
   "ha_changes.item.override_end": "Конец ручной настройки в {area}",
+  "ha_changes.item.window_setting": "Настройка окна {setting} в {area}: {value}",
 
   "upgrade.title": "Конфигурация преобразована",
   "upgrade.intro":

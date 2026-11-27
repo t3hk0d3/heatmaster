@@ -35,7 +35,12 @@ export const EMPTY_LEDGER: Ledger = { records: new Map(), released: [] };
 export const HA_CHANGES_KEPT = 20;
 
 export type HaChangeKind =
-  "schedule" | "sensor_added" | "sensor_removed" | "sensors_imported" | "override_end";
+  | "schedule"
+  | "sensor_added"
+  | "sensor_removed"
+  | "sensors_imported"
+  | "override_end"
+  | "window_setting";
 
 export type HaChangeItem = Readonly<{
   kind: HaChangeKind;
@@ -44,6 +49,10 @@ export type HaChangeItem = Readonly<{
   scheduleId: string | undefined;
   /** The end rule an `override_end` item chose. */
   rule: EndRule | undefined;
+  /** The raw key a `window_setting` item changed, such as `temperature.end`. */
+  setting: string | undefined;
+  /** The raw value a `window_setting` item chose, as text. */
+  value: string | undefined;
 }>;
 
 /** A config revision made from label edits in Home Assistant; `at` is when it was saved. */
@@ -459,6 +468,8 @@ function haChangeToRaw(path: string, change: HaChange): Record<string, unknown> 
       ...(item.entityId === undefined ? {} : { entity_id: item.entityId }),
       ...(item.scheduleId === undefined ? {} : { schedule_id: item.scheduleId }),
       ...(item.rule === undefined ? {} : { rule: item.rule }),
+      ...(item.setting === undefined ? {} : { setting: item.setting }),
+      ...(item.value === undefined ? {} : { value: item.value }),
     })),
   };
 }
@@ -503,6 +514,7 @@ const HA_CHANGE_KINDS: readonly HaChangeKind[] = [
   "sensor_removed",
   "sensors_imported",
   "override_end",
+  "window_setting",
 ];
 const DROPPED_ROOM_REASONS: readonly DroppedRoomReason[] = [
   "no_area",
@@ -630,7 +642,7 @@ function haChangesFromRaw(read: StoredReader, value: unknown): readonly HaChange
         itemPath,
         rawItem,
         ["kind"],
-        ["area_id", "entity_id", "schedule_id", "rule"],
+        ["area_id", "entity_id", "schedule_id", "rule", "setting", "value"],
       );
       if (item === undefined) continue;
       const optionalText = (key: string): string | undefined =>
@@ -646,6 +658,8 @@ function haChangesFromRaw(read: StoredReader, value: unknown): readonly HaChange
           item.rule === undefined
             ? undefined
             : read.oneOf(at(itemPath, "rule"), item.rule, END_RULES),
+        setting: optionalText("setting"),
+        value: optionalText("value"),
       });
     }
     if (revision !== undefined && changedAt !== undefined) {

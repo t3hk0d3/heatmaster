@@ -116,6 +116,8 @@ function haChangeView(change: HaChange): HaChangeView {
         entityId: item.entityId,
         scheduleId: item.scheduleId,
         rule: item.rule,
+        setting: item.setting,
+        value: item.value,
       }),
     ),
   };

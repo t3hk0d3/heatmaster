@@ -12,7 +12,18 @@ import {
   sensorId,
   validateConfig,
 } from "./index.ts";
-import { DEFAULT_SETTINGS } from "./model.ts";
+import { DEFAULT_SETTINGS, DEFAULT_WINDOW_SETTINGS } from "./model.ts";
+import { windowTargetCelsius } from "./model.ts";
+import type { WindowTarget } from "./model.ts";
+import { NO_WINDOW_PATCH, resolveRooms } from "./house.ts";
+import { MAX_CONTACTS } from "./validation.ts";
+
+function resolveRoomsOf(config: Config): readonly Room[] {
+  const rooms = new Map([
+    ["living_room", { name: "Living room", valveIds: ["z2m:0x00124b0000000001"] }],
+  ]);
+  return resolveRooms(config, { rooms, ignored: [] }).rooms;
+}
 import type { Config, ConfigIssue, RawConfig, Room, SensorRef } from "./index.ts";
 
 type Path = readonly (string | number)[];
@@ -138,6 +149,8 @@ describe("validation", () => {
             { ref: "ha:sensor.living_temperature", weight: 2 },
           ],
           presets: { comfort: 22, eco: undefined, frost: undefined, boost: undefined },
+          contacts: [],
+          window: NO_WINDOW_PATCH,
         });
       });
 
@@ -157,6 +170,7 @@ describe("validation", () => {
           language: "en",
           overrideEnd: "next_change",
           overrideDurationMs: 7_200_000,
+          window: DEFAULT_WINDOW_SETTINGS,
         });
         expect(config.presets).toEqual({ comfort: 20, eco: 17, frost: 7, boost: 23 });
         expect(config.rooms.get("a")?.sensors[0]?.weight).toBe(1);
@@ -891,6 +905,8 @@ describe("validation", () => {
           scheduleId: "night",
           sensors: [{ ref: "ha:sensor.office_temperature", weight: 1 }],
           presets: NO_PRESETS,
+          contacts: [],
+          window: NO_WINDOW_PATCH,
         });
       });
 
@@ -945,6 +961,8 @@ describe("validation", () => {
           scheduleId: undefined,
           sensors: [],
           presets: NO_PRESETS,
+          contacts: [],
+          window: NO_WINDOW_PATCH,
         });
       });
     });
@@ -1375,6 +1393,8 @@ describe("validation", () => {
       presets: { ...NO_PRESETS, comfort: 22 },
       overrideEnd: "next_change",
       overrideDurationMs: 2 * 60 * 60 * 1000,
+      contacts: [],
+      window: DEFAULT_WINDOW_SETTINGS,
     };
 
     describe("With a room that sets comfort only", () => {
@@ -1399,6 +1419,35 @@ describe("validation", () => {
     });
   });
 
+  describe("windowTargetCelsius", () => {
+    const config = validateConfig(validRaw());
+    const baseRoom = (): Room => {
+      const first = resolveRoomsOf(config)[0];
+      if (first === undefined) throw new Error("no room");
+      return first;
+    };
+    const room = (target: WindowTarget, frost?: number): Room => ({
+      ...baseRoom(),
+      presets: { comfort: undefined, eco: undefined, frost, boost: undefined },
+      window: { ...DEFAULT_WINDOW_SETTINGS, target },
+    });
+    describe("With target preset frost and a room frost preset of 8", () => {
+      it("returns 8", () => {
+        expect(windowTargetCelsius(config, room({ kind: "preset", preset: "frost" }, 8))).toBe(8);
+      });
+    });
+    describe("With target preset frost and no room frost preset", () => {
+      it("returns the house frost", () => {
+        expect(windowTargetCelsius(config, room({ kind: "preset", preset: "frost" }))).toBe(8);
+      });
+    });
+    describe("With target 6", () => {
+      it("returns 6", () => {
+        expect(windowTargetCelsius(config, room({ kind: "celsius", celsius: 6 }))).toBe(6);
+      });
+    });
+  });
+
   describe("DEFAULT_SETTINGS", () => {
     it("sensorStaleAfterMs is 120 minutes", () => {
       expect(DEFAULT_SETTINGS.sensorStaleAfterMs).toBe(120 * 60 * 1000);
@@ -1411,6 +1460,163 @@ describe("validation", () => {
         const sensor: SensorRef = { ref: "ha:sensor.x", weight: 1 };
         expect(sensorId(sensor)).toBe("ha:sensor.x");
       });
+    });
+  });
+});
+
+describe("window settings in the config", () => {
+  const WINDOW_ENTRY = [...ROOM, "window"] as const;
+
+  describe("validateConfig", () => {
+    describe("With no window keys", () => {
+      const config = validateConfig(validRaw());
+      it("gives every room the default window settings", () => {
+        expect(config.settings.window).toEqual(DEFAULT_WINDOW_SETTINGS);
+      });
+      it("gives every entry no contacts", () => {
+        expect([...config.rooms.values()].map((entry) => entry.contacts)).toEqual([[], []]);
+      });
+    });
+
+    describe("With settings.window.temperature.drop_c 0.6", () => {
+      it("sets the house drop to 0.6", () => {
+        const config = validateConfig(
+          patched(["settings", "window"], { temperature: { drop_c: 0.6 } }),
+        );
+        expect(config.settings.window.temperature.dropC).toBe(0.6);
+      });
+    });
+
+    describe('With a room window.limit_min "none"', () => {
+      it("sets the room limit to none", () => {
+        const config = validateConfig(patched([...WINDOW_ENTRY], { limit_min: "none" }));
+        expect(config.rooms.get("living_room")?.window.limitMs).toBe("none");
+      });
+    });
+
+    describe('With a room window.target "eco"', () => {
+      it("sets the room target to the eco preset", () => {
+        const config = validateConfig(patched([...WINDOW_ENTRY], { target: "eco" }));
+        expect(config.rooms.get("living_room")?.window.target).toEqual({
+          kind: "preset",
+          preset: "eco",
+        });
+      });
+    });
+
+    describe("With window.target 6.5", () => {
+      it("sets the target to 6.5 °C", () => {
+        const config = validateConfig(patched([...WINDOW_ENTRY], { target: 6.5 }));
+        expect(config.rooms.get("living_room")?.window.target).toEqual({
+          kind: "celsius",
+          celsius: 6.5,
+        });
+      });
+    });
+
+    describe("With open_debounce_s 601", () => {
+      it("throws ConfigError at settings.window.open_debounce_s", () => {
+        expectIssue(
+          patched(["settings", "window"], { open_debounce_s: 601 }),
+          "setting_out_of_range",
+          "settings.window.open_debounce_s",
+        );
+      });
+    });
+
+    describe("With temperature.drop_c 0.05", () => {
+      it("throws ConfigError at the key", () => {
+        expectIssue(
+          patched([...WINDOW_ENTRY], { temperature: { drop_c: 0.05 } }),
+          "setting_out_of_range",
+          "rooms.living_room.window.temperature.drop_c",
+        );
+      });
+    });
+
+    describe('With window.action "close"', () => {
+      it("throws ConfigError at the key", () => {
+        expectIssue(
+          patched([...WINDOW_ENTRY], { action: "close" }),
+          "window_value_unsupported",
+          "rooms.living_room.window.action",
+        );
+      });
+    });
+
+    describe('With a contact ref "ha:sensor.x"', () => {
+      it("throws ConfigError at the contact", () => {
+        expectIssue(
+          onlyRoom({ contacts: [{ ref: "ha:sensor.x" }] }),
+          "contact_ref_invalid",
+          "rooms.living_room.contacts[0].ref",
+        );
+      });
+    });
+
+    describe("With the same contact twice in one entry", () => {
+      it("throws ConfigError at the second", () => {
+        const door = { ref: "ha:binary_sensor.door" };
+        expectIssue(
+          onlyRoom({ contacts: [door, door] }),
+          "contact_duplicate",
+          "rooms.living_room.contacts[1].ref",
+        );
+      });
+    });
+
+    describe("With 17 contacts", () => {
+      it("throws ConfigError at contacts", () => {
+        const contacts = Array.from({ length: MAX_CONTACTS + 1 }, (_, i) => ({
+          ref: `ha:binary_sensor.c${String(i)}`,
+        }));
+        expectIssue(onlyRoom({ contacts }), "too_many", "rooms.living_room.contacts");
+      });
+    });
+
+    describe("With a contact listed in two rooms", () => {
+      it("accepts it", () => {
+        const contacts = [{ ref: "ha:binary_sensor.door" }];
+        const raw = withRooms({ a: { contacts }, b: { contacts } });
+        expect(validateConfig(raw).rooms.get("b")?.contacts).toEqual(contacts);
+      });
+    });
+  });
+
+  describe("configToRaw", () => {
+    describe("With a room window patch of end stopped_falling only", () => {
+      it("writes only window.temperature.end on the entry", () => {
+        const base = validateConfig(validRaw());
+        const entry = base.rooms.get("office");
+        if (entry === undefined) throw new Error("no entry");
+        const changed: Config = {
+          ...base,
+          rooms: new Map([
+            [
+              "office",
+              {
+                ...entry,
+                window: {
+                  ...entry.window,
+                  temperature: { ...entry.window.temperature, end: "stopped_falling" },
+                },
+              },
+            ],
+          ]),
+        };
+        expect(configToRaw(changed).rooms?.office?.window).toStrictEqual({
+          temperature: { end: "stopped_falling" },
+        });
+      });
+    });
+
+    describe("Round trip", () => {
+      fcTest.prop([arbConfig])(
+        "validateConfig(configToRaw(c)) equals c for arbitrary window settings",
+        (config) => {
+          expect(validateConfig(configToRaw(config))).toEqual(config);
+        },
+      );
     });
   });
 });

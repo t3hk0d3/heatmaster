@@ -6,6 +6,7 @@ import {
   EMPTY_READINGS,
   EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
+  PRESET_NAMES,
   TRVZB_THERMOSTAT,
   TRV_ZBT_THERMOSTAT,
   WEEKDAYS,
@@ -18,9 +19,10 @@ import {
   weekKey,
   withRecord,
 } from "../src/index.ts";
-import { DEFAULT_SETTINGS } from "../src/model.ts";
+import { DEFAULT_SETTINGS, DEFAULT_WINDOW_SETTINGS } from "../src/model.ts";
 import type {
   Config,
+  ContactRef,
   DeviceState,
   DeviceView,
   EndRule,
@@ -49,6 +51,8 @@ import type {
   ValveRecord,
   ValveSpec,
   Week,
+  WindowPatch,
+  WindowSettings,
   World,
 } from "../src/index.ts";
 
@@ -145,6 +149,79 @@ const sensor: fc.Arbitrary<SensorRef> = fc.record({
 
 const endRule = fc.constantFrom<EndRule>("next_change", "timer", "manual");
 
+const contact: fc.Arbitrary<ContactRef> = fc
+  .integer({ min: 0, max: 5 })
+  .map((n) => ({ ref: `ha:binary_sensor.c${String(n)}` }));
+
+const windowTarget = fc.oneof(
+  fc
+    .constantFrom<PresetName>(...PRESET_NAMES)
+    .map((preset) => ({ kind: "preset" as const, preset })),
+  halfDegree.map((celsius) => ({ kind: "celsius" as const, celsius })),
+);
+const seconds = (max: number): fc.Arbitrary<number> =>
+  fc.integer({ min: 0, max }).map((n) => n * 1000);
+const minutes = (min: number, max: number): fc.Arbitrary<number> =>
+  fc.integer({ min, max }).map((n) => n * 60_000);
+const dropC = fc.integer({ min: 1, max: 30 }).map((n) => n / 10);
+
+/** Any valid house window settings. */
+export const arbWindowSettings: fc.Arbitrary<WindowSettings> = fc.record({
+  enabled: fc.boolean(),
+  action: fc.constantFrom<WindowSettings["action"]>("frost_heat", "off"),
+  target: windowTarget,
+  openDebounceMs: seconds(600),
+  closeDebounceMs: seconds(1800),
+  contactUnavailableMs: minutes(1, 1440),
+  temperature: fc.record({
+    enabled: fc.boolean(),
+    dropC,
+    withinMs: minutes(5, 120),
+    end: fc.constantFrom<WindowSettings["temperature"]["end"]>("fixed", "stopped_falling"),
+    fixedMs: minutes(5, 240),
+    stillMs: minutes(5, 120),
+    rejoinMs: minutes(0, 240),
+  }),
+  limitMs: fc.option(minutes(10, 1440), { nil: undefined }),
+  afterLimit: fc.constantFrom<WindowSettings["afterLimit"]>("heat", "stay"),
+  notify: fc.boolean(),
+  manualChange: fc.constantFrom<WindowSettings["manualChange"]>("resume_heating", "ignore"),
+  valveDetection: fc.constantFrom<WindowSettings["valveDetection"]>(
+    "off_when_watched",
+    "always_off",
+    "leave",
+  ),
+});
+
+const maybe = <T>(arb: fc.Arbitrary<T>): fc.Arbitrary<T | undefined> =>
+  fc.option(arb, { nil: undefined });
+
+/** Any valid room window patch. */
+export const arbWindowPatch: fc.Arbitrary<WindowPatch> = fc.record({
+  enabled: maybe(fc.boolean()),
+  action: maybe(fc.constantFrom<WindowSettings["action"]>("frost_heat", "off")),
+  target: maybe(windowTarget),
+  openDebounceMs: maybe(seconds(600)),
+  closeDebounceMs: maybe(seconds(1800)),
+  contactUnavailableMs: maybe(minutes(1, 1440)),
+  temperature: fc.record({
+    enabled: maybe(fc.boolean()),
+    dropC: maybe(dropC),
+    withinMs: maybe(minutes(5, 120)),
+    end: maybe(fc.constantFrom<WindowSettings["temperature"]["end"]>("fixed", "stopped_falling")),
+    fixedMs: maybe(minutes(5, 240)),
+    stillMs: maybe(minutes(5, 120)),
+    rejoinMs: maybe(minutes(0, 240)),
+  }),
+  limitMs: maybe(fc.oneof(minutes(10, 1440), fc.constant("none" as const))),
+  afterLimit: maybe(fc.constantFrom<WindowSettings["afterLimit"]>("heat", "stay")),
+  notify: maybe(fc.boolean()),
+  manualChange: maybe(fc.constantFrom<WindowSettings["manualChange"]>("resume_heating", "ignore")),
+  valveDetection: maybe(
+    fc.constantFrom<WindowSettings["valveDetection"]>("off_when_watched", "always_off", "leave"),
+  ),
+});
+
 const roomPresets = fc.record({
   comfort: fc.option(halfDegree, { nil: undefined }),
   eco: fc.option(halfDegree, { nil: undefined }),
@@ -173,6 +250,7 @@ export const arbConfig: fc.Arbitrary<Config> = fc
         language: fc.constantFrom<"en" | "ru">("en", "ru"),
         overrideEnd: endRule,
         overrideDurationMs: fc.integer({ min: 15, max: 1440 }).map((n) => n * 60_000),
+        window: arbWindowSettings,
       }),
       presets: fc.record({
         comfort: halfDegree,
@@ -215,6 +293,8 @@ export const arbConfig: fc.Arbitrary<Config> = fc
                 fc.integer({ min: 15, max: 1440 }).map((n) => n * 60_000),
                 { nil: undefined },
               ),
+              contacts: fc.uniqueArray(contact, { maxLength: 4, selector: (c) => c.ref }),
+              window: arbWindowPatch,
             }),
           ),
         )
@@ -362,6 +442,11 @@ export function weekOf(day: readonly SetPoint[]): Week {
   return { mon: day, tue: day, wed: day, thu: day, fri: day, sat: day, sun: day };
 }
 
+/** The patch that sets every value of the window settings. */
+export function windowPatchOf(window: WindowSettings): WindowPatch {
+  return { ...window, limitMs: window.limitMs ?? "none" };
+}
+
 /** One entry per room, keyed by its id: the room's schedule, sensors and presets. */
 export function entriesOf(rooms: readonly Room[]): ReadonlyMap<string, RoomEntry> {
   return new Map(
@@ -373,6 +458,8 @@ export function entriesOf(rooms: readonly Room[]): ReadonlyMap<string, RoomEntry
         presets: room.presets,
         overrideEnd: room.overrideEnd,
         overrideDurationMs: room.overrideDurationMs,
+        contacts: room.contacts,
+        window: windowPatchOf(room.window),
       },
     ]),
   );
@@ -549,6 +636,8 @@ export function makeManaged(
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
     overrideEnd: DEFAULT_SETTINGS.overrideEnd,
     overrideDurationMs: DEFAULT_SETTINGS.overrideDurationMs,
+    contacts: [],
+    window: DEFAULT_WINDOW_SETTINGS,
   };
   const config = makeConfig({
     ...(options.holdWrites === undefined ? {} : { holdWrites: options.holdWrites }),

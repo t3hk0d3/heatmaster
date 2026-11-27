@@ -24,7 +24,7 @@ import {
   type UpgradeReport,
   type ValveRecord,
 } from "./ledger.ts";
-import { ConfigError, type Room } from "./model.ts";
+import { DEFAULT_WINDOW_SETTINGS, ConfigError, type Room } from "./model.ts";
 import { SETTING_KEYS, type SettingKey, type SettingValue } from "./settings.ts";
 
 const T0 = Temporal.Instant.from("2026-11-14T09:30:00Z").epochMilliseconds;
@@ -58,6 +58,8 @@ function roomsWith(valveIds: readonly string[]): readonly Room[] {
       presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
       overrideEnd: "next_change",
       overrideDurationMs: 2 * 60 * 60 * 1000,
+      contacts: [],
+      window: DEFAULT_WINDOW_SETTINGS,
     },
   ];
 }
@@ -154,11 +156,14 @@ const arbHaChangeItem: fc.Arbitrary<HaChangeItem> = fc.record({
     "sensor_removed",
     "sensors_imported",
     "override_end",
+    "window_setting",
   ),
   areaId: fc.option(text, { nil: undefined }),
   entityId: fc.option(text, { nil: undefined }),
   scheduleId: fc.option(text, { nil: undefined }),
   rule: fc.option(fc.constantFrom("next_change", "timer", "manual"), { nil: undefined }),
+  setting: fc.option(text, { nil: undefined }),
+  value: fc.option(text, { nil: undefined }),
 });
 const arbHaChange: fc.Arbitrary<HaChange> = fc.record({
   revision: fc.nat(),
@@ -249,6 +254,8 @@ function aFullStored(): StoredConfig {
             entityId: undefined,
             scheduleId: "default",
             rule: undefined,
+            setting: undefined,
+            value: undefined,
           },
         ],
       },
@@ -262,6 +269,8 @@ function aFullStored(): StoredConfig {
             entityId: "sensor.office_temperature",
             scheduleId: undefined,
             rule: undefined,
+            setting: undefined,
+            value: undefined,
           },
           {
             kind: "sensor_removed",
@@ -269,6 +278,8 @@ function aFullStored(): StoredConfig {
             entityId: "sensor.hall_temperature",
             scheduleId: undefined,
             rule: undefined,
+            setting: undefined,
+            value: undefined,
           },
         ],
       },
@@ -709,6 +720,51 @@ describe("ledger", () => {
         expect(item?.rule).toBeUndefined();
       });
     });
+    describe("With a window_setting item with setting temperature.end and value stopped_falling", () => {
+      const item: HaChangeItem = {
+        kind: "window_setting",
+        areaId: "office",
+        entityId: undefined,
+        scheduleId: undefined,
+        rule: undefined,
+        setting: "temperature.end",
+        value: "stopped_falling",
+      };
+      const value: StoredConfig = {
+        ...aFullStored(),
+        haChanges: [{ revision: 11, at: T0, items: [item] }],
+      };
+      const raw: unknown = JSON.parse(JSON.stringify(storedToRaw(value)));
+      it("storedToRaw writes setting and value", () => {
+        const rawItem = (raw as { ha_changes: { items: Record<string, unknown>[] }[] })
+          .ha_changes[0]?.items[0];
+        expect(rawItem).toEqual({
+          kind: "window_setting",
+          area_id: "office",
+          setting: "temperature.end",
+          value: "stopped_falling",
+        });
+      });
+      it("round-trips through storedToRaw", () => {
+        expect(storedFromRaw(raw)).toEqual(value);
+      });
+    });
+    describe("With an haChanges item without setting and value", () => {
+      it("loads with both undefined", () => {
+        const raw = {
+          ...aRawStored(),
+          ha_changes: [
+            {
+              revision: 8,
+              at: "2026-11-14T09:30:00.000Z",
+              items: [{ kind: "schedule", area_id: "office" }],
+            },
+          ],
+        };
+        const item = storedFromRaw(raw).haChanges[0]?.items[0];
+        expect([item?.setting, item?.value]).toEqual([undefined, undefined]);
+      });
+    });
     describe("With an override_end item with rule manual", () => {
       it("round-trips through storedToRaw", () => {
         const item: HaChangeItem = {
@@ -717,6 +773,8 @@ describe("ledger", () => {
           entityId: undefined,
           scheduleId: undefined,
           rule: "manual",
+          setting: undefined,
+          value: undefined,
         };
         const value: StoredConfig = {
           ...aFullStored(),

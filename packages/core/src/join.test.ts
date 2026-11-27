@@ -1,3 +1,4 @@
+import { DEFAULT_WINDOW_SETTINGS } from "./model.ts";
 import { describe, expect, it } from "vitest";
 import {
   BUILDER_NOW,
@@ -45,6 +46,8 @@ function room(id: string, valveIds: readonly string[]): Room {
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
     overrideEnd: "next_change",
     overrideDurationMs: 2 * 60 * 60 * 1000,
+    contacts: [],
+    window: DEFAULT_WINDOW_SETTINGS,
   };
 }
 

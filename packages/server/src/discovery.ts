@@ -575,6 +575,14 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
     }
   }
 
+  function isRoomChoice(command: ThermostatCommand | RoomChoice): command is RoomChoice {
+    return (
+      command.kind === "schedule" ||
+      command.kind === "override_end" ||
+      command.kind.startsWith("window_")
+    );
+  }
+
   function onRoomCommand(topic: string, payload: Buffer, retained: boolean): void {
     if (retained) return;
     const parts = topic.split("/");
@@ -593,7 +601,7 @@ export function createDiscovery(deps: DiscoveryDeps): Discovery {
     }
     void (async () => {
       try {
-        if (command.kind === "schedule" || command.kind === "override_end") {
+        if (isRoomChoice(command)) {
           await deps.roomChoice(roomId, command);
         } else {
           await deps.roomCommand(roomId, command);

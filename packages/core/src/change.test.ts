@@ -25,7 +25,7 @@ import type { ChangeOptions, ChangePlan, ChangeRefusedCode, SensorInfo } from ".
 import type { DeviceView, Effect, World } from "./control.ts";
 import { EMPTY_LEDGER, FRESH_STORED, withRecord } from "./ledger.ts";
 import type { HaChangeItem, Ledger, StoredConfig, ValveRecord } from "./ledger.ts";
-import { ConfigError } from "./model.ts";
+import { DEFAULT_WINDOW_SETTINGS, ConfigError } from "./model.ts";
 import type { Room, SensorRef } from "./model.ts";
 import type { DeviceState } from "./observation.ts";
 import { DAY_KEYS } from "./settings.ts";
@@ -55,6 +55,8 @@ const HA_CHANGE_ITEM: HaChangeItem = {
   entityId: undefined,
   scheduleId: BUILDER_SCHEDULE,
   rule: undefined,
+  setting: undefined,
+  value: undefined,
 };
 
 type Model = "trvzb" | "trv_zbt";
@@ -113,6 +115,8 @@ function room(id: string, valveIds: readonly string[], sensors: readonly SensorR
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
     overrideEnd: "next_change",
     overrideDurationMs: 2 * 60 * 60 * 1000,
+    contacts: [],
+    window: DEFAULT_WINDOW_SETTINGS,
   };
 }
 

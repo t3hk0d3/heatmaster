@@ -1,5 +1,5 @@
 import type { ConfigState, StoredConfig } from "./ledger.ts";
-import type { Config, Room, RoomPresets } from "./model.ts";
+import type { Config, Room, RoomPresets, WindowPatch, WindowSettings } from "./model.ts";
 
 export const IGNORE_LABEL = "heatmaster_ignore";
 export const SENSOR_LABEL = "heatmaster_temp_sensor";
@@ -65,6 +65,62 @@ export const NO_PRESETS: RoomPresets = {
   frost: undefined,
   boost: undefined,
 };
+
+/** A room entry that overrides no house window setting. */
+export const NO_WINDOW_PATCH: WindowPatch = {
+  enabled: undefined,
+  action: undefined,
+  target: undefined,
+  openDebounceMs: undefined,
+  closeDebounceMs: undefined,
+  contactUnavailableMs: undefined,
+  temperature: {
+    enabled: undefined,
+    dropC: undefined,
+    withinMs: undefined,
+    end: undefined,
+    fixedMs: undefined,
+    stillMs: undefined,
+    rejoinMs: undefined,
+  },
+  limitMs: undefined,
+  afterLimit: undefined,
+  notify: undefined,
+  manualChange: undefined,
+  valveDetection: undefined,
+};
+
+/** The patch's values over the house's, field by field; `temperature` too. `"none"` is no limit. */
+export function mergeWindow(house: WindowSettings, patch: WindowPatch): WindowSettings {
+  const t = patch.temperature;
+  return {
+    enabled: patch.enabled ?? house.enabled,
+    action: patch.action ?? house.action,
+    target: patch.target ?? house.target,
+    openDebounceMs: patch.openDebounceMs ?? house.openDebounceMs,
+    closeDebounceMs: patch.closeDebounceMs ?? house.closeDebounceMs,
+    contactUnavailableMs: patch.contactUnavailableMs ?? house.contactUnavailableMs,
+    temperature: {
+      enabled: t.enabled ?? house.temperature.enabled,
+      dropC: t.dropC ?? house.temperature.dropC,
+      withinMs: t.withinMs ?? house.temperature.withinMs,
+      end: t.end ?? house.temperature.end,
+      fixedMs: t.fixedMs ?? house.temperature.fixedMs,
+      stillMs: t.stillMs ?? house.temperature.stillMs,
+      rejoinMs: t.rejoinMs ?? house.temperature.rejoinMs,
+    },
+    limitMs:
+      patch.limitMs === undefined
+        ? house.limitMs
+        : patch.limitMs === "none"
+          ? undefined
+          : patch.limitMs,
+    afterLimit: patch.afterLimit ?? house.afterLimit,
+    notify: patch.notify ?? house.notify,
+    manualChange: patch.manualChange ?? house.manualChange,
+    valveDetection: patch.valveDetection ?? house.valveDetection,
+  };
+}
 
 export function scheduleLabelId(scheduleId: string): string {
   return SCHEDULE_LABEL_PREFIX + scheduleId.replaceAll("-", "_");
@@ -176,8 +232,8 @@ export function sameMembership(
 
 /**
  * One Room per room of the membership, in area-id order: its schedule is the entry's, else the
- * default; its sensors and presets are the entry's, none without one; its override end rule and duration
- * are the entry's, else the house's. No room when the config has
+ * default; its sensors and presets are the entry's, none without one; its override end rule, duration and window settings
+ * are the entry's, else the house's; its contacts are the entry's. No room when the config has
  * no schedule. `unused` lists the entries that are no room (all of them without a membership).
  */
 export function resolveRooms(
@@ -204,6 +260,8 @@ export function resolveRooms(
       presets: entry?.presets ?? NO_PRESETS,
       overrideEnd: entry?.overrideEnd ?? config.settings.overrideEnd,
       overrideDurationMs: entry?.overrideDurationMs ?? config.settings.overrideDurationMs,
+      contacts: entry?.contacts ?? [],
+      window: mergeWindow(config.settings.window, entry?.window ?? NO_WINDOW_PATCH),
     });
   }
   return { rooms, unused };

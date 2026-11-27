@@ -223,6 +223,7 @@ export const en = {
   "ha_changes.item.sensors_imported":
     "Sensors of {area} imported from the room_temperature_sensor label",
   "ha_changes.item.override_end": "Override end in {area}",
+  "ha_changes.item.window_setting": "Window setting {setting} in {area}: {value}",
 
   "upgrade.title": "Configuration converted",
   "upgrade.intro":

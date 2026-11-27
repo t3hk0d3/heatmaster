@@ -430,6 +430,8 @@ export function renderHaChanges(state: StateView, language: Language, t: Transla
           t(`ha_changes.item.${entry.kind}`, {
             area,
             entity: entry.entityId ?? "",
+            setting: entry.setting ?? "",
+            value: entry.value ?? "",
             schedule: entry.scheduleId === undefined ? "" : scheduleName(state, entry.scheduleId),
           }),
         ),

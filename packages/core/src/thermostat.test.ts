@@ -12,9 +12,10 @@ import {
 } from "../test/builders.ts";
 import { ChangeRefused } from "./change.ts";
 import type { Effect, World } from "./control.ts";
+import { NO_WINDOW_PATCH } from "./house.ts";
 import { FRESH_STORED } from "./ledger.ts";
 import type { HaChangeItem, StoredConfig } from "./ledger.ts";
-import { BOOST_DURATION_MS, EMPTY_CONFIG } from "./model.ts";
+import { BOOST_DURATION_MS, DEFAULT_WINDOW_SETTINGS, EMPTY_CONFIG } from "./model.ts";
 import type { Config, Presets, Room, RoomEntry, Schedule, SetPoint, Week } from "./model.ts";
 import type { ResolvedWeek } from "./schedule.ts";
 import {
@@ -66,6 +67,8 @@ function makeRoom(fields: Partial<Room> = {}): Room {
     presets: NO_PRESETS,
     overrideEnd: "next_change",
     overrideDurationMs: 120 * MINUTE_MS,
+    contacts: [],
+    window: DEFAULT_WINDOW_SETTINGS,
     ...fields,
   };
 }
@@ -158,6 +161,8 @@ function storedWith(entry: Partial<RoomEntry> = {}): StoredConfig {
           presets: NO_PRESETS,
           overrideEnd: undefined,
           overrideDurationMs: undefined,
+          contacts: [],
+          window: NO_WINDOW_PATCH,
           ...entry,
         },
       ],
@@ -498,6 +503,8 @@ describe("thermostat", () => {
             entityId: undefined,
             scheduleId: "night",
             rule: undefined,
+            setting: undefined,
+            value: undefined,
           };
           expect(next.haChanges.at(-1)?.items).toEqual([item]);
         });
@@ -557,6 +564,8 @@ describe("thermostat", () => {
             presets: NO_PRESETS,
             overrideEnd: undefined,
             overrideDurationMs: undefined,
+            contacts: [],
+            window: NO_WINDOW_PATCH,
           });
         });
       });
@@ -577,6 +586,8 @@ describe("thermostat", () => {
             entityId: undefined,
             scheduleId: undefined,
             rule: "manual",
+            setting: undefined,
+            value: undefined,
           };
           expect([entryOf(next)?.overrideEnd, next.haChanges.at(-1)?.items]).toEqual([
             "manual",
@@ -595,6 +606,107 @@ describe("thermostat", () => {
           );
           expect(next).toBe(stored);
         });
+      });
+    });
+  });
+
+  describe("withRoomChoice, window choices", () => {
+    describe("With window_limit none", () => {
+      const next = withRoomChoice(
+        storedWith(),
+        BUILDER_ROOM,
+        { kind: "window_limit", limitMs: undefined },
+        NOW_MS,
+      );
+      it("sets the entry's limitMs to none", () => {
+        expect(entryOf(next)?.window.limitMs).toBe("none");
+      });
+      it("records an HA change item window_setting with setting limit_min and value none", () => {
+        const item: HaChangeItem = {
+          kind: "window_setting",
+          areaId: BUILDER_ROOM,
+          entityId: undefined,
+          scheduleId: undefined,
+          rule: undefined,
+          setting: "limit_min",
+          value: "none",
+        };
+        expect(next.haChanges.at(-1)?.items).toEqual([item]);
+      });
+    });
+    describe("With window_limit 4 h", () => {
+      it("sets the entry's limitMs to 4 h and records the minutes", () => {
+        const next = withRoomChoice(
+          storedWith(),
+          BUILDER_ROOM,
+          { kind: "window_limit", limitMs: 4 * 60 * MINUTE_MS },
+          NOW_MS,
+        );
+        expect([entryOf(next)?.window.limitMs, next.haChanges.at(-1)?.items[0]?.value]).toEqual([
+          4 * 60 * MINUTE_MS,
+          "240",
+        ]);
+      });
+    });
+    describe("With window_enabled false for a room with no entry", () => {
+      it("creates the entry with window.enabled false", () => {
+        const next = withRoomChoice(
+          storedWith(),
+          "attic",
+          { kind: "window_enabled", on: false },
+          NOW_MS,
+        );
+        expect(entryOf(next, "attic")?.window).toEqual({ ...NO_WINDOW_PATCH, enabled: false });
+      });
+    });
+    describe("With window_temperature on", () => {
+      it("sets window.temperature.enabled only", () => {
+        const next = withRoomChoice(
+          storedWith(),
+          BUILDER_ROOM,
+          { kind: "window_temperature", on: true },
+          NOW_MS,
+        );
+        expect(entryOf(next)?.window).toEqual({
+          ...NO_WINDOW_PATCH,
+          temperature: { ...NO_WINDOW_PATCH.temperature, enabled: true },
+        });
+      });
+    });
+    describe("With window_action off, window_end stopped_falling and window_manual_change ignore", () => {
+      it("sets action, temperature.end and manualChange", () => {
+        let next = storedWith();
+        next = withRoomChoice(next, BUILDER_ROOM, { kind: "window_action", action: "off" }, NOW_MS);
+        next = withRoomChoice(
+          next,
+          BUILDER_ROOM,
+          { kind: "window_end", end: "stopped_falling" },
+          NOW_MS,
+        );
+        next = withRoomChoice(
+          next,
+          BUILDER_ROOM,
+          { kind: "window_manual_change", manualChange: "ignore" },
+          NOW_MS,
+        );
+        expect(entryOf(next)?.window).toEqual({
+          ...NO_WINDOW_PATCH,
+          action: "off",
+          temperature: { ...NO_WINDOW_PATCH.temperature, end: "stopped_falling" },
+          manualChange: "ignore",
+        });
+      });
+    });
+    describe("With a choice equal to the entry's value", () => {
+      it("returns stored itself", () => {
+        const stored = storedWith({ window: { ...NO_WINDOW_PATCH, action: "off" } });
+        const next = withRoomChoice(
+          stored,
+          BUILDER_ROOM,
+          { kind: "window_action", action: "off" },
+          NOW_MS,
+        );
+        expect(next).toBe(stored);
       });
     });
   });

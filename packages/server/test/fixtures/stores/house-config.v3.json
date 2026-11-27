@@ -14,7 +14,29 @@
         "timezone": "Europe/Amsterdam",
         "language": "en",
         "override_end": "next_change",
-        "override_duration_min": 120
+        "override_duration_min": 120,
+        "window": {
+          "enabled": true,
+          "action": "frost_heat",
+          "target": "frost",
+          "open_debounce_s": 30,
+          "close_debounce_s": 60,
+          "contact_unavailable_min": 30,
+          "temperature": {
+            "enabled": true,
+            "drop_c": 0.4,
+            "within_min": 20,
+            "end": "fixed",
+            "fixed_min": 30,
+            "still_min": 20,
+            "rejoin_min": 60
+          },
+          "limit_min": 120,
+          "after_limit": "heat",
+          "notify": true,
+          "manual_change": "resume_heating",
+          "valve_detection": "off_when_watched"
+        }
       },
       "presets": {
         "comfort": 21,

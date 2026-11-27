@@ -1,16 +1,23 @@
-import { scheduleLabelId } from "./house.ts";
+import { NO_WINDOW_PATCH, mergeWindow, scheduleLabelId } from "./house.ts";
 import {
+  AFTER_LIMITS,
   ConfigError,
   DEFAULT_PRESETS,
   DEFAULT_SETTINGS,
+  DEFAULT_WINDOW_SETTINGS,
   END_RULES,
+  MANUAL_CHANGES,
   OVERRIDE_DURATION_RANGE_MS,
   PRESET_NAMES,
+  VALVE_DETECTIONS,
   WEEKDAYS,
+  WINDOW_ACTIONS,
+  WINDOW_ENDS,
 } from "./model.ts";
 import type {
   Config,
   ConfigIssue,
+  ContactRef,
   EndRule,
   PresetName,
   Presets,
@@ -20,10 +27,14 @@ import type {
   SensorRef,
   Settings,
   SetPoint,
+  TemperaturePatch,
   Week,
   Weekday,
+  WindowPatch,
+  WindowSettings,
+  WindowTarget,
 } from "./model.ts";
-import { sensorId } from "./model.ts";
+import { contactId, sensorId } from "./model.ts";
 
 export const CONFIG_VERSION = 3;
 
@@ -37,6 +48,42 @@ export type RawPresets = Readonly<{
   boost?: number;
 }>;
 
+/** The `temperature` part of a window object; the keys of `RawWindow.temperature`. */
+export type RawWindowTemperature = Readonly<{
+  enabled?: boolean;
+  /** 0.1 to 3 in steps of 0.1. */
+  drop_c?: number;
+  /** Whole minutes. */
+  within_min?: number;
+  end?: "fixed" | "stopped_falling";
+  /** Whole minutes. */
+  fixed_min?: number;
+  /** Whole minutes. */
+  still_min?: number;
+  /** Whole minutes. */
+  rejoin_min?: number;
+}>;
+
+/** Window settings: the house's in full, a room's sparse. Times are whole seconds or minutes. */
+export type RawWindow = Readonly<{
+  enabled?: boolean;
+  action?: "frost_heat" | "off";
+  /** A preset name or degrees. */
+  target?: number | PresetName;
+  open_debounce_s?: number;
+  close_debounce_s?: number;
+  contact_unavailable_min?: number;
+  temperature?: RawWindowTemperature;
+  /** Whole minutes, or `"none"`. */
+  limit_min?: number | "none";
+  after_limit?: "heat" | "stay";
+  notify?: boolean;
+  manual_change?: "resume_heating" | "ignore";
+  valve_detection?: "off_when_watched" | "always_off" | "leave";
+}>;
+
+export type RawContact = Readonly<{ ref: string }>;
+
 export type RawSettings = Readonly<{
   external_write_interval_min?: number;
   sensor_stale_min?: number;
@@ -46,6 +93,7 @@ export type RawSettings = Readonly<{
   override_end?: EndRule;
   /** Whole minutes. */
   override_duration_min?: number;
+  window?: RawWindow;
 }>;
 
 /** A day plan: "HH:MM" to a temperature or a preset name. */
@@ -69,6 +117,8 @@ export type RawRoomEntry = Readonly<{
   override_end?: EndRule;
   /** Whole minutes. */
   override_duration_min?: number;
+  contacts?: readonly RawContact[];
+  window?: RawWindow;
 }>;
 
 /** `rooms` is keyed by Home Assistant area id. */
@@ -83,6 +133,7 @@ export type RawConfig = Readonly<{
 
 const ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const HA_ENTITY_PATTERN = /^sensor\.[a-z0-9_]+$/;
+const HA_CONTACT_PATTERN = /^binary_sensor\.[a-z0-9_]+$/;
 /** An id ending in `-<digits>` or `_<digits>` after something else. */
 const NUMBERED_ID_PATTERN = /^.+[-_][0-9]+$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -95,6 +146,8 @@ export const MAX_ROOMS = 64;
 const MAX_SCHEDULES = 64;
 /** How many sensors a room entry may list. */
 export const MAX_SENSORS = 16;
+/** How many contacts a room entry may list. */
+export const MAX_CONTACTS = 16;
 const MAX_NAME_LENGTH = 64;
 const MAX_SENSOR_WEIGHT = 10;
 const MAX_DAY_SET_POINTS = 6;
@@ -105,6 +158,7 @@ const ALIASES: Readonly<Record<string, readonly Weekday[]>> = {
   weekend: ["sat", "sun"],
 };
 const MS_PER_MINUTE = 60 * 1000;
+const MS_PER_SECOND = 1000;
 const MIDNIGHT = Temporal.PlainTime.from("00:00");
 
 type Report = (path: string, code: string, message: string) => void;
@@ -377,6 +431,169 @@ function parseOverrideMinutes(report: Report, path: string, value: unknown): num
   return parseWholeMinutes(report, path, value, min / MS_PER_MINUTE, max / MS_PER_MINUTE, 0);
 }
 
+/** A whole number in `[min, max]`, or undefined when the key is missing. */
+function optionalWhole(
+  report: Report,
+  path: string,
+  value: unknown,
+  min: number,
+  max: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  return parseWholeMinutes(report, path, value, min, max, min);
+}
+
+function optionalBoolean(report: Report, path: string, value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "boolean") return value;
+  typeInvalid(report, path, "true or false");
+  return undefined;
+}
+
+/** One of `choices`, or undefined when the key is missing (or reported). */
+function optionalChoice<T extends string>(
+  report: Report,
+  path: string,
+  value: unknown,
+  choices: readonly T[],
+): T | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    typeInvalid(report, path, "a text");
+    return undefined;
+  }
+  const found = choices.find((choice) => choice === value);
+  if (found === undefined) {
+    report(path, "window_value_unsupported", `expected one of ${choices.join(", ")}`);
+  }
+  return found;
+}
+
+/** Milliseconds of a whole number of `unit` in `[min, max]`, or undefined. */
+function optionalDuration(
+  report: Report,
+  path: string,
+  value: unknown,
+  range: readonly [number, number],
+  unit: number,
+): number | undefined {
+  const n = optionalWhole(report, path, value, range[0], range[1]);
+  return n === undefined ? undefined : n * unit;
+}
+
+function parseWindowTarget(report: Report, path: string, value: unknown): WindowTarget | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number") {
+    return { kind: "celsius", celsius: parseTemperature(report, path, value) };
+  }
+  const preset = optionalChoice(report, path, value, PRESET_NAMES);
+  return preset === undefined ? undefined : { kind: "preset", preset };
+}
+
+/** The drop, 0.1 to 3 in steps of 0.1. */
+function parseDrop(report: Report, path: string, value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number") {
+    typeInvalid(report, path, "a number");
+    return undefined;
+  }
+  const tenths = Math.round(value * 10);
+  if (!(value >= 0.1 && value <= 3 && Math.abs(value * 10 - tenths) < 1e-9)) {
+    report(path, "setting_out_of_range", "expected a number from 0.1 to 3 in steps of 0.1");
+  }
+  return value;
+}
+
+function parseLimit(report: Report, path: string, value: unknown): number | "none" | undefined {
+  if (value === "none") return "none";
+  return optionalDuration(report, path, value, [10, 1440], MS_PER_MINUTE);
+}
+
+function parseTemperaturePatch(report: Report, path: string, value: unknown): TemperaturePatch {
+  const obj = asObject(report, path, value === undefined ? {} : value, [
+    "enabled",
+    "drop_c",
+    "within_min",
+    "end",
+    "fixed_min",
+    "still_min",
+    "rejoin_min",
+  ]);
+  const minutes = (key: string, min: number, max: number): number | undefined =>
+    optionalDuration(report, at(path, key), read(obj, key), [min, max], MS_PER_MINUTE);
+  return {
+    enabled: optionalBoolean(report, at(path, "enabled"), read(obj, "enabled")),
+    dropC: parseDrop(report, at(path, "drop_c"), read(obj, "drop_c")),
+    withinMs: minutes("within_min", 5, 120),
+    end: optionalChoice(report, at(path, "end"), read(obj, "end"), WINDOW_ENDS),
+    fixedMs: minutes("fixed_min", 5, 240),
+    stillMs: minutes("still_min", 5, 120),
+    rejoinMs: minutes("rejoin_min", 0, 240),
+  };
+}
+
+/** The window keys a document holds; the ones missing stay undefined. */
+function parseWindowPatch(report: Report, path: string, value: unknown): WindowPatch {
+  if (value === undefined) return NO_WINDOW_PATCH;
+  const obj = asObject(report, path, value, [
+    "enabled",
+    "action",
+    "target",
+    "open_debounce_s",
+    "close_debounce_s",
+    "contact_unavailable_min",
+    "temperature",
+    "limit_min",
+    "after_limit",
+    "notify",
+    "manual_change",
+    "valve_detection",
+  ]);
+  const key = (name: string): string => at(path, name);
+  return {
+    enabled: optionalBoolean(report, key("enabled"), read(obj, "enabled")),
+    action: optionalChoice(report, key("action"), read(obj, "action"), WINDOW_ACTIONS),
+    target: parseWindowTarget(report, key("target"), read(obj, "target")),
+    openDebounceMs: optionalDuration(
+      report,
+      key("open_debounce_s"),
+      read(obj, "open_debounce_s"),
+      [0, 600],
+      MS_PER_SECOND,
+    ),
+    closeDebounceMs: optionalDuration(
+      report,
+      key("close_debounce_s"),
+      read(obj, "close_debounce_s"),
+      [0, 1800],
+      MS_PER_SECOND,
+    ),
+    contactUnavailableMs: optionalDuration(
+      report,
+      key("contact_unavailable_min"),
+      read(obj, "contact_unavailable_min"),
+      [1, 1440],
+      MS_PER_MINUTE,
+    ),
+    temperature: parseTemperaturePatch(report, key("temperature"), read(obj, "temperature")),
+    limitMs: parseLimit(report, key("limit_min"), read(obj, "limit_min")),
+    afterLimit: optionalChoice(report, key("after_limit"), read(obj, "after_limit"), AFTER_LIMITS),
+    notify: optionalBoolean(report, key("notify"), read(obj, "notify")),
+    manualChange: optionalChoice(
+      report,
+      key("manual_change"),
+      read(obj, "manual_change"),
+      MANUAL_CHANGES,
+    ),
+    valveDetection: optionalChoice(
+      report,
+      key("valve_detection"),
+      read(obj, "valve_detection"),
+      VALVE_DETECTIONS,
+    ),
+  };
+}
+
 function parseSettings(report: Report, path: string, value: unknown): Settings {
   const obj = asObject(report, path, value === undefined ? {} : value, [
     "external_write_interval_min",
@@ -386,6 +603,7 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
     "language",
     "override_end",
     "override_duration_min",
+    "window",
   ]);
   const interval = parseWholeMinutes(
     report,
@@ -430,6 +648,10 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
     at(path, "override_duration_min"),
     read(obj, "override_duration_min"),
   );
+  const window = mergeWindow(
+    DEFAULT_WINDOW_SETTINGS,
+    parseWindowPatch(report, at(path, "window"), read(obj, "window")),
+  );
 
   return {
     externalWriteIntervalMs: interval * MS_PER_MINUTE,
@@ -442,6 +664,7 @@ function parseSettings(report: Report, path: string, value: unknown): Settings {
       overrideMinutes === undefined
         ? DEFAULT_SETTINGS.overrideDurationMs
         : overrideMinutes * MS_PER_MINUTE,
+    window,
   };
 }
 
@@ -717,6 +940,44 @@ function parseSensors(report: Report, path: string, value: unknown): readonly Se
   });
 }
 
+function parseContact(report: Report, path: string, value: unknown): ContactRef {
+  const obj = asObject(report, path, value, ["ref"]);
+  const refPath = at(path, "ref");
+  const rawRef = requiredKey(report, path, obj, "ref");
+  let ref = "";
+  if (typeof rawRef === "string") {
+    ref = rawRef;
+    if (!(rawRef.startsWith("ha:") && HA_CONTACT_PATTERN.test(rawRef.slice(3)))) {
+      report(refPath, "contact_ref_invalid", "a contact is ha:binary_sensor.<id>");
+    }
+  } else if (rawRef !== undefined) typeInvalid(report, refPath, "a text");
+  return { ref };
+}
+
+function parseContacts(report: Report, path: string, value: unknown): readonly ContactRef[] {
+  const list = parseList(report, path, value, MAX_CONTACTS);
+  const seen = new Set<string>();
+  return list.map((item, index) => {
+    const itemPath = atIndex(path, index);
+    let faults = 0;
+    const contact = parseContact(
+      (p, code, message) => {
+        if (p === itemPath || p.endsWith(".ref")) faults += 1;
+        report(p, code, message);
+      },
+      itemPath,
+      item,
+    );
+    if (faults === 0) {
+      const id = contactId(contact);
+      if (seen.has(id)) {
+        report(at(itemPath, "ref"), "contact_duplicate", `contact "${id}" is listed twice`);
+      } else seen.add(id);
+    }
+    return contact;
+  });
+}
+
 function parseDefaultSchedule(
   report: Report,
   path: string,
@@ -751,6 +1012,8 @@ function parseEntry(
     "presets",
     "override_end",
     "override_duration_min",
+    "contacts",
+    "window",
   ]);
   const rawSchedule = read(obj, "schedule");
   let scheduleId: string | undefined;
@@ -789,6 +1052,8 @@ function parseEntry(
     presets,
     overrideEnd,
     overrideDurationMs: minutes === undefined ? undefined : minutes * MS_PER_MINUTE,
+    contacts: parseContacts(report, at(path, "contacts"), read(obj, "contacts")),
+    window: parseWindowPatch(report, at(path, "window"), read(obj, "window")),
   };
 }
 
@@ -918,6 +1183,55 @@ function presetsToRaw(presets: Readonly<Record<PresetName, number | undefined>>)
   return out;
 }
 
+/** The keys of a window patch that are set; the temperature object only when one of its keys is. */
+function windowPatchToRaw(patch: WindowPatch): RawWindow {
+  const t = patch.temperature;
+  const temperature: RawWindowTemperature = {
+    ...(t.enabled === undefined ? {} : { enabled: t.enabled }),
+    ...(t.dropC === undefined ? {} : { drop_c: t.dropC }),
+    ...(t.withinMs === undefined ? {} : { within_min: t.withinMs / MS_PER_MINUTE }),
+    ...(t.end === undefined ? {} : { end: t.end }),
+    ...(t.fixedMs === undefined ? {} : { fixed_min: t.fixedMs / MS_PER_MINUTE }),
+    ...(t.stillMs === undefined ? {} : { still_min: t.stillMs / MS_PER_MINUTE }),
+    ...(t.rejoinMs === undefined ? {} : { rejoin_min: t.rejoinMs / MS_PER_MINUTE }),
+  };
+  return {
+    ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
+    ...(patch.action === undefined ? {} : { action: patch.action }),
+    ...(patch.target === undefined ? {} : { target: windowTargetToRaw(patch.target) }),
+    ...(patch.openDebounceMs === undefined
+      ? {}
+      : { open_debounce_s: patch.openDebounceMs / MS_PER_SECOND }),
+    ...(patch.closeDebounceMs === undefined
+      ? {}
+      : { close_debounce_s: patch.closeDebounceMs / MS_PER_SECOND }),
+    ...(patch.contactUnavailableMs === undefined
+      ? {}
+      : { contact_unavailable_min: patch.contactUnavailableMs / MS_PER_MINUTE }),
+    ...(Object.keys(temperature).length === 0 ? {} : { temperature }),
+    ...(patch.limitMs === undefined
+      ? {}
+      : { limit_min: patch.limitMs === "none" ? "none" : patch.limitMs / MS_PER_MINUTE }),
+    ...(patch.afterLimit === undefined ? {} : { after_limit: patch.afterLimit }),
+    ...(patch.notify === undefined ? {} : { notify: patch.notify }),
+    ...(patch.manualChange === undefined ? {} : { manual_change: patch.manualChange }),
+    ...(patch.valveDetection === undefined ? {} : { valve_detection: patch.valveDetection }),
+  };
+}
+
+function contactToRaw(contact: ContactRef): RawContact {
+  return { ref: contact.ref };
+}
+
+function windowTargetToRaw(target: WindowTarget): number | PresetName {
+  return target.kind === "celsius" ? target.celsius : target.preset;
+}
+
+/** The house's window settings, every key written. */
+function windowToRaw(window: WindowSettings): RawWindow {
+  return windowPatchToRaw({ ...window, limitMs: window.limitMs ?? "none" });
+}
+
 function sensorToRaw(sensor: SensorRef): RawSensor {
   return { ref: sensor.ref, weight: sensor.weight };
 }
@@ -925,6 +1239,7 @@ function sensorToRaw(sensor: SensorRef): RawSensor {
 /** Leaves out a missing schedule, empty sensors, empty presets and missing override keys: an entry with none is `{}`. */
 function entryToRaw(entry: RoomEntry): RawRoomEntry {
   const presets = presetsToRaw(entry.presets);
+  const window = windowPatchToRaw(entry.window);
   return {
     ...(entry.scheduleId === undefined ? {} : { schedule: entry.scheduleId }),
     ...(entry.sensors.length === 0 ? {} : { sensors: entry.sensors.map(sensorToRaw) }),
@@ -933,6 +1248,8 @@ function entryToRaw(entry: RoomEntry): RawRoomEntry {
     ...(entry.overrideDurationMs === undefined
       ? {}
       : { override_duration_min: entry.overrideDurationMs / MS_PER_MINUTE }),
+    ...(entry.contacts.length === 0 ? {} : { contacts: entry.contacts.map(contactToRaw) }),
+    ...(Object.keys(window).length === 0 ? {} : { window }),
   };
 }
 
@@ -949,6 +1266,7 @@ export function configToRaw(config: Config): RawConfig {
       language: settings.language,
       override_end: settings.overrideEnd,
       override_duration_min: settings.overrideDurationMs / MS_PER_MINUTE,
+      window: windowToRaw(settings.window),
     },
     presets: presetsToRaw(config.presets),
     schedules: config.schedules.map((schedule) => ({

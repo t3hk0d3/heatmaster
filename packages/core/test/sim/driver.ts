@@ -1,3 +1,4 @@
+import { DEFAULT_WINDOW_SETTINGS } from "../../src/model.ts";
 import {
   ChangeRefused,
   EMPTY_LEDGER,
@@ -658,6 +659,8 @@ export function simRoom(
     presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
     overrideEnd: "next_change",
     overrideDurationMs: 2 * 60 * 60 * 1000,
+    contacts: [],
+    window: DEFAULT_WINDOW_SETTINGS,
   };
 }
 

@@ -2,6 +2,7 @@ import type { SensorInfo } from "./change.ts";
 import {
   LEGACY_SENSOR_LABEL,
   NO_PRESETS,
+  NO_WINDOW_PATCH,
   SCHEDULE_LABEL_PREFIX,
   SENSOR_LABEL,
   ascending,
@@ -263,6 +264,8 @@ export const EMPTY_ENTRY: RoomEntry = {
   presets: NO_PRESETS,
   overrideEnd: undefined,
   overrideDurationMs: undefined,
+  contacts: [],
+  window: NO_WINDOW_PATCH,
 };
 
 /** The schedule id each existing schedule's own label stands for, by label id. */
@@ -358,6 +361,8 @@ export function labelEdits(
       entityId: undefined,
       scheduleId: scheduleId ?? config.defaultScheduleId,
       rule: undefined,
+      setting: undefined,
+      value: undefined,
     });
   }
 
@@ -387,6 +392,8 @@ export function labelEdits(
         entityId,
         scheduleId: undefined,
         rule: undefined,
+        setting: undefined,
+        value: undefined,
       });
     } else {
       for (const [areaId, entry] of [...rooms]) {
@@ -399,6 +406,8 @@ export function labelEdits(
           entityId,
           scheduleId: undefined,
           rule: undefined,
+          setting: undefined,
+          value: undefined,
         });
       }
     }
@@ -467,6 +476,8 @@ export function importSensors(
       entityId: undefined,
       scheduleId: undefined,
       rule: undefined,
+      setting: undefined,
+      value: undefined,
     });
   }
   const done: StoredConfig = { ...stored, importedAreas: ascending(imported) };

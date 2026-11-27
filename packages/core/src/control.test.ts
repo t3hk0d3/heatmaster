@@ -41,7 +41,7 @@ import { fitted, weekKey } from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { applyEvent } from "./events.ts";
 import type { Event } from "./events.ts";
-import { NO_PRESETS, roomsOf } from "./house.ts";
+import { NO_WINDOW_PATCH, NO_PRESETS, roomsOf } from "./house.ts";
 import type { AreaMembership, HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import { EMPTY_LEDGER, FRESH_STORED, memberships, withRecord } from "./ledger.ts";
@@ -2482,6 +2482,8 @@ describe("control", () => {
           presets: NO_PRESETS,
           overrideEnd: undefined,
           overrideDurationMs: undefined,
+          contacts: [],
+          window: NO_WINDOW_PATCH,
         });
         const config = {
           ...stored.config,

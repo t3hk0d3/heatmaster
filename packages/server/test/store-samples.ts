@@ -74,6 +74,8 @@ export function sampleStored(): StoredConfig {
             entityId: undefined,
             scheduleId: "away",
             rule: undefined,
+            setting: undefined,
+            value: undefined,
           },
           {
             kind: "sensor_added",
@@ -81,6 +83,8 @@ export function sampleStored(): StoredConfig {
             entityId: "sensor.living_temperature",
             scheduleId: undefined,
             rule: undefined,
+            setting: undefined,
+            value: undefined,
           },
         ],
       },

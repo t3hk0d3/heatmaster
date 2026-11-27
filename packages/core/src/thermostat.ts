@@ -4,7 +4,16 @@ import type { Effect, World } from "./control.ts";
 import { EMPTY_ENTRY, mayHoldEntry, withHaEdit } from "./labels.ts";
 import type { HaChangeItem, Membership, StoredConfig } from "./ledger.ts";
 import { BOOST_DURATION_MS, END_RULES, PRESET_NAMES, effectivePresets } from "./model.ts";
-import type { EndRule, PresetName, Room, RoomEntry } from "./model.ts";
+import type {
+  EndRule,
+  ManualChange,
+  PresetName,
+  Room,
+  RoomEntry,
+  WindowAction,
+  WindowEnd,
+  WindowPatch,
+} from "./model.ts";
 import { activePoint } from "./schedule.ts";
 import type { ValveMode, ValveSpec } from "./settings.ts";
 import {
@@ -124,7 +133,13 @@ export type ThermostatCommand =
 /** A choice made on a room's Home Assistant selects (R13). */
 export type RoomChoice =
   | Readonly<{ kind: "schedule"; scheduleId: string }>
-  | Readonly<{ kind: "override_end"; rule: EndRule }>;
+  | Readonly<{ kind: "override_end"; rule: EndRule }>
+  | Readonly<{ kind: "window_enabled"; on: boolean }>
+  | Readonly<{ kind: "window_temperature"; on: boolean }>
+  | Readonly<{ kind: "window_action"; action: WindowAction }>
+  | Readonly<{ kind: "window_end"; end: WindowEnd }>
+  | Readonly<{ kind: "window_limit"; limitMs: number | undefined }>
+  | Readonly<{ kind: "window_manual_change"; manualChange: ManualChange }>;
 
 /** The temperatures a room's targets are held in, inclusive. */
 export type RoomLimits = Readonly<{ min: number; max: number }>;
@@ -208,6 +223,64 @@ export function thermostatCommand(
   return [{ kind: "saveThermostats", state: { rooms: thermostats, valves: state.valves } }];
 }
 
+type WindowChoice = Extract<RoomChoice, { kind: `window_${string}` }>;
+
+/**
+ * The window patch with the choice written over it, with the raw key and the raw text value of
+ * the change; undefined when the patch already holds that value.
+ */
+function windowEdit(
+  patch: WindowPatch,
+  choice: WindowChoice,
+): Readonly<{ window: WindowPatch; setting: string; value: string }> | undefined {
+  switch (choice.kind) {
+    case "window_enabled":
+      if (patch.enabled === choice.on) return undefined;
+      return {
+        window: { ...patch, enabled: choice.on },
+        setting: "enabled",
+        value: String(choice.on),
+      };
+    case "window_temperature":
+      if (patch.temperature.enabled === choice.on) return undefined;
+      return {
+        window: { ...patch, temperature: { ...patch.temperature, enabled: choice.on } },
+        setting: "temperature.enabled",
+        value: String(choice.on),
+      };
+    case "window_action":
+      if (patch.action === choice.action) return undefined;
+      return {
+        window: { ...patch, action: choice.action },
+        setting: "action",
+        value: choice.action,
+      };
+    case "window_end":
+      if (patch.temperature.end === choice.end) return undefined;
+      return {
+        window: { ...patch, temperature: { ...patch.temperature, end: choice.end } },
+        setting: "temperature.end",
+        value: choice.end,
+      };
+    case "window_limit": {
+      const limit = choice.limitMs ?? "none";
+      if (patch.limitMs === limit) return undefined;
+      return {
+        window: { ...patch, limitMs: limit },
+        setting: "limit_min",
+        value: limit === "none" ? "none" : String(limit / 60_000),
+      };
+    }
+    case "window_manual_change":
+      if (patch.manualChange === choice.manualChange) return undefined;
+      return {
+        window: { ...patch, manualChange: choice.manualChange },
+        setting: "manual_change",
+        value: choice.manualChange,
+      };
+  }
+}
+
 /**
  * The stored config with the room's entry changed by the choice (created when missing), saved as a
  * Home Assistant change through `withHaEdit` (R13). The default schedule clears `scheduleId`. A
@@ -232,8 +305,16 @@ export function withRoomChoice(
     const wanted = scheduleId === config.defaultScheduleId ? undefined : scheduleId;
     if (entry.scheduleId === wanted) return stored;
     changed = { ...entry, scheduleId: wanted };
-    item = { kind: "schedule", areaId: roomId, entityId: undefined, scheduleId, rule: undefined };
-  } else {
+    item = {
+      kind: "schedule",
+      areaId: roomId,
+      entityId: undefined,
+      scheduleId,
+      rule: undefined,
+      setting: undefined,
+      value: undefined,
+    };
+  } else if (choice.kind === "override_end") {
     if (entry.overrideEnd === choice.rule) return stored;
     changed = { ...entry, overrideEnd: choice.rule };
     item = {
@@ -242,6 +323,21 @@ export function withRoomChoice(
       entityId: undefined,
       scheduleId: undefined,
       rule: choice.rule,
+      setting: undefined,
+      value: undefined,
+    };
+  } else {
+    const edit = windowEdit(entry.window, choice);
+    if (edit === undefined) return stored;
+    changed = { ...entry, window: edit.window };
+    item = {
+      kind: "window_setting",
+      areaId: roomId,
+      entityId: undefined,
+      scheduleId: undefined,
+      rule: undefined,
+      setting: edit.setting,
+      value: edit.value,
     };
   }
   if (!mayHoldEntry(config.rooms, roomId)) throw new ChangeRefused("room_unknown", { roomId });

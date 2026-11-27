@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { arbConfig, makeConfig, makeMembership, makeSnapshot, weekOf } from "../test/builders.ts";
 import type { SensorInfo } from "./change.ts";
 import {
+  NO_WINDOW_PATCH,
   IGNORE_LABEL,
   LEGACY_SENSOR_LABEL,
   SENSOR_LABEL,
@@ -50,6 +51,8 @@ function entry(scheduleId: string | undefined, sensors: readonly string[] = []):
     presets: NO_PRESETS,
     overrideEnd: undefined,
     overrideDurationMs: undefined,
+    contacts: [],
+    window: NO_WINDOW_PATCH,
   };
 }
 
@@ -142,7 +145,15 @@ function scene(
 }
 
 function scheduleItem(areaId: string, scheduleId: string): HaChangeItem {
-  return { kind: "schedule", areaId, entityId: undefined, scheduleId, rule: undefined };
+  return {
+    kind: "schedule",
+    areaId,
+    entityId: undefined,
+    scheduleId,
+    rule: undefined,
+    setting: undefined,
+    value: undefined,
+  };
 }
 
 function sensorItem(
@@ -150,7 +161,15 @@ function sensorItem(
   areaId: string,
   entityId: string,
 ): HaChangeItem {
-  return { kind, areaId, entityId, scheduleId: undefined, rule: undefined };
+  return {
+    kind,
+    areaId,
+    entityId,
+    scheduleId: undefined,
+    rule: undefined,
+    setting: undefined,
+    value: undefined,
+  };
 }
 
 /** The edit; a test that expects one fails here when there is none. */

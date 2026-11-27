@@ -9,7 +9,7 @@ import {
 } from "../test/builders.ts";
 import { adopt, clampThermostatState, withWeek, withWritten } from "./adopt.ts";
 import type { AdoptInput, Adoption, JudgedValve } from "./adopt.ts";
-import { DEFAULT_SETTINGS } from "./model.ts";
+import { DEFAULT_WINDOW_SETTINGS, DEFAULT_SETTINGS } from "./model.ts";
 import type { Room } from "./model.ts";
 import type { ResolvedWeek } from "./schedule.ts";
 import type { ValveMode } from "./settings.ts";
@@ -66,6 +66,8 @@ const ROOM: Room = {
   presets: { comfort: undefined, eco: undefined, frost: undefined, boost: undefined },
   overrideEnd: DEFAULT_SETTINGS.overrideEnd,
   overrideDurationMs: DEFAULT_SETTINGS.overrideDurationMs,
+  contacts: [],
+  window: DEFAULT_WINDOW_SETTINGS,
 };
 
 // States ------------------------------------------------------------------------------------------
