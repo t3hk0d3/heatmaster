@@ -1,4 +1,10 @@
-import type { PendingReason, RoomView, SettingKey, StateView } from "@heatmaster/core";
+import type {
+  PendingReason,
+  RoomView,
+  SettingKey,
+  StateView,
+  WindowSettingsView,
+} from "@heatmaster/core";
 import { describe, expect, it } from "vitest";
 import { edited, loaded, previewed, refused, request } from "./editor.ts";
 import { DICTIONARIES, translator } from "./i18n.ts";
@@ -668,6 +674,133 @@ describe("render", () => {
         const out = renderRooms(state, "en", t);
         expect(out.querySelector(".room-state")).toBeNull();
         expect(button(out, "resume")).toBeNull();
+      });
+    });
+  });
+
+  describe("renderRooms window line", () => {
+    const at = new Date(2026, 10, 23, 10, 2).getTime();
+    const settings = (over: Partial<WindowSettingsView> = {}): WindowSettingsView => ({
+      enabled: true,
+      action: "frost_heat",
+      target: { kind: "preset", preset: "frost" },
+      openDebounceMs: 30_000,
+      closeDebounceMs: 60_000,
+      contactUnavailableMs: 1_800_000,
+      temperature: {
+        enabled: true,
+        dropC: 0.4,
+        withinMs: 1_200_000,
+        end: "fixed",
+        fixedMs: 1_800_000,
+        stillMs: 1_200_000,
+        rejoinMs: 3_600_000,
+      },
+      limitMs: 7_200_000,
+      afterLimit: "heat",
+      notify: true,
+      manualChange: "resume_heating",
+      valveDetection: "off_when_watched",
+      ...over,
+    });
+    const lineOf = (room: Partial<RoomView>) =>
+      renderRooms(stateView({ rooms: [roomView(room)] }), "en", t).querySelector(".room-window")
+        ?.textContent;
+    describe("With a window open by contact since 10:02", () => {
+      it('shows "Window open since 10:02 (Bedroom window)"', () => {
+        expect(
+          lineOf({
+            window: {
+              state: "open",
+              triggers: ["contact"],
+              openContacts: ["ha:Bedroom window"],
+              since: at,
+              holdsValves: true,
+            },
+          }),
+        ).toMatch(/^Window open since 10:02\D*\(Bedroom window\)$/);
+      });
+    });
+    describe("With a temperature-triggered window", () => {
+      it("shows the temperature text", () => {
+        expect(
+          lineOf({
+            window: {
+              state: "open",
+              triggers: ["temperature"],
+              openContacts: [],
+              since: at,
+              holdsValves: true,
+            },
+          }),
+        ).toMatch(/^Window: temperature falling since 10:02/);
+      });
+    });
+    describe("With a suspended window", () => {
+      it('shows "heating on by request"', () => {
+        expect(
+          lineOf({
+            window: {
+              state: "suspended",
+              triggers: ["contact"],
+              openContacts: [],
+              since: at,
+              holdsValves: false,
+            },
+          }),
+        ).toContain("heating on by request");
+      });
+    });
+    describe("With the limit reached and afterLimit heat", () => {
+      it('shows "heating resumed after 2 h"', () => {
+        expect(
+          lineOf({
+            windowSettings: settings(),
+            window: {
+              state: "limit_reached",
+              triggers: ["contact"],
+              openContacts: [],
+              since: at,
+              holdsValves: false,
+            },
+          }),
+        ).toBe("Window open, heating resumed after 2 h");
+      });
+    });
+    describe("With the limit reached and afterLimit stay", () => {
+      it('shows "freeze protection kept after 30 min"', () => {
+        expect(
+          lineOf({
+            windowSettings: settings({ afterLimit: "stay", limitMs: 1_800_000 }),
+            window: {
+              state: "limit_reached",
+              triggers: ["contact"],
+              openContacts: [],
+              since: at,
+              holdsValves: true,
+            },
+          }),
+        ).toBe("Window open, freeze protection kept after 30 min");
+      });
+    });
+    describe("With a dropped change", () => {
+      it("shows the dropped text", () => {
+        expect(
+          lineOf({
+            window: {
+              state: "dropped",
+              triggers: ["contact"],
+              openContacts: [],
+              since: at,
+              holdsValves: true,
+            },
+          }),
+        ).toContain("the change at the valve was dropped");
+      });
+    });
+    describe("With no window", () => {
+      it("shows no window line", () => {
+        expect(lineOf({})).toBeUndefined();
       });
     });
   });

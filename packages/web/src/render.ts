@@ -247,6 +247,52 @@ function formatInstant(at: number, language: Language): string {
   );
 }
 
+/** A time of day as the page shows it: the viewer's zone, in the page's language. */
+function formatClock(at: number, language: Language): string {
+  return new Intl.DateTimeFormat(language, { timeStyle: "short" }).format(new Date(at));
+}
+
+/** A limit as "2 h" or "30 min". */
+function formatLimit(ms: number, t: Translate): string {
+  const minutes = Math.round(ms / 60_000);
+  return minutes % 60 === 0
+    ? t("room.window.hours", { n: String(minutes / 60) })
+    : t("room.window.minutes", { n: String(minutes) });
+}
+
+/** The window line; contacts are named by their entity id, as the state carries no entity names. */
+function renderRoomWindow(
+  room: RoomView,
+  language: Language,
+  t: Translate,
+): HTMLElement | undefined {
+  const window = room.window;
+  if (window === undefined) return undefined;
+  const since = formatClock(window.since, language);
+  let line: string;
+  if (window.state === "open") {
+    const names = window.openContacts.map((id) => id.replace(/^ha:/, "")).join(", ");
+    line = window.triggers.includes("contact")
+      ? names === ""
+        ? t("room.window.open", { since })
+        : t("room.window.open_contacts", { since, contacts: names })
+      : t("room.window.open_temperature", { since });
+  } else if (window.state === "limit_reached") {
+    const settings = room.windowSettings;
+    const stay = settings?.afterLimit === "stay";
+    const limit = settings?.limitMs;
+    line =
+      limit === undefined || limit === null
+        ? t(stay ? "room.window.stay_bare" : "room.window.heat_bare")
+        : t(stay ? "room.window.stay" : "room.window.heat", { limit: formatLimit(limit, t) });
+  } else if (window.state === "suspended") {
+    line = t("room.window.suspended");
+  } else {
+    line = t("room.window.dropped");
+  }
+  return textElement("p", line, { class: "room-window" });
+}
+
 function renderRoomState(
   room: RoomView,
   state: StateView,
@@ -310,6 +356,8 @@ function renderRoom(
   );
   const stateLine = renderRoomState(room, state, language, t);
   if (stateLine !== undefined) article.append(stateLine);
+  const windowLine = renderRoomWindow(room, language, t);
+  if (windowLine !== undefined) article.append(windowLine);
   if (room.thermostat !== undefined && room.thermostat.kind !== "schedule") {
     article.append(button(t("room.resume"), "resume", { "data-room-id": room.roomId }));
   }
