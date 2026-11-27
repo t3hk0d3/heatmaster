@@ -412,6 +412,7 @@ function openingToRaw(opening: WindowOpening): Record<string, unknown> {
     ...optional("temperature_ended_at", opening.temperatureEndedAt),
     ...optional("suspended_at", opening.suspendedAt),
     ...optional("limit_at", opening.limitAt),
+    ...optional("notified_at", opening.notifiedAt),
     ...optional("dropped_at", opening.droppedAt),
     ...optional("ended_at", opening.endedAt),
   };
@@ -600,6 +601,7 @@ function openingFromRaw(value: unknown): WindowOpening {
       "temperature_ended_at",
       "suspended_at",
       "limit_at",
+      "notified_at",
       "dropped_at",
       "ended_at",
     ],
@@ -610,6 +612,7 @@ function openingFromRaw(value: unknown): WindowOpening {
     temperatureEndedAt: maybe(obj.temperature_ended_at, instant),
     suspendedAt: maybe(obj.suspended_at, instant),
     limitAt: maybe(obj.limit_at, instant),
+    notifiedAt: maybe(obj.notified_at, instant),
     droppedAt: maybe(obj.dropped_at, instant),
     endedAt: maybe(obj.ended_at, instant),
   };

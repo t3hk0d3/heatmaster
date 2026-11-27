@@ -896,6 +896,7 @@ export const arbWindowOpening: fc.Arbitrary<WindowOpening> = fc.record({
   temperatureEndedAt: maybe(instant),
   suspendedAt: maybe(instant),
   limitAt: maybe(instant),
+  notifiedAt: maybe(instant),
   droppedAt: maybe(instant),
   endedAt: maybe(instant),
 });
@@ -920,6 +921,7 @@ export function makeOpening(options: Partial<WindowOpening> = {}): WindowOpening
     temperatureEndedAt: undefined,
     suspendedAt: undefined,
     limitAt: undefined,
+    notifiedAt: undefined,
     droppedAt: undefined,
     endedAt: undefined,
     ...options,

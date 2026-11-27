@@ -34,6 +34,7 @@ export type Trails = ReadonlyMap<string, readonly TrailPoint[]>;
 /**
  * A room's open window, saved in `state.json`. Active while `endedAt` is undefined.
  * `temperatureSince` is set while a drop holds it; `temperatureEndedAt` is when that last ended.
+ * `notifiedAt` is when its limit was reported, which waits for a step that is not frozen.
  */
 export type WindowOpening = Readonly<{
   startedAt: number;
@@ -41,6 +42,7 @@ export type WindowOpening = Readonly<{
   temperatureEndedAt: number | undefined;
   suspendedAt: number | undefined;
   limitAt: number | undefined;
+  notifiedAt: number | undefined;
   droppedAt: number | undefined;
   endedAt: number | undefined;
 }>;
@@ -105,12 +107,13 @@ function judgeContact(
     open = reading.lastOpen ?? false;
     since = reading.lastAt;
   } else {
-    // Unavailable too long, or never seen: closed, from when it ran out (never seen: always).
+    // Unavailable too long, or never seen: closed. A contact last seen open counts closed from
+    // when its time ran out; one last seen closed stays closed since then; never seen: always.
     open = false;
-    since =
-      reading.changedAt === undefined
-        ? undefined
-        : reading.changedAt + settings.contactUnavailableMs;
+    if (reading.changedAt === undefined) since = undefined;
+    else if (reading.lastOpen === true) {
+      since = reading.changedAt + settings.contactUnavailableMs;
+    } else since = reading.lastAt;
     gone = reading.changedAt !== undefined;
   }
   const countsOpen = open && since !== undefined && nowMs - since >= settings.openDebounceMs;
@@ -158,7 +161,8 @@ function pruned(points: readonly TrailPoint[], keepMs: number, nowMs: number): T
 /**
  * The trails after this tick's readings (W5). A used sensor's value is appended when it differs
  * from its last point, at its `seenAt` (else `nowMs`). A sensor whose reading is not used loses
- * its trail. `keepMs` is the longest `within` of any room.
+ * its trail. `keepMs` is the longest of `within` and `still` over the rooms, so `stillFor` sees
+ * every fall in its time.
  */
 export function noteTrails(
   trails: Trails,
@@ -251,6 +255,7 @@ function newOpening(startedAt: number, temperatureSince: number | undefined): Wi
     temperatureEndedAt: undefined,
     suspendedAt: undefined,
     limitAt: undefined,
+    notifiedAt: undefined,
     droppedAt: undefined,
     endedAt: undefined,
   };
@@ -342,7 +347,17 @@ export function windowStep(
         nowMs - o.startedAt >= settings.limitMs
       ) {
         o = { ...o, limitAt: nowMs };
-        limitReached = !input.thermostatOff && settings.notify;
+      }
+      // Reported once, on the first step that is not frozen, so a notice is not lost to HA's absence.
+      if (
+        !frozen &&
+        o.limitAt !== undefined &&
+        o.notifiedAt === undefined &&
+        settings.notify &&
+        !input.thermostatOff
+      ) {
+        o = { ...o, notifiedAt: nowMs };
+        limitReached = true;
       }
       if (
         input.personChange &&

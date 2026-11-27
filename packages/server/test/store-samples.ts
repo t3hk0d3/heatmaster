@@ -201,6 +201,7 @@ export const SAMPLE_OPENING: WindowOpening = {
   temperatureEndedAt: 1_700_000_300_000,
   suspendedAt: 1_700_000_900_000,
   limitAt: 1_700_007_200_000,
+  notifiedAt: 1_700_007_260_000,
   droppedAt: 1_700_000_950_000,
   endedAt: 1_700_008_000_000,
 };

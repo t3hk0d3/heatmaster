@@ -890,6 +890,26 @@ describe("thermostat", () => {
         );
       });
     });
+    describe("With an opening that was notified", () => {
+      it("reads notifiedAt", () => {
+        const raw = {
+          rooms: {},
+          valves: {},
+          windows: { [BUILDER_ROOM]: { started_at: NOW_MS - MINUTE_MS, notified_at: NOW_MS } },
+        };
+        expect(thermostatStateFromRaw(raw)?.windows.get(BUILDER_ROOM)?.notifiedAt).toBe(NOW_MS);
+      });
+    });
+    describe("With an opening whose notified_at is -1", () => {
+      it("is unreadable", () => {
+        const raw = {
+          rooms: {},
+          valves: {},
+          windows: { [BUILDER_ROOM]: { started_at: NOW_MS, notified_at: -1 } },
+        };
+        expect(thermostatStateFromRaw(raw)).toBeUndefined();
+      });
+    });
     describe("With windows missing", () => {
       it("is unreadable", () => {
         expect(thermostatStateFromRaw({ rooms: {}, valves: {} })).toBeUndefined();

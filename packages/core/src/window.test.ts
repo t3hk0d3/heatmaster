@@ -182,6 +182,12 @@ describe("window", () => {
         expect(verdictOf([C1], { [C1]: reading }).unavailable).toEqual([C1]);
       });
     });
+    describe("With a contact last seen closed and unavailable for exactly 30 min", () => {
+      it("is closed", () => {
+        const reading = unavailable(NOW_MS - 30 * MINUTE_MS, false, NOW_MS - 2 * HOUR_MS);
+        expect(verdictOf([C1], { [C1]: reading }).state).toBe("closed");
+      });
+    });
     describe("With a contact never seen", () => {
       it("is closed", () => {
         expect(verdictOf([C1], {}).state).toBe("closed");
@@ -274,6 +280,15 @@ describe("window", () => {
     describe("With the last fall 25 min ago", () => {
       it("returns 25 min", () => {
         const trails = trailsOf(trail([20.0, "11:00"], [19.6, "11:35"], [19.8, "11:50"]));
+        expect(stillFor([S1], trails, at("11:00"), at("12:00"))).toBe(25 * MINUTE_MS);
+      });
+    });
+    describe("With still 30 min, within 20 min and the trail kept for still", () => {
+      it("sees a fall older than within", () => {
+        const before = trailsOf(trail([20.0, "11:00"], [19.6, "11:35"]));
+        const readings = new Map([[S1, sensorReading(19.6, at("11:35"))]]);
+        const keepMs = Math.max(TEMPERATURE.withinMs, 30 * MINUTE_MS);
+        const trails = noteTrails(before, readings, new Set([S1]), keepMs, at("12:00"));
         expect(stillFor([S1], trails, at("11:00"), at("12:00"))).toBe(25 * MINUTE_MS);
       });
     });
@@ -372,11 +387,50 @@ describe("window", () => {
       it("reports limitReached", () => {
         expect(step().limitReached).toBe(true);
       });
+      it("sets notifiedAt", () => {
+        expect(step().opening?.notifiedAt).toBe(NOW_MS);
+      });
       it("does not hold with afterLimit heat", () => {
         expect(step(settingsWith({ afterLimit: "heat" })).holds).toBe(false);
       });
       it("holds with afterLimit stay", () => {
         expect(step(settingsWith({ afterLimit: "stay" })).holds).toBe(true);
+      });
+    });
+    describe("With the house frozen when the limit is reached", () => {
+      const opening = byContacts(NOW_MS - 2 * HOUR_MS);
+      const step = () =>
+        windowStep(opening, input({ contacts: verdict("closed"), frozen: true }), NOW_MS);
+      it("does not report limitReached", () => {
+        expect(step().limitReached).toBe(false);
+      });
+      it("does not set notifiedAt", () => {
+        expect(step().opening?.notifiedAt).toBeUndefined();
+      });
+    });
+    describe("With an opening past its limit not yet notified, the house live again", () => {
+      const opening = byContacts(NOW_MS - 3 * HOUR_MS, { limitAt: NOW_MS - HOUR_MS });
+      const step = () =>
+        windowStep(opening, input({ contacts: verdict("open", opening.startedAt) }), NOW_MS);
+      it("reports limitReached", () => {
+        expect(step().limitReached).toBe(true);
+      });
+      it("sets notifiedAt", () => {
+        expect(step().opening?.notifiedAt).toBe(NOW_MS);
+      });
+    });
+    describe("With an opening already notified of its limit", () => {
+      it("does not report limitReached", () => {
+        const opening = byContacts(NOW_MS - 3 * HOUR_MS, {
+          limitAt: NOW_MS - HOUR_MS,
+          notifiedAt: NOW_MS - HOUR_MS,
+        });
+        const step = windowStep(
+          opening,
+          input({ contacts: verdict("open", opening.startedAt) }),
+          NOW_MS,
+        );
+        expect(step.limitReached).toBe(false);
       });
     });
     describe("With an opening past its limit when the contacts close", () => {
