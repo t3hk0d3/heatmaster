@@ -4,6 +4,7 @@ import {
   BUILDER_ROOM,
   BUILDER_VALVE,
   makeExpectation,
+  makeOpening,
   makeSpec,
   makeThermostat,
 } from "../test/builders.ts";
@@ -1305,6 +1306,35 @@ describe("adopt", () => {
         const clamped = clampThermostatState(future, nowMs);
         expect(clamped.rooms.get(BUILDER_ROOM)).toMatchObject({ since: nowMs });
         expect(clamped.valves.get(V)?.sent[0]?.at).toBe(nowMs);
+      });
+    });
+    describe("With an opening whose instants are later than now", () => {
+      it("each of them becomes now, and an earlier one is kept", () => {
+        const opening = makeOpening({
+          startedAt: nowMs - MINUTE_MS,
+          temperatureSince: nowMs + DAY_MS,
+          temperatureEndedAt: nowMs + DAY_MS,
+          suspendedAt: nowMs + DAY_MS,
+          limitAt: nowMs + DAY_MS,
+          notifiedAt: nowMs + DAY_MS,
+          droppedAt: nowMs + DAY_MS,
+          endedAt: nowMs + DAY_MS,
+        });
+        const state: ThermostatState = {
+          rooms: new Map(),
+          valves: new Map(),
+          windows: new Map([[BUILDER_ROOM, opening]]),
+        };
+        expect(clampThermostatState(state, nowMs).windows.get(BUILDER_ROOM)).toEqual({
+          startedAt: nowMs - MINUTE_MS,
+          temperatureSince: nowMs,
+          temperatureEndedAt: nowMs,
+          suspendedAt: nowMs,
+          limitAt: nowMs,
+          notifiedAt: nowMs,
+          droppedAt: nowMs,
+          endedAt: nowMs,
+        });
       });
     });
     describe("With nothing later than now", () => {

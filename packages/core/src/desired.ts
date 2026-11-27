@@ -1,5 +1,5 @@
 import { WEEKDAYS } from "./model.ts";
-import type { Weekday } from "./model.ts";
+import type { ValveDetection, Weekday, WindowAction } from "./model.ts";
 import { roundHalfUp } from "./rounding.ts";
 import { activePoint, fitWeek, normalizeDay } from "./schedule.ts";
 import { DAY_KEYS, SETTING_KEYS, members, valuesEqual } from "./settings.ts";
@@ -26,7 +26,8 @@ export type Reason =
   | "no_room_temperature"
   | "release"
   | "thermostat"
-  | "frost";
+  | "frost"
+  | "window";
 
 export type DesiredValue = Readonly<{ value: SettingValue; reason: Reason }>;
 
@@ -281,4 +282,39 @@ export function thermostatDesired(wanted: ThermostatWanted): Desired {
 export function frostDesired(spec: ValveSpec, frostPreset: number): Desired {
   const held = Math.min(Math.max(frostPreset, spec.frostMinTemp), spec.frostMaxTemp);
   return { frost_protection: { value: roundHalfUp(held, FROST_STEP), reason: "frost" } };
+}
+
+/**
+ * What an open window holds a valve at (W3), whatever its model: `frost_heat` is `heat` at
+ * `celsius`, held in the valve's range and rounded to its step; `off` is `off`. Never scheduled.
+ */
+export function windowWanted(
+  spec: ValveSpec,
+  action: WindowAction,
+  celsius: number,
+): ThermostatWanted {
+  return action === "off"
+    ? { mode: "off", setpoint: undefined, scheduled: false }
+    : { mode: "heat", setpoint: asSetpoint(spec, celsius), scheduled: false };
+}
+
+/**
+ * The valve's own open-window detection: `off` under `always_off`, or under `off_when_watched`
+ * in a room Heatmaster watches (W15); otherwise, under `off_when_watched`, the record's original
+ * when it is `on` or `off`. Nothing under `leave`, nor for a spec without an `open_window` group.
+ */
+export function openWindowDesired(
+  spec: ValveSpec,
+  record: ValveRecord | undefined,
+  watched: boolean,
+  detection: ValveDetection,
+): Desired {
+  if (detection === "leave" || !hasGroup(spec, "open_window")) return {};
+  if (detection === "always_off" || watched) {
+    return { open_window: { value: "off", reason: "window" } };
+  }
+  const original = record?.originals.open_window;
+  return original === "on" || original === "off"
+    ? { open_window: { value: original, reason: "window" } }
+    : {};
 }

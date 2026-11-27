@@ -422,6 +422,10 @@ export async function executeEffects(
           if (effect.kind === "saveConfig") context.onConfigSaved(effect.stored);
           break;
         }
+        case "notifyWindowOpen":
+        case "dismissWindowOpen":
+          // F4: Task 7 calls Home Assistant's persistent notifications here.
+          break;
         case "saveThermostats": {
           if (dropped) continue;
           try {
@@ -1079,6 +1083,8 @@ export function createRuntime(deps: RuntimeDeps): HeatmasterRuntime {
       deviceLists: deviceLists(),
       sensors,
       unobservableSensors: unobservable,
+      // F4: Task 7 reads the window contacts from Home Assistant.
+      contacts: new Map(),
       memory: inbox.memory,
       buckets,
       now: Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO(zone()),

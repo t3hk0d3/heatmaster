@@ -336,6 +336,7 @@ export function createSimDriver(setup: SimSetup): SimDriver {
       deviceLists: { z2m: new Set(devices.keys()) },
       sensors: sensorReadings(),
       unobservableSensors: new Set(),
+      contacts: new Map(),
       memory: inbox.memory,
       buckets: undefined,
       now: nowZoned(),
@@ -435,6 +436,10 @@ export function createSimDriver(setup: SimSetup): SimDriver {
         sent(effect.valveId, "refresh");
         return;
       }
+      case "notifyWindowOpen":
+      case "dismissWindowOpen":
+        // Home Assistant notices: the simulator has no Home Assistant; the log keeps them.
+        return;
     }
   };
 

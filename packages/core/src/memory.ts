@@ -1,4 +1,5 @@
 import type { Group, ValveSpec } from "./settings.ts";
+import type { Trails } from "./window.ts";
 
 /**
  * "Do not trust the cached value of this group." `askedAt` is when the valve was last asked to
@@ -46,12 +47,14 @@ export type ValveMemory = Readonly<{
 
 export type RoomMemory = Readonly<{ freshSince: number | undefined }>;
 
+/** `trails` are the room sensors' short trails for the window drop rule (W5); never saved. */
 export type Memory = Readonly<{
   valves: ReadonlyMap<string, ValveMemory>;
   rooms: ReadonlyMap<string, RoomMemory>;
+  trails: Trails;
 }>;
 
-export const EMPTY_MEMORY: Memory = { valves: new Map(), rooms: new Map() };
+export const EMPTY_MEMORY: Memory = { valves: new Map(), rooms: new Map(), trails: new Map() };
 
 /** Tokens a valve starts with (*provisional*). */
 export const START_TOKENS = 4;

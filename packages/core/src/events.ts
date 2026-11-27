@@ -116,7 +116,7 @@ function clampMemory(memory: Memory, transport: string, nowMs: number): Memory {
     if (id.startsWith(prefix)) valves.set(id, clampToNow(vm, nowMs));
   }
   const rooms = new Map([...memory.rooms].map(([id, rm]) => [id, clampRoomToNow(rm, nowMs)]));
-  return { valves, rooms };
+  return { ...memory, valves, rooms };
 }
 
 function linkUp(inbox: Inbox, transport: string, specs: Specs, nowMs: number): Inbox {

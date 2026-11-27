@@ -7,12 +7,14 @@ import {
   fitted,
   frostDesired,
   managedDesired,
+  openWindowDesired,
   releaseDesired,
   savedPointValues,
   thermostatContext,
   thermostatDesired,
   thermostatWanted,
   weekKey,
+  windowWanted,
   type Desired,
 } from "./desired.ts";
 import { WEEKDAYS } from "./model.ts";
@@ -572,6 +574,78 @@ describe("desired", () => {
     describe("With frost preset 3 on a TRVZB", () => {
       it("frost_protection 4", () => {
         expect(frostDesired(TRVZB, 3).frost_protection?.value).toBe(4);
+      });
+    });
+  });
+
+  describe("windowWanted", () => {
+    describe("With frost_heat at 7 on a TRV-ZBT", () => {
+      it("wants heat 7, not scheduled", () => {
+        expect(windowWanted(TRV_ZBT, "frost_heat", 7)).toEqual({
+          mode: "heat",
+          setpoint: 7,
+          scheduled: false,
+        });
+      });
+    });
+    describe("With frost_heat at 3 on a TRVZB", () => {
+      it("wants heat 4 (held in range)", () => {
+        expect(windowWanted(TRVZB, "frost_heat", 3)).toEqual({
+          mode: "heat",
+          setpoint: 4,
+          scheduled: false,
+        });
+      });
+    });
+    describe("With off", () => {
+      it("wants off, no setpoint", () => {
+        expect(windowWanted(TRVZB, "off", 7)).toEqual({
+          mode: "off",
+          setpoint: undefined,
+          scheduled: false,
+        });
+      });
+    });
+  });
+
+  describe("openWindowDesired", () => {
+    describe("With off_when_watched, watched", () => {
+      it("wants open_window off", () => {
+        const desired = openWindowDesired(TRVZB, record({}), true, "off_when_watched");
+        expect(desired).toEqual({ open_window: { value: "off", reason: "window" } });
+      });
+    });
+    describe("With off_when_watched, not watched, original on", () => {
+      it("wants open_window on", () => {
+        const desired = openWindowDesired(
+          TRVZB,
+          record({ open_window: "on" }),
+          false,
+          "off_when_watched",
+        );
+        expect(desired).toEqual({ open_window: { value: "on", reason: "window" } });
+      });
+    });
+    describe("With off_when_watched, not watched, no original", () => {
+      it("wants nothing", () => {
+        expect(openWindowDesired(TRVZB, record({}), false, "off_when_watched")).toEqual({});
+      });
+    });
+    describe("With always_off, not watched", () => {
+      it("wants open_window off", () => {
+        const desired = openWindowDesired(TRVZB, record({}), false, "always_off");
+        expect(desired).toEqual({ open_window: { value: "off", reason: "window" } });
+      });
+    });
+    describe("With leave", () => {
+      it("wants nothing", () => {
+        const desired = openWindowDesired(TRVZB, record({ open_window: "on" }), true, "leave");
+        expect(desired).toEqual({});
+      });
+    });
+    describe("With a spec that has no open_window group", () => {
+      it("wants nothing", () => {
+        expect(openWindowDesired(NO_SOURCE, record({}), true, "always_off")).toEqual({});
       });
     });
   });

@@ -63,6 +63,7 @@ function status(roomId: string, valves: readonly ValveStatus[], over: Partial<Ro
     limits: { min: 4, max: 35 },
     overrideEnd: "next_change",
     overrideDurationMs: 2 * 60 * 60 * 1000,
+    window: undefined,
     valves,
     ...over,
   } satisfies RoomStatus;

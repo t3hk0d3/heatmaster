@@ -45,6 +45,7 @@ import {
   type SubjectKind,
   type SyncState,
   type ValveStatus,
+  type WindowStatus,
 } from "./status.ts";
 import type { Membership } from "./ledger.ts";
 import type { Room } from "./model.ts";
@@ -98,7 +99,7 @@ function valve(over: Partial<ValveStatus> = {}): ValveStatus {
 
 /** The room's status while the state file is unreadable, so its mode is the valves'. */
 function status(valves: readonly ValveStatus[], fresh: Freshness = "fresh") {
-  return roomStatus(ROOM, WEEK, TEMPERATURE, fresh, valves, NOW, undefined, undefined);
+  return roomStatus(ROOM, WEEK, TEMPERATURE, fresh, valves, NOW, undefined, undefined, undefined);
 }
 
 describe("status", () => {
@@ -188,6 +189,37 @@ describe("status", () => {
     describe("With no valve showing its running state", () => {
       it("heating is undefined", () => {
         expect(status([valve(), valve()]).heating).toBeUndefined();
+      });
+    });
+    describe("With a window holding the room's valves and a valve running", () => {
+      const window: WindowStatus = {
+        state: "open",
+        triggers: ["contact"],
+        openContacts: ["ha:binary_sensor.window"],
+        since: NOW.epochMilliseconds,
+        holdsValves: true,
+      };
+      const held = roomStatus(
+        ROOM,
+        WEEK,
+        TEMPERATURE,
+        "fresh",
+        [valve({ running: true })],
+        NOW,
+        undefined,
+        undefined,
+        window,
+      );
+      it("heating is false", () => {
+        expect(held.heating).toBe(false);
+      });
+      it("window is the window's status", () => {
+        expect(held.window).toEqual(window);
+      });
+    });
+    describe("With no window", () => {
+      it("window is undefined", () => {
+        expect(status([valve()]).window).toBeUndefined();
       });
     });
     describe("With freshness no_sensors or stale", () => {

@@ -13,6 +13,7 @@ import {
   makeExpectation,
   makeManaged,
   makeMembership,
+  makeOpening,
   makeOriginals,
   makeSpec,
   makeState,
@@ -49,7 +50,7 @@ import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
 import { EMPTY_MEMORY, START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
 import { DEFAULT_SETTINGS } from "./model.ts";
-import type { Config, Room, RoomEntry, SensorRef, SetPoint } from "./model.ts";
+import type { Config, Room, RoomEntry, SensorRef, SetPoint, WindowSettings } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
 import { BUCKET, REFILL_MS, charge, chargeAsk, noteDesired } from "./pacing.ts";
@@ -77,6 +78,7 @@ import type {
   ThermostatWanted,
   ValveExpectation,
 } from "./thermostat.ts";
+import type { ContactReading, WindowOpening } from "./window.ts";
 
 const V = BUILDER_VALVE;
 const SECOND_MS = 1000;
@@ -425,7 +427,7 @@ function unmarkedVm(spec: ValveSpec): ValveMemory {
   const inbox = applyEvent(
     {
       states: new Map([[V, makeState({ nowMs: C0 })]]),
-      memory: { valves: new Map([[V, vm]]), rooms: new Map() },
+      memory: { valves: new Map([[V, vm]]), rooms: new Map(), trails: new Map() },
     },
     event,
     new Map([[V, spec]]),
@@ -638,7 +640,11 @@ const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) =>
         const sensors = new Map<string, SensorReading>();
         for (const reading of r.readings)
           if (reading !== undefined) sensors.set(reading.sensorId, reading);
-        let memory = { valves: new Map<string, ValveMemory>(), rooms: new Map() };
+        let memory = {
+          valves: new Map<string, ValveMemory>(),
+          rooms: new Map(),
+          trails: new Map(),
+        };
         for (const [index, group] of r.marks) {
           const id = ids[index];
           const spec = id === undefined ? undefined : devices.get(id)?.spec;
@@ -668,6 +674,7 @@ const arbRun: fc.Arbitrary<Run> = arbConfig.chain((config) =>
           deviceLists: { z2m: new Set(devices.keys()) },
           sensors,
           unobservableSensors: new Set(r.unobservable),
+          contacts: new Map(),
           memory,
           buckets: undefined,
           now: BUILDER_NOW,
@@ -2962,7 +2969,7 @@ describe("control", () => {
   describe("tick — start buckets", () => {
     const fresh = (buckets: World["buckets"]): World => ({
       ...equalWorld(),
-      memory: { valves: new Map(), rooms: new Map() },
+      memory: { valves: new Map(), rooms: new Map(), trails: new Map() },
       buckets,
     });
     describe("With a valve that has no memory and a stamp for it", () => {
@@ -4121,6 +4128,517 @@ describe("control", () => {
         const planned = writes.filter((w) => w.valveId === V).map((w) => w.values);
         expect(planned).toContainEqual({ system_mode: "auto" });
         expect(planned).toContainEqual({ frost_protection: 7 });
+      });
+    });
+  });
+
+  // Open windows (plan 3b, Task 6) -------------------------------------------------------------
+
+  /** The builder room's window contact. */
+  const CONTACT = "ha:binary_sensor.window";
+
+  /** Heat at the frost preset (7), as an open window holds both models. */
+  const HEAT_7: ThermostatWanted = { mode: "heat", setpoint: 7, scheduled: false };
+
+  const OFF_WANTED: ThermostatWanted = { mode: "off", setpoint: undefined, scheduled: false };
+
+  /**
+   * A contact open (or closed) since `changedAgoMs` before the world's now; `open` undefined: it has
+   * been unavailable since then, last seen closed an hour before.
+   */
+  function contactAt(
+    world: World,
+    open: boolean | undefined,
+    changedAgoMs: number,
+  ): ContactReading {
+    const changedAt = nowOf(world) - changedAgoMs;
+    return open === undefined
+      ? { open, changedAt, lastOpen: false, lastAt: changedAt - HOUR_MS }
+      : { open, changedAt, lastOpen: open, lastAt: changedAt };
+  }
+
+  function withContact(world: World, reading: ContactReading): World {
+    return { ...world, contacts: new Map([[CONTACT, reading]]) };
+  }
+
+  /** The builder room lists the contact, its window settings changed as given. */
+  function withWindow(world: World, settings: Partial<WindowSettings> = {}): World {
+    return withRooms(world, (rooms) =>
+      rooms.map((room) =>
+        room.id === BUILDER_ROOM
+          ? { ...room, contacts: [{ ref: CONTACT }], window: { ...room.window, ...settings } }
+          : room,
+      ),
+    );
+  }
+
+  function withOpening(world: World, opening: WindowOpening, roomId = BUILDER_ROOM): World {
+    const state = world.thermostats ?? EMPTY_THERMOSTAT_STATE;
+    const windows = new Map(state.windows);
+    windows.set(roomId, opening);
+    return { ...world, thermostats: { ...state, windows } };
+  }
+
+  /** The valve's ledger record with an `open_window` original. */
+  function withOpenWindowOriginal(world: World, value: "on" | "off", valveId = V): World {
+    const ledger = world.ledger ?? EMPTY_LEDGER;
+    const record = ledger.records.get(valveId);
+    if (record === undefined) throw new Error(`no record for ${valveId}`);
+    const records = new Map(ledger.records);
+    records.set(valveId, { ...record, originals: { ...record.originals, open_window: value } });
+    return { ...world, ledger: { ...ledger, records } };
+  }
+
+  /** The pair of valves in the builder room, which lists the contact. */
+  function windowWorld(settings: Partial<WindowSettings> = {}): World {
+    return withWindow(pairWorld(), settings);
+  }
+
+  /**
+   * `windowWorld` with the contact open and an opening saved since `startedAgoMs`; the valves still
+   * show the schedule's auto (nothing was written for the window yet).
+   */
+  function openingWorld(
+    startedAgoMs = 10 * MINUTE_MS,
+    settings: Partial<WindowSettings> = {},
+    opening: Partial<WindowOpening> = {},
+  ): World {
+    const base = windowWorld(settings);
+    const startedAt = nowOf(base) - startedAgoMs;
+    return withOpening(
+      withContact(base, contactAt(base, true, startedAgoMs)),
+      makeOpening({ startedAt, ...opening }),
+    );
+  }
+
+  /** `openingWorld` with both valves showing heat 7, confirmed there. */
+  function openWorld(
+    startedAgoMs = 10 * MINUTE_MS,
+    settings: Partial<WindowSettings> = {},
+    opening: Partial<WindowOpening> = {},
+  ): World {
+    let world = openingWorld(startedAgoMs, settings, opening);
+    for (const id of [V, V2]) {
+      world = confirmedAt(withValues(world, { system_mode: "heat", setpoint: 7 }, id), HEAT_7, id);
+    }
+    return world;
+  }
+
+  function openingAfter(result: TickResult, roomId = BUILDER_ROOM): WindowOpening | undefined {
+    return stateAfter(result).windows.get(roomId);
+  }
+
+  function effectIndex(result: TickResult, kind: Effect["kind"]): number {
+    return result.effects.findIndex((e) => e.kind === kind);
+  }
+
+  describe("tick — open windows", () => {
+    describe("With a room on its schedule and a contact open for 31 s", () => {
+      const base = windowWorld();
+      const running = withState(base, {
+        ...stateOf(base),
+        readings: { ...stateOf(base).readings, running: true },
+      });
+      const world = withContact(running, contactAt(base, true, 31 * SECOND_MS));
+      const result = tick(world);
+      it("saves an opening started at the contact's change", () => {
+        expect(savedState(result).windows.get(BUILDER_ROOM)?.startedAt).toBe(
+          nowOf(world) - 31 * SECOND_MS,
+        );
+      });
+      it("publishes heat at the frost preset to every managed valve of the room", () => {
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
+        expect(publishes(valveEffects(result, V2))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
+      });
+      it("keeps the room's thermostat on its schedule", () => {
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+        expect(result.rooms.get(BUILDER_ROOM)?.thermostat).toEqual(SCHEDULE);
+      });
+      it("shows the room's window as open with trigger contact", () => {
+        expect(result.rooms.get(BUILDER_ROOM)?.window).toEqual({
+          state: "open",
+          triggers: ["contact"],
+          openContacts: [CONTACT],
+          since: nowOf(world) - 31 * SECOND_MS,
+          holdsValves: true,
+        });
+      });
+      it("reports heating false", () => {
+        expect(result.rooms.get(BUILDER_ROOM)?.heating).toBe(false);
+      });
+    });
+
+    describe("With an override running and a window opening", () => {
+      let base = windowWorld();
+      base = overridden(overridden(base, V), V2);
+      const override = overrideAt(base, HOUR_MS);
+      const world = withContact(
+        withThermostat(base, override),
+        contactAt(base, true, 31 * SECOND_MS),
+      );
+      const result = tick(world);
+      it("keeps the override in the saved state", () => {
+        expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toEqual(override);
+      });
+      it("publishes heat at the frost preset", () => {
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
+      });
+    });
+
+    describe("When the contacts have been closed for 61 s", () => {
+      const base = openWorld();
+      const world = withContact(base, contactAt(base, false, 61 * SECOND_MS));
+      const result = tick(world);
+      it("ends the opening", () => {
+        expect(openingAfter(result)?.endedAt).toBe(nowOf(world));
+      });
+      it("publishes the thermostat's wanted state (auto on schedule)", () => {
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "auto" }]);
+      });
+    });
+
+    describe("When the opening ends after the override expired", () => {
+      it("publishes auto (the schedule), not the override", () => {
+        const base = openWorld();
+        const expired = overrideAt(base, HOUR_MS, {
+          rule: "timer",
+          endsAt: nowOf(base) - MINUTE_MS,
+        });
+        const world = withContact(
+          withThermostat(base, expired),
+          contactAt(base, false, 61 * SECOND_MS),
+        );
+        expect(publishes(valveEffects(tick(world), V))).toEqual([{ system_mode: "auto" }]);
+      });
+    });
+
+    describe("With action off", () => {
+      it("publishes off to the valves", () => {
+        const base = windowWorld({ action: "off" });
+        const result = tick(withContact(base, contactAt(base, true, 31 * SECOND_MS)));
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "off" }]);
+        expect(publishes(valveEffects(result, V2))).toEqual([{ system_mode: "off" }]);
+      });
+    });
+
+    describe("With the thermostat off and a window opening", () => {
+      let base = windowWorld();
+      for (const id of [V, V2]) {
+        base = confirmedAt(withValues(base, { system_mode: "off" }, id), OFF_WANTED, id);
+      }
+      const world = withContact(
+        withThermostat(base, overrideAt(base, HOUR_MS, { kind: "off" })),
+        contactAt(base, true, 31 * SECOND_MS),
+      );
+      const result = tick(world);
+      it("publishes nothing to the valves", () => {
+        expect(publishes(result.effects)).toEqual([]);
+      });
+      it("shows the window as open", () => {
+        expect(result.rooms.get(BUILDER_ROOM)?.window).toMatchObject({
+          state: "open",
+          holdsValves: false,
+        });
+      });
+    });
+
+    describe("With a room temperature falling 0.4 °C in 20 min", () => {
+      // Both valves already take the room's sensor, so only the window's write is due.
+      let base = pairWorld([SENSOR]);
+      for (const id of [V, V2]) base = withValues(base, { sensor_source: "external" }, id);
+      const trails = new Map([[SENSOR_ID, [{ value: 20, at: nowOf(base) - 15 * MINUTE_MS }]]]);
+      const world = withSensor(
+        { ...base, memory: { ...base.memory, trails } },
+        freshReading(base, 19.6),
+      );
+      const result = tick(world);
+      it("starts a temperature opening", () => {
+        expect(openingAfter(result)).toMatchObject({
+          startedAt: nowOf(world),
+          temperatureSince: nowOf(world),
+          endedAt: undefined,
+        });
+      });
+      it("publishes freeze protection", () => {
+        expect(publishes(valveEffects(result, V))).toContainEqual({
+          system_mode: "heat",
+          setpoint: 7,
+        });
+      });
+    });
+
+    describe("With a knob turned during an opening under resume_heating", () => {
+      const turned = hear(openWorld(), { system_mode: "heat", setpoint: 22 });
+      const first = tick(turned);
+      it("adopts the change as the room's override", () => {
+        expect(stateAfter(first).rooms.get(BUILDER_ROOM)).toMatchObject({
+          kind: "override",
+          target: 22,
+          origin: { source: "valve", valveId: V },
+        });
+      });
+      it("suspends the opening", () => {
+        expect(openingAfter(first)?.suspendedAt).toBe(nowOf(turned));
+      });
+      it("publishes nothing to the turned valve", () => {
+        expect(thermostatWrites(first.effects, V)).toEqual([]);
+      });
+      it("publishes the override to the room's other valves after the settle", () => {
+        expect(thermostatWrites(first.effects, V2)).toEqual([]);
+        const second = tick(next(turned, first, THERMOSTAT_SETTLE_MS + SECOND_MS));
+        expect(publishes(valveEffects(second, V2))).toEqual([
+          { system_mode: "heat", setpoint: 22 },
+        ]);
+      });
+    });
+
+    describe("With a knob turned during an opening under ignore", () => {
+      const turned = hear(openWorld(10 * MINUTE_MS, { manualChange: "ignore" }), {
+        system_mode: "heat",
+        setpoint: 22,
+      });
+      const first = tick(turned);
+      it("keeps the room's thermostat", () => {
+        expect(stateAfter(first).rooms.has(BUILDER_ROOM)).toBe(false);
+      });
+      it("shows the window as dropped", () => {
+        expect(first.rooms.get(BUILDER_ROOM)?.window?.state).toBe("dropped");
+      });
+      it("publishes nothing within 10 s", () => {
+        expect(thermostatWrites(first.effects)).toEqual([]);
+        const soon = tick(next(turned, first, 5 * SECOND_MS));
+        expect(thermostatWrites(soon.effects)).toEqual([]);
+      });
+      it("publishes freeze protection to the turned valve after 10 s", () => {
+        const after = tick(next(turned, first, THERMOSTAT_SETTLE_MS + SECOND_MS));
+        expect(publishes(valveEffects(after, V))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
+      });
+    });
+
+    describe("With four knob reports in four ticks under ignore", () => {
+      it("publishes freeze protection to that valve once, after the last", () => {
+        let world = openWorld(10 * MINUTE_MS, { manualChange: "ignore" });
+        const writes: [number, Effect][] = [];
+        let lastReportAt = 0;
+        for (let i = 0; i < 9; i++) {
+          const setpoint = [21, 22, 23, 24][i];
+          if (setpoint !== undefined) {
+            world = hear(world, { system_mode: "heat", setpoint });
+            lastReportAt = nowOf(world);
+          }
+          const result = tick(world);
+          for (const write of thermostatWrites(result.effects, V)) {
+            writes.push([nowOf(world), write]);
+          }
+          world = next(world, result, 3 * SECOND_MS);
+        }
+        expect(writes.map(([, write]) => write)).toEqual([
+          { kind: "publish", valveId: V, values: { system_mode: "heat", setpoint: 7 } },
+        ]);
+        expect(writes[0]?.[0]).toBeGreaterThanOrEqual(lastReportAt + THERMOSTAT_SETTLE_MS);
+      });
+    });
+
+    describe("With a climate command during an opening under resume_heating", () => {
+      it("saves the override and the suspended opening in one saveThermostats", () => {
+        const world = openWorld();
+        const effects = thermostatCommand(
+          world,
+          BUILDER_ROOM,
+          { kind: "set_target", celsius: 22, end: undefined },
+          { source: "climate", valveId: undefined },
+        );
+        expect(kindsOf(effects)).toEqual(["saveThermostats"]);
+        const [save] = effects;
+        if (save?.kind !== "saveThermostats") throw new Error("expected saveThermostats");
+        expect(save.state.rooms.get(BUILDER_ROOM)).toMatchObject({ kind: "override", target: 22 });
+        expect(save.state.windows.get(BUILDER_ROOM)?.suspendedAt).toBe(nowOf(world));
+      });
+    });
+
+    describe("With a climate command during an opening under ignore", () => {
+      const world = openingWorld(10 * MINUTE_MS, { manualChange: "ignore" });
+      const effects = thermostatCommand(
+        world,
+        BUILDER_ROOM,
+        { kind: "set_target", celsius: 22, end: undefined },
+        { source: "climate", valveId: undefined },
+      );
+      const [save] = effects;
+      if (save?.kind !== "saveThermostats") throw new Error("expected saveThermostats");
+      it("saves the override", () => {
+        expect(save.state.rooms.get(BUILDER_ROOM)).toMatchObject({ kind: "override", target: 22 });
+      });
+      it("keeps publishing freeze protection", () => {
+        const result = tick({ ...world, thermostats: save.state });
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
+      });
+    });
+
+    describe("With an opening reaching its 2 h limit and afterLimit heat", () => {
+      const world = openWorld(2 * HOUR_MS);
+      const result = tick(world);
+      it("emits notifyWindowOpen for the room", () => {
+        const notify = result.effects.findIndex(
+          (e) => e.kind === "notifyWindowOpen" && e.roomId === BUILDER_ROOM,
+        );
+        expect(notify).toBeGreaterThan(saveIndex(result));
+        const writes = thermostatWrites(result.effects).map((w) => result.effects.indexOf(w));
+        expect(writes.every((i) => i > notify)).toBe(true);
+      });
+      it("publishes the thermostat's wanted state", () => {
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "auto" }]);
+      });
+      it("raises window_open_too_long", () => {
+        expect(problemsOf(result, "window_open_too_long")).toEqual([
+          {
+            kind: "window_open_too_long",
+            subject: { kind: "room", id: BUILDER_ROOM },
+            severity: "warning",
+            data: {},
+          },
+        ]);
+      });
+    });
+
+    describe("With an opening past its limit ending", () => {
+      const base = openingWorld(3 * HOUR_MS, {}, { limitAt: NOW_MS, notifiedAt: NOW_MS });
+      const world = withContact(base, contactAt(base, false, 61 * SECOND_MS));
+      const result = tick(world);
+      it("emits dismissWindowOpen", () => {
+        expect(result.effects).toContainEqual({ kind: "dismissWindowOpen", roomId: BUILDER_ROOM });
+      });
+      it("clears window_open_too_long", () => {
+        expect(problemsOf(tick(base), "window_open_too_long")).toHaveLength(1);
+        expect(problemsOf(result, "window_open_too_long")).toEqual([]);
+      });
+    });
+
+    describe("With a contact unavailable for 31 min", () => {
+      it("raises contact_unavailable", () => {
+        const base = windowWorld();
+        const result = tick(withContact(base, contactAt(base, undefined, 31 * MINUTE_MS)));
+        expect(problemsOf(result, "contact_unavailable")).toEqual([
+          {
+            kind: "contact_unavailable",
+            subject: { kind: "sensor", id: CONTACT },
+            severity: "warning",
+            data: {},
+          },
+        ]);
+      });
+    });
+
+    describe("With a restart during an opening (opening saved, contacts still open)", () => {
+      const base = openWorld();
+      const saved = base.thermostats?.windows.get(BUILDER_ROOM);
+      const world: World = {
+        ...restarted(base),
+        house: { kind: "frozen", membership: storedOf(base).membership, reason: "not_loaded" },
+        contacts: new Map(),
+      };
+      const results: TickResult[] = [];
+      let current = world;
+      for (let i = 0; i < 3; i++) {
+        const result = tick(current);
+        results.push(result);
+        current = next(current, result, MINUTE_MS);
+      }
+      it("keeps startedAt", () => {
+        expect(openingAfter(tick(world))?.startedAt).toBe(saved?.startedAt);
+      });
+      it("neither ends nor restarts the opening while the contacts are unknown", () => {
+        for (const result of results) expect(openingAfter(result)).toEqual(saved);
+      });
+    });
+
+    describe("With a restart during an opening and contacts closed for a minute", () => {
+      it("ends the opening", () => {
+        const base = openWorld();
+        const world = restarted(withContact(base, contactAt(base, false, MINUTE_MS)));
+        expect(openingAfter(tick(world))?.endedAt).toBe(nowOf(world));
+      });
+    });
+
+    describe("With the HA link down during an opening", () => {
+      const world = frozen({ ...openingWorld(), contacts: new Map() });
+      const saved = world.thermostats?.windows.get(BUILDER_ROOM);
+      const result = tick(world);
+      it("keeps the opening", () => {
+        expect(openingAfter(result)).toEqual(saved);
+      });
+      it("keeps publishing freeze protection", () => {
+        expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
+      });
+      it("sets limitAt at the limit", () => {
+        const late = frozen({ ...openWorld(2 * HOUR_MS), contacts: new Map() });
+        expect(openingAfter(tick(late))?.limitAt).toBe(nowOf(late));
+      });
+    });
+
+    describe("With a room whose window handling is disabled", () => {
+      const base = withOpenWindowOriginal(windowWorld({ enabled: false }), "on");
+      const world = withContact(base, contactAt(base, true, 31 * SECOND_MS));
+      const result = tick(world);
+      it("starts no opening", () => {
+        expect(stateAfter(result).windows.has(BUILDER_ROOM)).toBe(false);
+      });
+      it("writes the open_window original back", () => {
+        expect(publishes(valveEffects(result, V))).toEqual([{ open_window: "on" }]);
+      });
+    });
+
+    describe("With a watched room whose valve shows open_window on and has no original", () => {
+      it("saves the ledger with open_window original on before publishing off", () => {
+        const world = withValues(windowWorld(), { open_window: "on" }, V);
+        const result = tick(world);
+        const save = result.effects.find((e) => e.kind === "saveLedger");
+        if (save?.kind !== "saveLedger") throw new Error("expected saveLedger");
+        expect(save.ledger.records.get(V)?.originals.open_window).toBe("on");
+        const publish = result.effects.findIndex(
+          (e) => e.kind === "publish" && e.valveId === V && e.values.open_window === "off",
+        );
+        expect(publish).toBeGreaterThan(effectIndex(result, "saveLedger"));
+      });
+    });
+
+    describe("With a room resolved no more (house live)", () => {
+      it("drops its opening", () => {
+        const world = withOpening(windowWorld(), makeOpening(), "gone");
+        expect(stateAfter(tick(world)).windows.has("gone")).toBe(false);
+      });
+    });
+
+    describe("With a room resolved no more whose opening passed its limit", () => {
+      it("emits dismissWindowOpen for it", () => {
+        const world = withOpening(windowWorld(), makeOpening({ limitAt: NOW_MS }), "gone");
+        expect(tick(world).effects).toContainEqual({ kind: "dismissWindowOpen", roomId: "gone" });
+      });
+    });
+
+    describe("With writes held", () => {
+      const world = held(openingWorld(2 * HOUR_MS));
+      const result = tick(world);
+      it("still saves openings and raises problems", () => {
+        expect(savedState(result).windows.get(BUILDER_ROOM)?.limitAt).toBe(nowOf(world));
+        expect(problemsOf(result, "window_open_too_long")).toHaveLength(1);
+      });
+      it("publishes nothing", () => {
+        expect(publishes(result.effects)).toEqual([]);
+      });
+    });
+  });
+
+  describe("preview — open windows", () => {
+    describe("With an opening holding a room", () => {
+      it("plans freeze protection for its valves", () => {
+        const writes = preview(openingWorld());
+        for (const valveId of [V, V2]) {
+          expect(writes.filter((w) => w.valveId === valveId).map((w) => w.values)).toContainEqual({
+            system_mode: "heat",
+            setpoint: 7,
+          });
+        }
       });
     });
   });

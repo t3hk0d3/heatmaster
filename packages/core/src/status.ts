@@ -78,11 +78,26 @@ export type ValveStatus = Readonly<{
 }>;
 
 /**
+ * A room's active opening (plan 3b). `state` is `dropped` while a valve change dropped under
+ * `ignore` settles (`THERMOSTAT_SETTLE_MS`), else `limit_reached` once past its limit, else
+ * `suspended` after a person's change, else `open`. `openContacts` are the contacts counted open,
+ * `since` is when the opening started, `holdsValves` whether its valves are held at its action.
+ */
+export type WindowStatus = Readonly<{
+  state: "open" | "suspended" | "limit_reached" | "dropped";
+  triggers: readonly ("contact" | "temperature")[];
+  openContacts: readonly string[];
+  since: number;
+  holdsValves: boolean;
+}>;
+
+/**
  * `nextChangeAt` is an instant in epoch milliseconds. `thermostat` undefined: the state file is
  * unreadable. `target` is the override's target, the schedule's value now on the schedule and
  * while the state is unreadable, and undefined when the room is off. `mode` is the thermostat's
  * (R15), or the valves' while the state is unreadable. `limits` undefined: no managed valve has a
- * spec. `overrideEnd` and `overrideDurationMs` are the room's end settings.
+ * spec. `overrideEnd` and `overrideDurationMs` are the room's end settings. `window` undefined: the
+ * room has no active opening. `heating` is false while an opening holds the valves.
  */
 export type RoomStatus = Readonly<{
   roomId: string;
@@ -98,6 +113,7 @@ export type RoomStatus = Readonly<{
   limits: RoomLimits | undefined;
   overrideEnd: EndRule;
   overrideDurationMs: number;
+  window: WindowStatus | undefined;
   valves: readonly ValveStatus[];
 }>;
 
@@ -159,7 +175,7 @@ function roomHeating(valves: readonly ValveStatus[]): boolean | undefined {
   return valves.some((v) => v.running === false) ? false : undefined;
 }
 
-/** `thermostat` undefined: the state file is unreadable. */
+/** `thermostat` undefined: the state file is unreadable; `window` undefined: no active opening. */
 export function roomStatus(
   room: Room,
   week: ResolvedWeek,
@@ -169,6 +185,7 @@ export function roomStatus(
   now: Temporal.ZonedDateTime,
   thermostat: Thermostat | undefined,
   limits: RoomLimits | undefined,
+  window: WindowStatus | undefined,
 ): RoomStatus {
   const point = activePoint(week, now);
   let target: number | undefined = point.temperature;
@@ -181,13 +198,14 @@ export function roomStatus(
     nextChangeAt: point.nextChangeAt,
     nextTarget: point.nextTemperature,
     mode: thermostat === undefined ? valvesMode(valves) : THERMOSTAT_MODE[thermostat.kind],
-    heating: roomHeating(valves),
+    heating: window?.holdsValves === true ? false : roomHeating(valves),
     sync: worstSync(valves),
     degraded: fresh === "stale" || fresh === "no_sensors",
     thermostat,
     limits,
     overrideEnd: room.overrideEnd,
     overrideDurationMs: room.overrideDurationMs,
+    window,
     valves,
   };
 }

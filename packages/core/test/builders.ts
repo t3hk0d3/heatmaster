@@ -538,6 +538,7 @@ export function makeWorld(
     deviceLists: { z2m: new Set(rest.devices?.keys()) },
     sensors: new Map(),
     unobservableSensors: new Set(),
+    contacts: new Map(),
     memory: EMPTY_MEMORY,
     buckets: undefined,
     now: BUILDER_NOW,

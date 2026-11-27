@@ -18,6 +18,12 @@ export const SENT_KEPT = 4;
 /** A sent write is retired when a report heard this long after it neither matches nor shows it. */
 export const SENT_RETIRE_MS = 60 * 1000;
 
+/**
+ * For this long after an override or off starts, its room's valves get no mode or setpoint (R6);
+ * as long after a valve change dropped by an open window under `ignore` (W6).
+ */
+export const THERMOSTAT_SETTLE_MS = 10 * 1000;
+
 /** Targets are rounded half up to this step, in °C. */
 const TARGET_STEP = 0.5;
 

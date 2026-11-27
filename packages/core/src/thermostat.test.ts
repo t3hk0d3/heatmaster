@@ -12,6 +12,7 @@ import {
   makeThermostat,
   points,
   weekOf,
+  windowPatchOf,
 } from "../test/builders.ts";
 import { ChangeRefused } from "./change.ts";
 import type { Effect, World } from "./control.ts";
@@ -442,6 +443,39 @@ describe("thermostat", () => {
         it("no effects", () => {
           expect(command(roomWorld(), { kind: "resume" })).toEqual([]);
         });
+      });
+    });
+
+    describe("With a set_target while an opening holds, resume_heating", () => {
+      it("suspends the opening in the same state", () => {
+        const opening = makeOpening();
+        const world = roomWorld({
+          thermostats: { ...EMPTY_THERMOSTAT_STATE, windows: new Map([[BUILDER_ROOM, opening]]) },
+        });
+        const effects = command(world, { kind: "set_target", celsius: 22, end: undefined });
+        const [effect] = effects;
+        if (effect?.kind !== "saveThermostats") throw new Error("expected a saveThermostats");
+        expect(effects).toHaveLength(1);
+        expect(effect.state.rooms.get(BUILDER_ROOM)).toMatchObject({ target: 22 });
+        expect(effect.state.windows.get(BUILDER_ROOM)).toEqual({
+          ...opening,
+          suspendedAt: NOW_MS,
+        });
+      });
+    });
+    describe("With a set_target while an opening holds, ignore", () => {
+      it("leaves the opening as it is", () => {
+        const opening = makeOpening();
+        const world = roomWorld({
+          entry: {
+            window: windowPatchOf({ ...DEFAULT_WINDOW_SETTINGS, manualChange: "ignore" }),
+          },
+          thermostats: { ...EMPTY_THERMOSTAT_STATE, windows: new Map([[BUILDER_ROOM, opening]]) },
+        });
+        const effects = command(world, { kind: "set_target", celsius: 22, end: undefined });
+        const [effect] = effects;
+        if (effect?.kind !== "saveThermostats") throw new Error("expected a saveThermostats");
+        expect(effect.state.windows.get(BUILDER_ROOM)).toBe(opening);
       });
     });
 

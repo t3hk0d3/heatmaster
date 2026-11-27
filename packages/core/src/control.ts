@@ -5,12 +5,14 @@ import {
   fitted,
   frostDesired,
   managedDesired,
+  openWindowDesired,
   releaseDesired,
   savedPointValues,
   thermostatContext,
   thermostatDesired,
   thermostatWanted,
   weekKey,
+  windowWanted,
 } from "./desired.ts";
 import type { Desired } from "./desired.ts";
 import { FEED_LOST_AFTER_MS, pushDue, pushed, stopped, trackRoom, wantedSource } from "./feed.ts";
@@ -19,10 +21,10 @@ import type { HouseInput } from "./house.ts";
 import { reconcile } from "./join.ts";
 import type { Pending } from "./join.ts";
 import { memberships, withoutRecord } from "./ledger.ts";
-import type { ConfigState, Ledger, Membership, StoredConfig } from "./ledger.ts";
+import type { ConfigState, Ledger, Membership, StoredConfig, ValveRecord } from "./ledger.ts";
 import { mark, markByAge, markedReady, needsAsk, newValveMemory } from "./memory.ts";
 import type { Memory, RoomMemory, ValveMemory } from "./memory.ts";
-import { WEEKDAYS, effectivePresets, sensorId } from "./model.ts";
+import { WEEKDAYS, effectivePresets, sensorId, windowTargetCelsius } from "./model.ts";
 import type { Config, Room } from "./model.ts";
 import { VALVE_SILENT_AFTER_MS, liveness, newState } from "./observation.ts";
 import type { DeviceState, Liveness } from "./observation.ts";
@@ -48,6 +50,7 @@ import type {
   SettingKey,
   SettingValue,
   SettingValues,
+  Toggle,
   ValveMode,
   ValveSpec,
 } from "./settings.ts";
@@ -85,6 +88,7 @@ import {
   SCHEDULE,
   SENT_KEPT,
   SENT_RETIRE_MS,
+  THERMOSTAT_SETTLE_MS,
   ended,
   roomLimits,
   sameWanted,
@@ -98,6 +102,20 @@ import type {
   ThermostatWanted,
   ValveExpectation,
 } from "./thermostat.ts";
+import { noteTrails, windowHolds, windowStep } from "./window.ts";
+import type { ContactReading, Trails, WindowOpening } from "./window.ts";
+import {
+  pruneOpenings,
+  trailKeepMs,
+  windowDropSettles,
+  windowProblems,
+  windowSense,
+  windowStatus,
+  windowWatched,
+} from "./window-room.ts";
+import type { WindowSense } from "./window-room.ts";
+
+export { THERMOSTAT_SETTLE_MS } from "./thermostat-rules.ts";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -109,11 +127,6 @@ export const RELEASE_STALLED_AFTER_MS = 6 * HOUR_MS;
 
 /** Rounds of `preview` per valve. */
 const PREVIEW_ROUNDS = 10;
-
-/**
- * For this long after an override or off starts, its room's valves get no mode or setpoint (R6).
- */
-export const THERMOSTAT_SETTLE_MS = 10 * 1000;
 
 /**
  * - `spec` undefined: not a supported valve.
@@ -148,7 +161,8 @@ export type BucketStart = Readonly<{
  * transport, the ids of every device it lists (followed or not), once it has delivered its device
  * list since the start; a transport with no entry has not, and its list vouches for nothing.
  * `sensors` and `unobservableSensors` are keyed by sensor id. `now` is in the house's time zone.
- * `thermostats` undefined: the state file could not be read.
+ * `thermostats` undefined: the state file could not be read. `contacts` holds the window contacts'
+ * readings, keyed by contact id (`ha:<entity id>`).
  */
 export type World = Readonly<{
   configState: ConfigState;
@@ -161,6 +175,7 @@ export type World = Readonly<{
   deviceLists: Readonly<Record<string, ReadonlySet<string>>>;
   sensors: ReadonlyMap<string, SensorReading>;
   unobservableSensors: ReadonlySet<string>;
+  contacts: ReadonlyMap<string, ContactReading>;
   memory: Memory;
   buckets: BucketStart | undefined;
   now: Temporal.ZonedDateTime;
@@ -175,7 +190,9 @@ export type Effect =
   | Readonly<{ kind: "publishSetpoint"; valveId: string; celsius: number }>
   | Readonly<{ kind: "pushTemperature"; valveId: string; celsius: number }>
   | Readonly<{ kind: "refresh"; valveId: string }>
-  | Readonly<{ kind: "saveThermostats"; state: ThermostatState }>;
+  | Readonly<{ kind: "saveThermostats"; state: ThermostatState }>
+  | Readonly<{ kind: "notifyWindowOpen"; roomId: string }>
+  | Readonly<{ kind: "dismissWindowOpen"; roomId: string }>;
 
 /**
  * `pending` lists the valves that wait to join, in valve-id order (see `reconcile`).
@@ -336,8 +353,22 @@ function valuesOf(desired: Desired, keys: readonly SettingKey[]): SettingValues 
 // Rooms ------------------------------------------------------------------------------------------
 
 /**
+ * A room's window in the tick. `sense` is what its step reads; `celsius` is the window's target.
+ * `opening` is the saved one until the step, then the step's. `holdsValves`, `limitReached` and
+ * `dismissed` are the step's (false before it).
+ */
+type RoomWindow = Readonly<{
+  sense: WindowSense;
+  celsius: number;
+  opening: WindowOpening | undefined;
+  holdsValves: boolean;
+  limitReached: boolean;
+  dismissed: boolean;
+}>;
+
+/**
  * `thermostat` undefined: the state file is unreadable. `frost` is the room's frost preset.
- * `settling`: no mode or setpoint is written to the room's valves (R6).
+ * `settling`: no mode or setpoint is written to the room's valves (R6, W6).
  */
 type RoomPlan = Readonly<{
   room: Room;
@@ -348,6 +379,7 @@ type RoomPlan = Readonly<{
   thermostat: Thermostat | undefined;
   frost: number;
   settling: boolean;
+  window: RoomWindow;
 }>;
 
 /**
@@ -368,9 +400,19 @@ function settles(thermostat: Thermostat | undefined, nowMs: number): boolean {
   return age >= 0 && age < THERMOSTAT_SETTLE_MS;
 }
 
+/** No drop trails: nothing is planned while the config is unreadable. */
+const NO_TRAILS: Trails = new Map();
+
+/** The house is frozen (or unlinked): contacts and sensors are unknown (W13). */
+function houseFrozen(world: World): boolean {
+  return world.house.kind !== "live";
+}
+
 /**
  * Each room whose schedule exists and has no empty day (`roomWeek`); others are left out. Each
- * plan carries the room's thermostat from `thermostats` (undefined: unreadable).
+ * plan carries the room's thermostat and saved opening from `thermostats` (undefined: unreadable)
+ * and what its window step reads. The drop trails are noted first (W5): the planned rooms' used
+ * sensors, kept for the longest `within` and `still` of those rooms.
  */
 function planRooms(
   config: Config,
@@ -378,8 +420,8 @@ function planRooms(
   world: World,
   nowMs: number,
   thermostats: ThermostatState | undefined,
-): ReadonlyMap<string, RoomPlan> {
-  const plans = new Map<string, RoomPlan>();
+): Readonly<{ plans: ReadonlyMap<string, RoomPlan>; trails: Trails }> {
+  const found: [Room, ResolvedWeek, RoomTemperature][] = [];
   for (const room of rooms) {
     const week = roomWeek(config, room);
     if (week === undefined) continue;
@@ -389,10 +431,19 @@ function planRooms(
       nowMs,
       config.settings.sensorStaleAfterMs,
     );
+    found.push([room, week, temperature]);
+  }
+  const used = new Set(found.flatMap(([, , temperature]) => temperature.used));
+  const keepMs = trailKeepMs(found.map(([room]) => room));
+  const trails = noteTrails(world.memory.trails, world.sensors, used, keepMs, nowMs);
+  const frozen = houseFrozen(world);
+  const plans = new Map<string, RoomPlan>();
+  for (const [room, week, temperature] of found) {
     const fresh = freshness(room.sensors, temperature);
     const old = world.memory.rooms.get(room.id) ?? { freshSince: undefined };
     const thermostat =
       thermostats === undefined ? undefined : (thermostats.rooms.get(room.id) ?? SCHEDULE);
+    const opening = thermostats?.windows.get(room.id);
     plans.set(room.id, {
       room,
       week,
@@ -402,9 +453,66 @@ function planRooms(
       thermostat,
       frost: effectivePresets(config, room).frost,
       settling: settles(thermostat, nowMs),
+      window: {
+        sense: windowSense(room, opening, world.contacts, trails, frozen, nowMs),
+        celsius: windowTargetCelsius(config, room),
+        opening,
+        holdsValves: false,
+        limitReached: false,
+        dismissed: false,
+      },
     });
   }
-  return plans;
+  return { plans, trails };
+}
+
+/**
+ * Runs each judged room's window step (while the state is readable). `before` holds the plans
+ * before judging: a thermostat adoption changed while the saved opening held the room is a
+ * person's change (W6). Under `ignore` that adoption is discarded (the room keeps the thermostat
+ * it had) and the opening's `droppedAt` is now; the expectations adoption recorded stay. While
+ * the opening holds the valves only a dropped change settles them; otherwise 3a's settle holds,
+ * and a dropped change settles them too.
+ */
+function stepWindows(
+  plans: ReadonlyMap<string, RoomPlan>,
+  before: ReadonlyMap<string, RoomPlan>,
+  nowMs: number,
+): ReadonlyMap<string, RoomPlan> {
+  const stepped = new Map<string, RoomPlan>();
+  for (const [roomId, plan] of plans) {
+    const previous = before.get(roomId) ?? plan;
+    if (plan.thermostat === undefined || previous.thermostat === undefined) {
+      stepped.set(roomId, plan);
+      continue;
+    }
+    const { sense, opening: saved } = plan.window;
+    const personChange =
+      plan.thermostat !== previous.thermostat && windowHolds(saved, sense.settings);
+    const ignored = personChange && sense.settings.manualChange === "ignore";
+    const thermostat = ignored ? previous.thermostat : plan.thermostat;
+    const step = windowStep(
+      saved,
+      { ...sense, personChange, thermostatOff: thermostat.kind === "off" },
+      nowMs,
+    );
+    const opening =
+      ignored && step.opening !== undefined ? { ...step.opening, droppedAt: nowMs } : step.opening;
+    const dropSettles = windowDropSettles(opening, nowMs);
+    stepped.set(roomId, {
+      ...plan,
+      thermostat,
+      settling: step.holdsValves ? dropSettles : settles(thermostat, nowMs) || dropSettles,
+      window: {
+        ...plan.window,
+        opening,
+        holdsValves: step.holdsValves,
+        limitReached: step.limitReached,
+        dismissed: step.dismissed,
+      },
+    });
+  }
+  return stepped;
 }
 
 /**
@@ -514,18 +622,19 @@ function judgeRooms(
 }
 
 /**
- * The state the tick saves (R22): the planned rooms' thermostats and the run valves'
+ * The state the tick saves (R22): the planned rooms' thermostats and openings and the run valves'
  * expectations over `given`; while `prune` holds (the house live, the config readable), the
- * expectation of a valve that is not managed is dropped, unless its membership is frozen (R16).
- * `given` itself when nothing changed.
+ * expectation of a valve that is not managed is dropped, unless its membership is frozen (R16),
+ * and so is the opening of a room that is not resolved (W14), listed in `dismissed` when it was
+ * active past its limit. `given` itself when nothing changed.
  */
 function committed(
   given: ThermostatState,
   plans: ReadonlyMap<string, RoomPlan>,
   expectations: ReadonlyMap<string, ValveExpectation>,
   kinds: ReadonlyMap<string, Membership>,
-  prune: boolean,
-): ThermostatState {
+  prune: ReadonlySet<string> | undefined,
+): Readonly<{ state: ThermostatState; dismissed: readonly string[] }> {
   let changed = false;
   const rooms = new Map(given.rooms);
   for (const [roomId, plan] of plans) {
@@ -535,13 +644,30 @@ function committed(
     else rooms.set(roomId, thermostat);
     changed = true;
   }
+  let windows: ReadonlyMap<string, WindowOpening> = given.windows;
+  const opened = new Map(given.windows);
+  for (const [roomId, plan] of plans) {
+    const opening = plan.window.opening;
+    if (plan.thermostat === undefined || opening === given.windows.get(roomId)) continue;
+    if (opening === undefined) opened.delete(roomId);
+    else opened.set(roomId, opening);
+    windows = opened;
+    changed = true;
+  }
+  let dismissed: readonly string[] = [];
+  if (prune !== undefined) {
+    const pruned = pruneOpenings(windows, prune);
+    if (pruned.windows !== windows) changed = true;
+    windows = pruned.windows;
+    dismissed = pruned.dismissed;
+  }
   const valves = new Map(given.valves);
   for (const [valveId, expectation] of expectations) {
     if (given.valves.get(valveId) === expectation) continue;
     valves.set(valveId, expectation);
     changed = true;
   }
-  if (prune) {
+  if (prune !== undefined) {
     for (const valveId of [...valves.keys()]) {
       const kind = kinds.get(valveId);
       if (kind === "managed" || kind === "frozen") continue;
@@ -549,7 +675,7 @@ function committed(
       changed = true;
     }
   }
-  return changed ? { ...given, rooms, valves } : given;
+  return { state: changed ? { ...given, rooms, valves, windows } : given, dismissed };
 }
 
 function roomProblems(plan: RoomPlan, world: World): readonly Problem[] {
@@ -561,6 +687,10 @@ function roomProblems(plan: RoomPlan, world: World): readonly Problem[] {
     const id = sensorId(sensor);
     if (world.unobservableSensors.has(id)) problems.push(problemSensorLivenessUnobservable(id));
   }
+  const { sense, opening } = plan.window;
+  problems.push(
+    ...windowProblems(plan.room.id, sense.contacts, opening, plan.thermostat?.kind === "off"),
+  );
   return problems;
 }
 
@@ -583,10 +713,15 @@ type ValveThermostat = Readonly<{
   resend: boolean;
 }>;
 
-/** `expectation`: the valve's expectation after the tick (undefined: not judged). */
+/**
+ * `expectation`: the valve's expectation after the tick (undefined: not judged).
+ * `openWindowOriginal`: the `open_window` value to record as the valve's original, when this
+ * tick writes the key for the first time (W8).
+ */
 type ValveRun = Readonly<{
   vm: ValveMemory;
   expectation: ValveExpectation | undefined;
+  openWindowOriginal: Toggle | undefined;
   push: Effect | undefined;
   action: Effect | undefined;
   finished: boolean;
@@ -729,7 +864,8 @@ function judgedValve(
 /**
  * What a managed valve of a planned room is wanted at for the room's state: its frost protection,
  * always; and, while the state is readable, its mode and setpoint (`wanted`) with the adapter's
- * verdict on what it shows (`matches`, undefined without a state).
+ * verdict on what it shows (`matches`, undefined without a state). While the room's opening holds
+ * its valves, the mode and setpoint are the window's (W3), not the thermostat's.
  */
 function thermostatPart(
   spec: ValveSpec,
@@ -745,13 +881,34 @@ function thermostatPart(
   if (plan.thermostat === undefined || judged === undefined) {
     return { desired: frost, wanted: undefined, matches: undefined };
   }
-  const wanted = thermostatWanted(spec, plan.thermostat, judged.ctx);
+  const { window } = plan;
+  const wanted = window.holdsValves
+    ? windowWanted(spec, window.sense.settings.action, window.celsius)
+    : thermostatWanted(spec, plan.thermostat, judged.ctx);
   return {
     desired: { ...frost, ...thermostatDesired(wanted) },
     wanted,
     matches:
       state === undefined ? undefined : spec.thermostat.matches(wanted, judged.seen, judged.ctx),
   };
+}
+
+/**
+ * The valve's own open-window detection as its room wants it (`openWindowDesired`, W15). A record
+ * without an `open_window` original (a valve joined before plan 3b) gets one at the first write
+ * (W8): until the valve shows the key, nothing is wanted.
+ */
+function openWindowFor(
+  spec: ValveSpec,
+  record: ValveRecord | undefined,
+  room: Room,
+  state: DeviceState | undefined,
+): Desired {
+  const desired = openWindowDesired(spec, record, windowWatched(room), room.window.valveDetection);
+  if (desired.open_window === undefined || record?.originals.open_window !== undefined) {
+    return desired;
+  }
+  return state?.values.open_window === undefined ? {} : desired;
 }
 
 /**
@@ -927,6 +1084,7 @@ function runValve(
     return {
       vm,
       expectation: thermostat?.expectation,
+      openWindowOriginal: undefined,
       push: undefined,
       action,
       finished: false,
@@ -948,8 +1106,9 @@ function runValve(
       : undefined;
     [desired, vm] = managedFor(spec, managedPlan.week, state, source, vm);
     const part = thermostatPart(spec, managedPlan, thermostat?.judged, state);
-    desired = { ...desired, ...part.desired };
-    vm = noteAll(vm, spec, part.desired);
+    const own = { ...part.desired, ...openWindowFor(spec, record, managedPlan.room, state) };
+    desired = { ...desired, ...own };
+    vm = noteAll(vm, spec, own);
     wanted = part.wanted;
     matches = part.matches;
   } else if (kind === "releasing" && record !== undefined) {
@@ -1033,6 +1192,17 @@ function runValve(
 
   vm = withFeedLost(vm, state, nowMs);
 
+  // W8: the first write of `open_window` records what the valve showed as its original.
+  const shown = state.values.open_window;
+  const openWindowOriginal =
+    action?.kind === "publish" &&
+    action.values.open_window !== undefined &&
+    record !== undefined &&
+    record.originals.open_window === undefined &&
+    (shown === "on" || shown === "off")
+      ? shown
+      : undefined;
+
   let finished = false;
   if (kind === "releasing") {
     // The hold counts only while the valve can be observed: a link that is down hides changes.
@@ -1090,6 +1260,7 @@ function runValve(
   return {
     vm,
     expectation,
+    openWindowOriginal,
     push,
     action,
     finished,
@@ -1142,6 +1313,18 @@ function systemProblems(world: World, kinds: ReadonlyMap<string, Membership>): P
     }
   }
   return problems;
+}
+
+/** The ledger with each valve's `open_window` original recorded (W8); itself when there is none. */
+function withOpenWindowOriginals(ledger: Ledger, originals: ReadonlyMap<string, Toggle>): Ledger {
+  if (originals.size === 0) return ledger;
+  const records = new Map(ledger.records);
+  for (const [valveId, value] of originals) {
+    const record = records.get(valveId);
+    if (record === undefined) continue;
+    records.set(valveId, { ...record, originals: { ...record.originals, open_window: value } });
+  }
+  return { ...ledger, records };
 }
 
 /** Drops later problems with an id already listed. */
@@ -1228,15 +1411,16 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
   const held = stored?.config.settings.holdWrites === true;
   const config = world.configState === "ok" ? stored?.config : undefined;
   const expired = nextThermostats(world, config, resolved, kinds, nowMs);
-  const planned =
+  const { plans: planned, trails } =
     config === undefined
-      ? new Map<string, RoomPlan>()
+      ? { plans: new Map<string, RoomPlan>(), trails: NO_TRAILS }
       : planRooms(config, resolved, world, nowMs, expired);
   const judging = judgeRooms(world, planned, kinds, expired, nowMs);
-  const plans = judging.plans;
+  const plans = stepWindows(judging.plans, planned, nowMs);
   const roomOf = roomOfValves(resolved);
   const ctx: Context = { world, nowMs, held, config };
   const expectations = new Map<string, ValveExpectation>();
+  const originals = new Map<string, Toggle>();
 
   const valves = new Map<string, ValveMemory>();
   const statuses = new Map<string, ValveStatus>();
@@ -1308,6 +1492,7 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
     const run = runValve(ctx, valveId, kind, view, spec, plan, judging.valves.get(valveId));
     valves.set(valveId, run.vm);
     if (run.expectation !== undefined) expectations.set(valveId, run.expectation);
+    if (run.openWindowOriginal !== undefined) originals.set(valveId, run.openWindowOriginal);
     if (run.push !== undefined) valveEffects.push(run.push);
     if (run.action !== undefined) valveEffects.push(run.action);
     if (run.finished) finished.push(valveId);
@@ -1324,8 +1509,8 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
   }
 
   const saves: Effect[] = [];
-  if (finished.length > 0 && world.ledger !== undefined) {
-    let ledger = world.ledger;
+  if ((finished.length > 0 || originals.size > 0) && world.ledger !== undefined) {
+    let ledger = withOpenWindowOriginals(world.ledger, originals);
     for (const valveId of finished) ledger = withoutRecord(ledger, valveId, nowMs, false);
     saves.push({ kind: "saveLedger", ledger }, { kind: "writeOriginalsCopy", ledger });
   }
@@ -1361,6 +1546,12 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
         world.now,
         plan.thermostat,
         roomLimits(specs),
+        windowStatus(
+          plan.window.opening,
+          plan.window.sense.contacts,
+          plan.window.holdsValves,
+          nowMs,
+        ),
       ),
     );
   }
@@ -1370,27 +1561,35 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
     for (const valveId of world.house.notInHa) houseProblems.push(problemValveNotInHa(valveId));
   }
 
-  const thermostats =
-    expired === undefined
-      ? undefined
-      : committed(
-          expired,
-          plans,
-          expectations,
-          kinds,
-          world.house.kind === "live" && config !== undefined,
-        );
-  // R20: mode and setpoint writes come after the state is saved, everything else before it.
+  const prune =
+    world.house.kind === "live" && config !== undefined
+      ? new Set(resolved.map((room) => room.id))
+      : undefined;
+  const commit =
+    expired === undefined ? undefined : committed(expired, plans, expectations, kinds, prune);
+  const thermostats = commit?.state;
+  // R20: mode and setpoint writes come after the state is saved, everything else before it; the
+  // window notices come between them (W7).
   const save: Effect[] =
     thermostats === undefined || thermostats === world.thermostats
       ? []
       : [{ kind: "saveThermostats", state: thermostats }];
+  const notices: Effect[] = [];
+  for (const plan of plans.values()) {
+    const roomId = plan.room.id;
+    if (plan.window.limitReached) notices.push({ kind: "notifyWindowOpen", roomId });
+    if (plan.window.dismissed) notices.push({ kind: "dismissWindowOpen", roomId });
+  }
+  for (const roomId of commit?.dismissed ?? []) {
+    notices.push({ kind: "dismissWindowOpen", roomId });
+  }
   return {
-    memory: { valves, rooms: roomMemory },
+    memory: { valves, rooms: roomMemory, trails },
     effects: [
       ...saves,
       ...valveEffects.filter((e) => !isThermostatWrite(e)),
       ...save,
+      ...notices,
       ...valveEffects.filter(isThermostatWrite),
     ],
     rooms,
@@ -1425,17 +1624,20 @@ function currentOf(state: DeviceState, values: SettingValues): SettingValues {
 /**
  * The writes `tick` would make for every managed or releasing valve with a spec, ignoring
  * pacing, hold, links and liveness, with pushes assumed sent and each mark satisfied once. Room
- * states are the current ones after expiry; the settle rule holds as in `tick`.
+ * states are the current ones after expiry, with the window step applied (nothing is saved); the
+ * settle rule holds as in `tick`.
  */
 export function preview(world: World): readonly PlannedWrite[] {
   const nowMs = world.now.epochMilliseconds;
   const { rooms: resolved, kinds } = membershipsOf(world);
   const config = world.configState === "ok" ? world.stored?.config : undefined;
   const thermostats = nextThermostats(world, config, resolved, kinds, nowMs);
-  const plans =
+  const planned =
     config === undefined
       ? new Map<string, RoomPlan>()
-      : planRooms(config, resolved, world, nowMs, thermostats);
+      : planRooms(config, resolved, world, nowMs, thermostats).plans;
+  // The window step as in tick, with no change judged.
+  const plans = stepWindows(planned, planned, nowMs);
   const roomOf = roomOfValves(resolved);
   const writes: PlannedWrite[] = [];
   for (const valveId of [...kinds.keys()].sort()) {
@@ -1467,8 +1669,9 @@ export function preview(world: World): readonly PlannedWrite[] {
         const expectation = world.thermostats?.valves.get(valveId);
         const judged = judgedValve(valveId, spec, plan, state, vm, expectation, world.now);
         const part = thermostatPart(spec, plan, judged, state);
-        desired = { ...desired, ...part.desired };
-        vm = noteAll(vm, spec, part.desired);
+        const own = { ...part.desired, ...openWindowFor(spec, record, plan.room, state) };
+        desired = { ...desired, ...own };
+        vm = noteAll(vm, spec, own);
         matches = part.matches;
       } else if (record !== undefined) {
         desired = releaseDesired(spec, record);

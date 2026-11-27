@@ -21,6 +21,7 @@ import type {
   ThermostatWanted,
   ValveExpectation,
 } from "./thermostat.ts";
+import type { WindowOpening } from "./window.ts";
 
 const SECOND_MS = 1000;
 
@@ -361,8 +362,8 @@ export function personThermostat(
 }
 
 /**
- * The state with every sent write's `at` and every thermostat's `since` later than `nowMs` (the
- * clock went back) set to `nowMs`; `state` itself when there is none.
+ * The state with every sent write's `at`, every thermostat's `since` and every opening's instant
+ * later than `nowMs` (the clock went back) set to `nowMs`; `state` itself when there is none.
  */
 export function clampThermostatState(state: ThermostatState, nowMs: number): ThermostatState {
   let changed = false;
@@ -379,5 +380,30 @@ export function clampThermostatState(state: ThermostatState, nowMs: number): The
     valves.set(valveId, { ...expectation, sent });
     changed = true;
   }
-  return changed ? { ...state, rooms, valves } : state;
+  const windows = new Map(state.windows);
+  for (const [roomId, opening] of state.windows) {
+    const clamped = clampOpening(opening, nowMs);
+    if (clamped === opening) continue;
+    windows.set(roomId, clamped);
+    changed = true;
+  }
+  return changed ? { ...state, rooms, valves, windows } : state;
+}
+
+/** The opening with every instant later than `nowMs` set to `nowMs`; itself when there is none. */
+function clampOpening(opening: WindowOpening, nowMs: number): WindowOpening {
+  const instants = Object.values(opening).filter((at): at is number => at !== undefined);
+  if (!instants.some((at) => at > nowMs)) return opening;
+  const notAfter = (at: number | undefined): number | undefined =>
+    at === undefined ? undefined : Math.min(at, nowMs);
+  return {
+    startedAt: Math.min(opening.startedAt, nowMs),
+    temperatureSince: notAfter(opening.temperatureSince),
+    temperatureEndedAt: notAfter(opening.temperatureEndedAt),
+    suspendedAt: notAfter(opening.suspendedAt),
+    limitAt: notAfter(opening.limitAt),
+    notifiedAt: notAfter(opening.notifiedAt),
+    droppedAt: notAfter(opening.droppedAt),
+    endedAt: notAfter(opening.endedAt),
+  };
 }

@@ -26,6 +26,7 @@ import {
   sameThermostat,
   sameWanted,
 } from "./thermostat-rules.ts";
+import { windowHolds } from "./window.ts";
 import type { WindowOpening } from "./window.ts";
 
 export {
@@ -161,7 +162,8 @@ function roomSpecs(world: World, room: Room, kinds: ReadonlyMap<string, Membersh
 /**
  * The room's thermostat after the command (R11: whether writes are held does not matter). Returns
  * `[{ kind: "saveThermostats", state }]` with only the room's thermostat replaced, or `[]` when the
- * result equals the current thermostat (R21). Refuses with `config_unreadable`, then
+ * result equals the current thermostat (R21). When the room's opening holds it and its
+ * `manualChange` is `resume_heating`, the same state carries the opening suspended now (W6). Refuses with `config_unreadable`, then
  * `state_unreadable`, then `room_unknown` for a room that is not resolved, has no plan or has no
  * managed valve with a spec (R12).
  */
@@ -226,7 +228,18 @@ export function thermostatCommand(
   const thermostats = new Map(state.rooms);
   if (next.kind === "schedule") thermostats.delete(roomId);
   else thermostats.set(roomId, next);
-  return [{ kind: "saveThermostats", state: { ...state, rooms: thermostats } }];
+  const opening = state.windows.get(roomId);
+  let windows = state.windows;
+  if (
+    opening !== undefined &&
+    room.window.manualChange === "resume_heating" &&
+    windowHolds(opening, room.window)
+  ) {
+    const suspended = new Map(state.windows);
+    suspended.set(roomId, { ...opening, suspendedAt: now.epochMilliseconds });
+    windows = suspended;
+  }
+  return [{ kind: "saveThermostats", state: { ...state, rooms: thermostats, windows } }];
 }
 
 type WindowChoice = Extract<RoomChoice, { kind: `window_${string}` }>;

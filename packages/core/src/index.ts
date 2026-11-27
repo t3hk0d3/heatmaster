@@ -202,11 +202,13 @@ export {
   fitted,
   frostDesired,
   managedDesired,
+  openWindowDesired,
   releaseDesired,
   thermostatContext,
   thermostatDesired,
   thermostatWanted,
   weekKey,
+  windowWanted,
 } from "./desired.ts";
 export type { Desired, DesiredValue, Reason } from "./desired.ts";
 export {
@@ -257,6 +259,7 @@ export type {
   SubjectKind,
   SyncState,
   ValveStatus,
+  WindowStatus,
 } from "./status.ts";
 export {
   IGNORE_LABEL,
@@ -403,6 +406,16 @@ export type {
   WindowOpening,
   WindowStep,
 } from "./window.ts";
+export {
+  pruneOpenings,
+  trailKeepMs,
+  windowDropSettles,
+  windowProblems,
+  windowSense,
+  windowStatus,
+  windowWatched,
+} from "./window-room.ts";
+export type { WindowSense } from "./window-room.ts";
 export { commonMatch } from "./thermostat-adapter.ts";
 export type { AdapterContext, ThermostatAdapter } from "./thermostat-adapter.ts";
 export { decodeDay, encodeDay } from "./profiles/sonoff-codec.ts";
