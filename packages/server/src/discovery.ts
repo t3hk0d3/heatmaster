@@ -178,7 +178,12 @@ function template(key: string): string {
 
 /** The climate's attributes: the keys of the room state that describe how its state ends. */
 const ATTRIBUTES_TEMPLATE =
-  "{{ {" + ATTRIBUTE_KEYS.map((key) => `"${key}": value_json.${key}`).join(", ") + "} | tojson }}";
+  "{{ {" +
+  [
+    ...ATTRIBUTE_KEYS.map((key) => `"${key}": value_json.${key}`),
+    '"window": value_json.window_attr',
+  ].join(", ") +
+  "} | tojson }}";
 
 /** A window switch: its state is the room payload's `field`, its command goes to the set topic. */
 function windowSwitch(
@@ -525,6 +530,9 @@ function windowPayload(room: RoomView, texts: EntityTexts): Record<string, unkno
   return {
     window: onOff(opening?.holdsValves === true),
     window_state: opening?.state ?? null,
+    // The climate's `window` attribute: a dropped opening still holds the valves, so it reads open.
+    window_attr:
+      opening === undefined ? null : opening.state === "dropped" ? "open" : opening.state,
     window_triggers: opening?.triggers ?? [],
     window_since: isoOrNull(opening?.since),
     window_enabled: settings === undefined ? null : onOff(settings.enabled),

@@ -509,6 +509,9 @@ describe("discovery", () => {
             `"${key}": value_json.${key}`,
           );
         }
+        expect(config.components.climate.json_attributes_template).toContain(
+          '"window": value_json.window_attr',
+        );
       });
       it("its config has the selects schedule and override_end with their options", () => {
         expect(config.components.schedule).toMatchObject({
@@ -697,6 +700,17 @@ describe("discovery", () => {
         expect(state.window_since).toBeNull();
       });
     });
+    describe("With an opening in each state", () => {
+      it("sets window_attr open, open (dropped), suspended, limit_reached, and null with none", () => {
+        const attr = (state?: WindowView["state"]): unknown =>
+          payload(state === undefined ? {} : { window: { ...holding, state } }).window_attr;
+        expect(attr("open")).toBe("open");
+        expect(attr("dropped")).toBe("open");
+        expect(attr("suspended")).toBe("suspended");
+        expect(attr("limit_reached")).toBe("limit_reached");
+        expect(attr()).toBeNull();
+      });
+    });
     describe("With a suspended opening", () => {
       it("sets window OFF and window_state suspended", () => {
         expect(
@@ -760,6 +774,7 @@ describe("discovery", () => {
           override_end: null,
           window: "OFF",
           window_state: null,
+          window_attr: null,
           window_triggers: [],
           window_since: null,
           window_enabled: null,
