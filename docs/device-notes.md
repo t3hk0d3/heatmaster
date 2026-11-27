@@ -339,3 +339,19 @@ Script-driven writes through a recorder on `zigbee2mqtt/#`; at-valve steps by th
 
 - **Mancave (2026-11-19):** `…/set/occupied_heating_setpoint 17` at 18:44:05 and 18:54:09, 0.75 s after the valve left `off`, switching it from `auto` to `heat` 17. The writer is the chauffage integration.
 - **Window valve (2026-11-22):** the same per-key write at 05:56:22 and 09:57:00.
+
+## Window handling (plan 3b, Task 1, 2026-11-27, UTC)
+
+Restore cards before the tests:
+- mancave (TRVZB): `open_window` OFF, `auto` 22, frost 7;
+- window valve (TRV-ZBT): `open_window` ON, `open_window_detected` false, `heat` 17, frost 5.
+
+### M17: `open_window` writes
+
+On both models, through Zigbee2MQTT `/set`, `ON` and `OFF` in turn:
+- **Evidence: acked.** The valve's first message after the write repeats the old value with a fresh `last_seen`; a second message in the same millisecond shows the new value. Then one more report follows about 1 s later.
+- **Timing:** the new value shows 0.9–2.1 s after the write.
+- **Read-back:** a `get` of `open_window` returns the written value 1–2 s later, with a fresh `last_seen`.
+- **Spelling:** `"ON"` / `"OFF"` on both models. The TRV-ZBT also reports `open_window_detected` (boolean); the TRVZB does not.
+- **Side effects:** the write changed no other key (mode, setpoint and frost protection unchanged).
+- Both valves were restored to their cards (mancave OFF at 20:30:15, window valve ON at 20:30:47) and confirmed by a `get`.
