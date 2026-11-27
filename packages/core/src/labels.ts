@@ -13,7 +13,12 @@ import {
   type HaEntity,
   type HaSnapshot,
 } from "./house.ts";
-import { HA_CHANGES_KEPT, type HaChangeItem, type StoredConfig } from "./ledger.ts";
+import {
+  HA_CHANGES_KEPT,
+  type HaChangeItem,
+  type HaChangeKind,
+  type StoredConfig,
+} from "./ledger.ts";
 import type { Config, RoomEntry } from "./model.ts";
 import {
   problemContactLabelUnused,
@@ -116,24 +121,12 @@ export function mirrorLabels(
     }
   }
 
-  const wantedSensors = [
-    ...new Set(
-      [...config.rooms.values()].flatMap((entry) =>
-        entry.sensors
-          .filter((sensor) => sensor.ref.startsWith(SENSOR_PREFIX))
-          .map((sensor) => sensor.ref.slice(SENSOR_PREFIX.length)),
-      ),
-    ),
-  ];
-  const wantedContacts = [
-    ...new Set(
-      [...config.rooms.values()].flatMap((entry) =>
-        entry.contacts
-          .filter((contact) => contact.ref.startsWith(SENSOR_PREFIX))
-          .map((contact) => contact.ref.slice(SENSOR_PREFIX.length)),
-      ),
-    ),
-  ];
+  const wantedSensors = listedEntities(config.rooms, (entry) =>
+    entry.sensors.map((sensor) => sensor.ref),
+  );
+  const wantedContacts = listedEntities(config.rooms, (entry) =>
+    entry.contacts.map((contact) => contact.ref),
+  );
   const withSensors = scope === "all";
   if (withSensors && wantedSensors.length > 0 && !snapshot.labels.has(SENSOR_LABEL)) {
     labelOps.push({ kind: "createLabel", name: SENSOR_LABEL });
@@ -327,6 +320,19 @@ function failedSensorCheck(info: SensorInfo | undefined): UnusedReason | undefin
   return undefined;
 }
 
+/** Why the entity's place leaves no room entry for it (the checks sensors and contacts share). */
+function placementReason(
+  entity: HaEntity,
+  rooms: ReadonlyMap<string, RoomEntry>,
+  membership: AreaMembership,
+): "no_area" | "area_not_room" | "entry_unavailable" | undefined {
+  const areaId = entity.areaId;
+  if (areaId === undefined) return "no_area";
+  if (!membership.rooms.has(areaId)) return "area_not_room";
+  if (!mayHoldEntry(rooms, areaId)) return "entry_unavailable";
+  return undefined;
+}
+
 /** Why the entity cannot join its room's entry, or undefined when it can. */
 function unusedReason(
   entityId: string,
@@ -335,13 +341,11 @@ function unusedReason(
   membership: AreaMembership,
   infos: ReadonlyMap<string, SensorInfo>,
 ): UnusedReason | undefined {
-  const areaId = entity.areaId;
-  if (areaId === undefined) return "no_area";
-  if (!membership.rooms.has(areaId)) return "area_not_room";
-  if (!mayHoldEntry(rooms, areaId)) return "entry_unavailable";
+  const placed = placementReason(entity, rooms, membership);
+  if (placed !== undefined) return placed;
   const failed = failedSensorCheck(infos.get(entityId));
   if (failed !== undefined) return failed;
-  if ((rooms.get(areaId)?.sensors.length ?? 0) >= MAX_SENSORS) return "sensor_limit";
+  if ((rooms.get(entity.areaId ?? "")?.sensors.length ?? 0) >= MAX_SENSORS) return "sensor_limit";
   return undefined;
 }
 
@@ -353,15 +357,79 @@ function contactUnusedReason(
   membership: AreaMembership,
   infos: ReadonlyMap<string, ContactInfo>,
 ): ContactUnusedReason | undefined {
-  const areaId = entity.areaId;
-  if (areaId === undefined) return "no_area";
-  if (!membership.rooms.has(areaId)) return "area_not_room";
-  if (!mayHoldEntry(rooms, areaId)) return "entry_unavailable";
+  const placed = placementReason(entity, rooms, membership);
+  if (placed !== undefined) return placed;
   const info = infos.get(entityId);
   if (info?.exists !== true) return "contact_unknown";
   if (!info.isBinary) return "contact_not_binary";
-  if ((rooms.get(areaId)?.contacts.length ?? 0) >= MAX_CONTACTS) return "contact_limit";
+  if ((rooms.get(entity.areaId ?? "")?.contacts.length ?? 0) >= MAX_CONTACTS) {
+    return "contact_limit";
+  }
   return undefined;
+}
+
+/**
+ * What differs between the two entity labels: the entry's list of refs and how to add to and
+ * remove from it, the reason an entity cannot join, the HA change kinds and the problem.
+ */
+type EntityLabel = Readonly<{
+  label: string;
+  refs(entry: RoomEntry): readonly string[];
+  with(entry: RoomEntry, refs: readonly string[]): RoomEntry;
+  reason(entityId: string, entity: HaEntity): string | undefined;
+  added: HaChangeKind;
+  removed: HaChangeKind;
+  problem(entityId: string, reason: string): Problem;
+}>;
+
+/** The entity ids of every `ha:` ref the entries list through `refsOf`, without repeats. */
+function listedEntities(
+  rooms: ReadonlyMap<string, RoomEntry>,
+  refsOf: (entry: RoomEntry) => readonly string[],
+): string[] {
+  return [
+    ...new Set(
+      [...rooms.values()].flatMap((entry) =>
+        refsOf(entry)
+          .filter((ref) => ref.startsWith(SENSOR_PREFIX))
+          .map((ref) => ref.slice(SENSOR_PREFIX.length)),
+      ),
+    ),
+  ];
+}
+
+function entityLabels(
+  rooms: ReadonlyMap<string, RoomEntry>,
+  membership: AreaMembership,
+  infos: ReadonlyMap<string, SensorInfo>,
+  contactInfos: ReadonlyMap<string, ContactInfo>,
+): readonly EntityLabel[] {
+  return [
+    {
+      label: SENSOR_LABEL,
+      refs: (entry) => entry.sensors.map((sensor) => sensor.ref),
+      with: (entry, refs) => ({
+        ...entry,
+        sensors: refs.map(
+          (ref) => entry.sensors.find((sensor) => sensor.ref === ref) ?? { ref, weight: 1 },
+        ),
+      }),
+      reason: (entityId, entity) => unusedReason(entityId, entity, rooms, membership, infos),
+      added: "sensor_added",
+      removed: "sensor_removed",
+      problem: problemSensorLabelUnused,
+    },
+    {
+      label: WINDOW_SENSOR_LABEL,
+      refs: (entry) => entry.contacts.map((contact) => contact.ref),
+      with: (entry, refs) => ({ ...entry, contacts: refs.map((ref) => ({ ref })) }),
+      reason: (entityId, entity) =>
+        contactUnusedReason(entityId, entity, rooms, membership, contactInfos),
+      added: "contact_added",
+      removed: "contact_removed",
+      problem: problemContactLabelUnused,
+    },
+  ];
 }
 
 /**
@@ -421,27 +489,16 @@ export function labelEdits(
   }
 
   // An entity deleted from the registry is left alone: sensor_unknown reports it.
-  for (const entityId of ascending(after.entities.keys())) {
-    const was = before.entities.get(entityId);
-    const entity = after.entities.get(entityId);
-    if (was === undefined || entity === undefined) continue;
-    const has = entity.labels.includes(SENSOR_LABEL);
-    if (was.labels.includes(SENSOR_LABEL) === has) continue;
-    const ref = SENSOR_PREFIX + entityId;
-    if (has) {
-      // The mirror puts this label on every listed sensor, so on one any entry lists it says
-      // nothing new (an own write's echo, or a repair): the sensor stays where it is.
-      if ([...rooms.values()].some((e) => e.sensors.some((sensor) => sensor.ref === ref))) continue;
-      const areaId = entity.areaId;
-      // unusedReason checks this first too; repeated here only so areaId is narrowed below.
-      if (areaId === undefined) continue;
-      // With a reason nothing changes; labelProblems reports it while the label stays.
-      if (unusedReason(entityId, entity, rooms, membership, infos) !== undefined) continue;
-      const entry = rooms.get(areaId);
-      const sensors = [...(entry?.sensors ?? []), { ref, weight: 1 }];
-      rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), sensors });
-      items.push({
-        kind: "sensor_added",
+  for (const kind of entityLabels(rooms, membership, infos, contactInfos)) {
+    for (const entityId of ascending(after.entities.keys())) {
+      const was = before.entities.get(entityId);
+      const entity = after.entities.get(entityId);
+      if (was === undefined || entity === undefined) continue;
+      const has = entity.labels.includes(kind.label);
+      if (was.labels.includes(kind.label) === has) continue;
+      const ref = SENSOR_PREFIX + entityId;
+      const item = (areaId: string, itemKind: HaChangeKind): HaChangeItem => ({
+        kind: itemKind,
         areaId,
         entityId,
         scheduleId: undefined,
@@ -449,67 +506,30 @@ export function labelEdits(
         setting: undefined,
         value: undefined,
       });
-    } else {
-      for (const [areaId, entry] of [...rooms]) {
-        if (!entry.sensors.some((sensor) => sensor.ref === ref)) continue;
-        const sensors = entry.sensors.filter((sensor) => sensor.ref !== ref);
-        rooms.set(areaId, { ...entry, sensors });
-        items.push({
-          kind: "sensor_removed",
-          areaId,
-          entityId,
-          scheduleId: undefined,
-          rule: undefined,
-          setting: undefined,
-          value: undefined,
-        });
-      }
-    }
-  }
-
-  for (const entityId of ascending(after.entities.keys())) {
-    const was = before.entities.get(entityId);
-    const entity = after.entities.get(entityId);
-    if (was === undefined || entity === undefined) continue;
-    const has = entity.labels.includes(WINDOW_SENSOR_LABEL);
-    if (was.labels.includes(WINDOW_SENSOR_LABEL) === has) continue;
-    const ref = SENSOR_PREFIX + entityId;
-    if (has) {
-      // As for a sensor: a contact an entry already lists stays where it is.
-      if ([...rooms.values()].some((e) => e.contacts.some((contact) => contact.ref === ref))) {
-        continue;
-      }
-      const areaId = entity.areaId;
-      if (areaId === undefined) continue;
-      if (contactUnusedReason(entityId, entity, rooms, membership, contactInfos) !== undefined) {
-        continue;
-      }
-      const entry = rooms.get(areaId);
-      const contacts = [...(entry?.contacts ?? []), { ref }];
-      rooms.set(areaId, { ...(entry ?? EMPTY_ENTRY), contacts });
-      items.push({
-        kind: "contact_added",
-        areaId,
-        entityId,
-        scheduleId: undefined,
-        rule: undefined,
-        setting: undefined,
-        value: undefined,
-      });
-    } else {
-      for (const [areaId, entry] of [...rooms]) {
-        if (!entry.contacts.some((contact) => contact.ref === ref)) continue;
-        const contacts = entry.contacts.filter((contact) => contact.ref !== ref);
-        rooms.set(areaId, { ...entry, contacts });
-        items.push({
-          kind: "contact_removed",
-          areaId,
-          entityId,
-          scheduleId: undefined,
-          rule: undefined,
-          setting: undefined,
-          value: undefined,
-        });
+      if (has) {
+        // The mirror puts this label on every listed entity, so on one any entry lists it says
+        // nothing new (an own write's echo, or a repair): it stays where it is.
+        if ([...rooms.values()].some((e) => kind.refs(e).includes(ref))) continue;
+        const areaId = entity.areaId;
+        // The reason checks this first too; repeated here only so areaId is narrowed below.
+        if (areaId === undefined) continue;
+        // With a reason nothing changes; labelProblems reports it while the label stays.
+        if (kind.reason(entityId, entity) !== undefined) continue;
+        const entry = rooms.get(areaId) ?? EMPTY_ENTRY;
+        rooms.set(areaId, kind.with(entry, [...kind.refs(entry), ref]));
+        items.push(item(areaId, kind.added));
+      } else {
+        for (const [areaId, entry] of [...rooms]) {
+          if (!kind.refs(entry).includes(ref)) continue;
+          rooms.set(
+            areaId,
+            kind.with(
+              entry,
+              kind.refs(entry).filter((listed) => listed !== ref),
+            ),
+          );
+          items.push(item(areaId, kind.removed));
+        }
       }
     }
   }
@@ -603,25 +623,15 @@ export function labelProblems(
   contactInfos: ReadonlyMap<string, ContactInfo>,
 ): readonly Problem[] {
   const problems: Problem[] = [];
-  const listed = new Set(
-    [...config.rooms.values()].flatMap((entry) => entry.sensors.map((sensor) => sensor.ref)),
-  );
-  for (const entityId of ascending(snapshot.entities.keys())) {
-    const entity = snapshot.entities.get(entityId);
-    if (entity?.labels.includes(SENSOR_LABEL) !== true) continue;
-    if (listed.has(SENSOR_PREFIX + entityId)) continue;
-    const reason = unusedReason(entityId, entity, config.rooms, membership, infos);
-    if (reason !== undefined) problems.push(problemSensorLabelUnused(entityId, reason));
-  }
-  const listedContacts = new Set(
-    [...config.rooms.values()].flatMap((entry) => entry.contacts.map((contact) => contact.ref)),
-  );
-  for (const entityId of ascending(snapshot.entities.keys())) {
-    const entity = snapshot.entities.get(entityId);
-    if (entity?.labels.includes(WINDOW_SENSOR_LABEL) !== true) continue;
-    if (listedContacts.has(SENSOR_PREFIX + entityId)) continue;
-    const reason = contactUnusedReason(entityId, entity, config.rooms, membership, contactInfos);
-    if (reason !== undefined) problems.push(problemContactLabelUnused(entityId, reason));
+  for (const kind of entityLabels(config.rooms, membership, infos, contactInfos)) {
+    const listed = new Set([...config.rooms.values()].flatMap((entry) => kind.refs(entry)));
+    for (const entityId of ascending(snapshot.entities.keys())) {
+      const entity = snapshot.entities.get(entityId);
+      if (entity?.labels.includes(kind.label) !== true) continue;
+      if (listed.has(SENSOR_PREFIX + entityId)) continue;
+      const reason = kind.reason(entityId, entity);
+      if (reason !== undefined) problems.push(kind.problem(entityId, reason));
+    }
   }
   for (const areaId of ascending(membership.rooms.keys())) {
     if ((config.rooms.get(areaId)?.sensors.length ?? 0) === 0) continue;
