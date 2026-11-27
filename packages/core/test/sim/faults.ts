@@ -16,6 +16,7 @@ import type {
   SettingKey,
   SettingValue,
   TickResult,
+  ValveExpectation,
   World,
 } from "../../src/index.ts";
 import type { Fate, PersonChange, SelectValue, ValveRequest, ValveTruth } from "./valve.ts";
@@ -202,6 +203,25 @@ export function weekMissedAfterRelease(writes: readonly ZbtWeekWrite[]): boolean
  */
 export function zbtResidual(writes: readonly ZbtWeekWrite[]): boolean {
   return weeksMissedInRow(writes) || weekMissedAfterRelease(writes);
+}
+
+/**
+ * A valve's expectation, last seen for one room while a thermostat write to it was unconfirmed
+ * (`sent` not empty), is next seen for another room: the valve moved while the write was in
+ * flight. The new room takes it over with nothing sent (R3), so the write landing there is taken
+ * for a person's change: the room thermostat spec's known limit "a Heatmaster write that lands
+ * more than a minute late may be taken for a person's change", widened by plan 3b's window writes
+ * (ruling T6-P-own). `before` holds each valve's last seen expectation; `after` the current ones.
+ */
+export function writeMovedInFlight(
+  before: ReadonlyMap<string, ValveExpectation>,
+  after: ReadonlyMap<string, ValveExpectation>,
+): boolean {
+  for (const [valveId, now] of after) {
+    const last = before.get(valveId);
+    if (last !== undefined && last.roomId !== now.roomId && last.sent.length > 0) return true;
+  }
+  return false;
 }
 
 /**
@@ -468,6 +488,8 @@ export type Rig = Readonly<{
   run: (plan: FaultPlan) => void;
   /** The schedule writes to the TRV-ZBT so far, oldest first. */
   zbtWeekWrites: () => readonly ZbtWeekWrite[];
+  /** A valve has moved rooms while a thermostat write to it was in flight (`writeMovedInFlight`). */
+  writeMovedInFlight: () => boolean;
 }>;
 
 function factorySetup(plan: Initial): SimSetup["valves"] {
@@ -579,6 +601,9 @@ export function createRig(start: Initial): Rig {
   const zbtWrites: ZbtWeekWrite[] = [];
   /** The TRV-ZBT's expectation was dropped since its last schedule write. */
   let zbtDropped = false;
+  /** Each valve's last seen expectation, kept while it has none (`writeMovedInFlight`). */
+  const lastExpectations = new Map<string, ValveExpectation>();
+  let movedInFlight = false;
   const joins: Join[] = [];
   const turns: TurnMade[] = [];
   let cut = false;
@@ -712,6 +737,9 @@ export function createRig(start: Initial): Rig {
     if (zbtWrites.length > 0 && sim.thermostats().valves.get(VALVE_IDS[1]) === undefined) {
       zbtDropped = true;
     }
+    const expectations = sim.thermostats().valves;
+    if (writeMovedInFlight(lastExpectations, expectations)) movedInFlight = true;
+    for (const [valveId, expectation] of expectations) lastExpectations.set(valveId, expectation);
     const info: StepInfo = {
       result,
       world,
@@ -907,6 +935,7 @@ export function createRig(start: Initial): Rig {
     apply,
     run,
     zbtWeekWrites: () => zbtWrites,
+    writeMovedInFlight: () => movedInFlight,
   };
 }
 

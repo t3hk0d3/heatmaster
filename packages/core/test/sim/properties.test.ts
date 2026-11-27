@@ -579,7 +579,8 @@ function expectedAfter(sim: SimDriver, turn: TurnMade): Thermostat | undefined {
  * Watches the plan for P-own and P-keep until `stop`:
  * - P-own: in a plan with nothing done by hand at a valve, no competing writer and no battery
  *   swap, every room stays on its schedule, until the documented residual limit of a lost TRV-ZBT
- *   week is reached (`zbtResidual`).
+ *   week is reached (`zbtResidual`), or a valve moves rooms while a thermostat write to it is in
+ *   flight (`writeMovedInFlight`, a late write's known limit).
  * - P-keep: in a plan with one turn and, after it, only faults P-own covers and no change of
  *   rooms or stores, the room's thermostat holds what the turn left until it ends, and it is adopted
  *   unless the valve stopped showing it before Heatmaster heard it.
@@ -602,8 +603,9 @@ function watchThermostats(
   const elapsed = (): string => `${String(Math.round(sim.elapsed() / 1000))}s`;
   rig.onStep(() => {
     if (!watching) return;
-    // The documented residual limit of a lost TRV-ZBT week (`zbtResidual`).
-    if (own && !zbtResidual(rig.zbtWeekWrites())) {
+    // The documented residual limit of a lost TRV-ZBT week (`zbtResidual`), and a write in flight
+    // across a room move (`writeMovedInFlight`).
+    if (own && !zbtResidual(rig.zbtWeekWrites()) && !rig.writeMovedInFlight()) {
       for (const [roomId, t] of sim.thermostats().rooms) {
         found("own.schedule", `${roomId} is ${describeState(t)} at ${elapsed()}`);
       }
@@ -1109,6 +1111,34 @@ describe("properties (fast-check, each over arbitrary fault plans with one TRVZB
           const { report, rig } = execute(plan);
           expect(weekMissedAfterRelease(rig.zbtWeekWrites())).toBe(true);
           expect(weeksMissedInRow(rig.zbtWeekWrites())).toBe(false);
+          nothingBroken(report);
+        },
+        PLAN_MS,
+      );
+    });
+
+    describe("With the TRV-ZBT moved to another room while its window write is in flight (seed 1481946975)", () => {
+      const plan: FaultPlan = {
+        initial: { ...initial, intervalMin: 1 },
+        steps: [
+          { k: "edit", schedule: "alt", variant: 0 },
+          { k: "wait", seconds: 7200 },
+          { k: "edit", schedule: "alt", variant: 1 },
+          { k: "sensor", room: "b", delta: -2 },
+          { k: "wait", seconds: 60 },
+          { k: "place", valve: 1, room: "a" },
+          { k: "link", name: "z2m", up: false },
+          { k: "fate", valve: 0, on: "any", fate: "lose", delaySeconds: 0, count: 1 },
+          { k: "wait", seconds: 30 },
+          { k: "wake", valve: 0 },
+        ],
+        turn: { valve: 0, clicks: -30 },
+      };
+      it(
+        "P-own leaves it out (a late write's known limit) and every other property holds",
+        () => {
+          const { report, rig } = execute(plan);
+          expect(rig.writeMovedInFlight()).toBe(true);
           nothingBroken(report);
         },
         PLAN_MS,
