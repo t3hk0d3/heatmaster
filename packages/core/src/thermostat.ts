@@ -163,7 +163,8 @@ function roomSpecs(world: World, room: Room, kinds: ReadonlyMap<string, Membersh
  * The room's thermostat after the command (R11: whether writes are held does not matter). Returns
  * `[{ kind: "saveThermostats", state }]` with only the room's thermostat replaced, or `[]` when the
  * result equals the current thermostat (R21). When the room's opening holds it and its
- * `manualChange` is `resume_heating`, the same state carries the opening suspended now (W6). Refuses with `config_unreadable`, then
+ * `manualChange` is `resume_heating`, the same state carries the opening suspended now (W6), even
+ * when the thermostat is unchanged (T6-I1). Refuses with `config_unreadable`, then
  * `state_unreadable`, then `room_unknown` for a room that is not resolved, has no plan or has no
  * managed valve with a spec (R12).
  */
@@ -224,17 +225,22 @@ export function thermostatCommand(
       next = SCHEDULE;
       break;
   }
-  if (sameThermostat(next, current)) return [];
-  const thermostats = new Map(state.rooms);
-  if (next.kind === "schedule") thermostats.delete(roomId);
-  else thermostats.set(roomId, next);
   const opening = state.windows.get(roomId);
-  let windows = state.windows;
-  if (
+  const suspends =
     opening !== undefined &&
     room.window.manualChange === "resume_heating" &&
-    windowHolds(opening, room.window)
-  ) {
+    windowHolds(opening, room.window);
+  const same = sameThermostat(next, current);
+  if (same && !suspends) return [];
+  let thermostats = state.rooms;
+  if (!same) {
+    const changed = new Map(state.rooms);
+    if (next.kind === "schedule") changed.delete(roomId);
+    else changed.set(roomId, next);
+    thermostats = changed;
+  }
+  let windows = state.windows;
+  if (suspends) {
     const suspended = new Map(state.windows);
     suspended.set(roomId, { ...opening, suspendedAt: now.epochMilliseconds });
     windows = suspended;

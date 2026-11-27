@@ -64,12 +64,14 @@ export type AdoptInput = Readonly<{
 /**
  * The room's thermostat and every judged valve's expectation after judging. `resend` holds the
  * valves whose report shows a point of the week they ran before: their schedule did not land and
- * is to be written again.
+ * is to be written again. `personChange`: a person's change was judged in the room, whether or not
+ * it changed the thermostat (an open window's step needs it, T6-I1).
  */
 export type Adoption = Readonly<{
   thermostat: Thermostat;
   expectations: ReadonlyMap<string, ValveExpectation>;
   resend: ReadonlySet<string>;
+  personChange: boolean;
 }>;
 
 /** What a valve shows, as the state it is then expected at: never scheduled, no setpoint when off. */
@@ -315,12 +317,15 @@ export function adopt(input: AdoptInput): Adoption {
     if (judged.resend) resend.add(valve.valveId);
   }
   const change = newestChange(changes);
-  if (change === undefined) return { thermostat: input.thermostat, expectations, resend };
+  if (change === undefined) {
+    return { thermostat: input.thermostat, expectations, resend, personChange: false };
+  }
   const next = personThermostat(input.thermostat, change, input);
   return {
     thermostat: sameThermostat(next, input.thermostat) ? input.thermostat : next,
     expectations,
     resend,
+    personChange: true,
   };
 }
 

@@ -443,6 +443,28 @@ describe("window", () => {
         expect(step().dismissed).toBe(true);
       });
     });
+    describe("With a suspended opening reaching the limit", () => {
+      const opening = byContacts(NOW_MS - 2 * HOUR_MS, { suspendedAt: NOW_MS - HOUR_MS });
+      const step = () =>
+        windowStep(opening, input({ contacts: verdict("open", opening.startedAt) }), NOW_MS);
+      it("sets no limitAt", () => {
+        expect(step().opening?.limitAt).toBeUndefined();
+      });
+      it("reports no limitReached", () => {
+        expect(step().limitReached).toBe(false);
+      });
+    });
+    describe("With a person's change suspending an opening as it reaches the limit", () => {
+      it("sets no limitAt", () => {
+        const opening = byContacts(NOW_MS - 2 * HOUR_MS);
+        const step = windowStep(
+          opening,
+          input({ contacts: verdict("open", opening.startedAt), personChange: true }),
+          NOW_MS,
+        );
+        expect(step.opening).toMatchObject({ suspendedAt: NOW_MS, limitAt: undefined });
+      });
+    });
     describe("With limit none", () => {
       it("never sets limitAt", () => {
         const opening = byContacts(NOW_MS - 24 * HOUR_MS);

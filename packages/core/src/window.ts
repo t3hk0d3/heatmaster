@@ -284,8 +284,8 @@ function temperatureEnds(
  * One tick of a room's opening. It starts on open contacts (at their `openSince`) or a drop, ends
  * when neither contacts nor a drop hold it, rejoins on a new drop within `rejoinMs` of a
  * temperature end, and is dropped `rejoinMs` after it ended or when window handling is off. It
- * reaches its limit `limitMs` after it started, and is suspended by a person's change under
- * `resume_heating` (W6). While the house is frozen nothing starts, and contacts and temperature
+ * is suspended by a person's change under `resume_heating` (W6), and, unless suspended, reaches
+ * its limit `limitMs` after it started (T6-Q1). While the house is frozen nothing starts, and contacts and temperature
  * end nothing but the fixed end (W13).
  */
 export function windowStep(
@@ -342,6 +342,15 @@ export function windowStep(
       o = { ...o, endedAt: nowMs };
     } else {
       if (
+        input.personChange &&
+        settings.manualChange === "resume_heating" &&
+        windowHolds(opening, settings)
+      ) {
+        o = { ...o, suspendedAt: nowMs };
+      }
+      // The limit does not run on a suspended opening: no limit, no notice (T6-Q1).
+      if (
+        o.suspendedAt === undefined &&
         settings.limitMs !== undefined &&
         o.limitAt === undefined &&
         nowMs - o.startedAt >= settings.limitMs
@@ -351,6 +360,7 @@ export function windowStep(
       // Reported once, on the first step that is not frozen, so a notice is not lost to HA's absence.
       if (
         !frozen &&
+        o.suspendedAt === undefined &&
         o.limitAt !== undefined &&
         o.notifiedAt === undefined &&
         settings.notify &&
@@ -358,13 +368,6 @@ export function windowStep(
       ) {
         o = { ...o, notifiedAt: nowMs };
         limitReached = true;
-      }
-      if (
-        input.personChange &&
-        settings.manualChange === "resume_heating" &&
-        windowHolds(opening, settings)
-      ) {
-        o = { ...o, suspendedAt: nowMs };
       }
     }
   }

@@ -4415,6 +4415,49 @@ describe("control", () => {
       });
     });
 
+    describe("With a knob turned back to the running override's target during an opening under resume_heating", () => {
+      const base = openWorld();
+      const override = overrideAt(base, HOUR_MS, { origin: { source: "valve", valveId: V } });
+      const turned = hear(withThermostat(base, override), { system_mode: "heat", setpoint: 22 });
+      const result = tick(turned);
+      it("keeps the override", () => {
+        expect(stateAfter(result).rooms.get(BUILDER_ROOM)).toEqual(override);
+      });
+      it("suspends the opening", () => {
+        expect(openingAfter(result)?.suspendedAt).toBe(nowOf(turned));
+      });
+      it("publishes nothing to the turned valve", () => {
+        expect(thermostatWrites(result.effects, V)).toEqual([]);
+      });
+    });
+
+    describe("With a knob turned back to the running override's target during an opening under ignore", () => {
+      const base = openWorld(10 * MINUTE_MS, { manualChange: "ignore" });
+      const override = overrideAt(base, HOUR_MS, { origin: { source: "valve", valveId: V } });
+      const turned = hear(withThermostat(base, override), { system_mode: "heat", setpoint: 22 });
+      const result = tick(turned);
+      it("shows the window as dropped", () => {
+        expect(result.rooms.get(BUILDER_ROOM)?.window?.state).toBe("dropped");
+      });
+      it("publishes nothing within 10 s", () => {
+        expect(thermostatWrites(result.effects)).toEqual([]);
+      });
+    });
+
+    describe("With a valve set to auto while on schedule during an opening", () => {
+      const turned = hear(openWorld(), { system_mode: "auto" });
+      const result = tick(turned);
+      it("keeps the room on its schedule", () => {
+        expect(stateAfter(result).rooms.has(BUILDER_ROOM)).toBe(false);
+      });
+      it("suspends the opening", () => {
+        expect(openingAfter(result)?.suspendedAt).toBe(nowOf(turned));
+      });
+      it("publishes nothing to the turned valve", () => {
+        expect(thermostatWrites(result.effects, V)).toEqual([]);
+      });
+    });
+
     describe("With four knob reports in four ticks under ignore", () => {
       it("publishes freeze protection to that valve once, after the last", () => {
         let world = openWorld(10 * MINUTE_MS, { manualChange: "ignore" });

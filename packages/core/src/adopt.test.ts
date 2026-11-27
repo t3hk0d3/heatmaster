@@ -757,6 +757,28 @@ describe("adopt", () => {
           const result = adopt(input([valve({ shows: seen("heat", 22) })], thermostat));
           expect(result.thermostat).toBe(thermostat);
         });
+        it("reports a person's change all the same", () => {
+          const thermostat = apiOverride(22);
+          const result = adopt(input([valve({ shows: seen("heat", 22) })], thermostat));
+          expect(result.personChange).toBe(true);
+        });
+      });
+      describe("With a report explained by the confirmed state", () => {
+        it("reports no person's change", () => {
+          const thermostat = apiOverride(22);
+          const result = adopt(
+            input(
+              [
+                valve({
+                  shows: seen("heat", 22),
+                  expectation: makeExpectation({ confirmed: heat(22) }),
+                }),
+              ],
+              thermostat,
+            ),
+          );
+          expect(result.personChange).toBe(false);
+        });
       });
       describe("With confirmed auto, sent [heat 22] at 10:00 and a report heat 24 heard at 10:01:05", () => {
         it("nothing is adopted and heat 22 stays sent (a partial write, carry ruling 2)", () => {

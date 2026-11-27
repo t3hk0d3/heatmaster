@@ -463,6 +463,28 @@ describe("thermostat", () => {
         });
       });
     });
+    describe("With a set_target equal to the running override while an opening holds, resume_heating", () => {
+      const opening = makeOpening();
+      const override = makeThermostat({ target: 22, rule: "next_change" });
+      const world = roomWorld({
+        thermostats: {
+          ...EMPTY_THERMOSTAT_STATE,
+          rooms: new Map([[BUILDER_ROOM, override]]),
+          windows: new Map([[BUILDER_ROOM, opening]]),
+        },
+      });
+      const effects = command(world, { kind: "set_target", celsius: 22, end: undefined });
+      const [effect] = effects;
+      it("keeps the override", () => {
+        if (effect?.kind !== "saveThermostats") throw new Error("expected a saveThermostats");
+        expect(effect.state.rooms.get(BUILDER_ROOM)).toBe(override);
+      });
+      it("suspends the opening in the same state", () => {
+        if (effect?.kind !== "saveThermostats") throw new Error("expected a saveThermostats");
+        expect(effects).toHaveLength(1);
+        expect(effect.state.windows.get(BUILDER_ROOM)?.suspendedAt).toBe(NOW_MS);
+      });
+    });
     describe("With a set_target while an opening holds, ignore", () => {
       it("leaves the opening as it is", () => {
         const opening = makeOpening();

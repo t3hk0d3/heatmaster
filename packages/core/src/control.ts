@@ -368,7 +368,8 @@ type RoomWindow = Readonly<{
 
 /**
  * `thermostat` undefined: the state file is unreadable. `frost` is the room's frost preset.
- * `settling`: no mode or setpoint is written to the room's valves (R6, W6).
+ * `settling`: no mode or setpoint is written to the room's valves (R6, W6). `personChange`: judging
+ * found a person's change in the room this tick, whatever it did to the thermostat (T6-I1).
  */
 type RoomPlan = Readonly<{
   room: Room;
@@ -379,6 +380,7 @@ type RoomPlan = Readonly<{
   thermostat: Thermostat | undefined;
   frost: number;
   settling: boolean;
+  personChange: boolean;
   window: RoomWindow;
 }>;
 
@@ -453,6 +455,7 @@ function planRooms(
       thermostat,
       frost: effectivePresets(config, room).frost,
       settling: settles(thermostat, nowMs),
+      personChange: false,
       window: {
         sense: windowSense(room, opening, world.contacts, trails, frozen, nowMs),
         celsius: windowTargetCelsius(config, room),
@@ -468,11 +471,11 @@ function planRooms(
 
 /**
  * Runs each judged room's window step (while the state is readable). `before` holds the plans
- * before judging: a thermostat adoption changed while the saved opening held the room is a
- * person's change (W6). Under `ignore` that adoption is discarded (the room keeps the thermostat
- * it had) and the opening's `droppedAt` is now; the expectations adoption recorded stay. While
- * the opening holds the valves only a dropped change settles them; otherwise 3a's settle holds,
- * and a dropped change settles them too.
+ * before judging. A person's change judged while the saved opening held the room counts, whatever
+ * it did to the thermostat (W6, T6-I1). Under `ignore` its adoption is discarded (the room keeps
+ * the thermostat it had) and the opening's `droppedAt` is now; the expectations adoption recorded
+ * stay. While the opening holds the valves only a dropped change settles them; otherwise 3a's
+ * settle holds, and a dropped change settles them too.
  */
 function stepWindows(
   plans: ReadonlyMap<string, RoomPlan>,
@@ -487,8 +490,7 @@ function stepWindows(
       continue;
     }
     const { sense, opening: saved } = plan.window;
-    const personChange =
-      plan.thermostat !== previous.thermostat && windowHolds(saved, sense.settings);
+    const personChange = plan.personChange && windowHolds(saved, sense.settings);
     const ignored = personChange && sense.settings.manualChange === "ignore";
     const thermostat = ignored ? previous.thermostat : plan.thermostat;
     const step = windowStep(
@@ -606,11 +608,12 @@ function judgeRooms(
       now: world.now,
     });
     const thermostat = adoption.thermostat;
+    const personChange = adoption.personChange;
     judgedPlans.set(
       roomId,
       thermostat === plan.thermostat
-        ? plan
-        : { ...plan, thermostat, settling: settles(thermostat, nowMs) },
+        ? { ...plan, personChange }
+        : { ...plan, thermostat, settling: settles(thermostat, nowMs), personChange },
     );
     for (const j of judged) {
       const expectation = adoption.expectations.get(j.valveId);
