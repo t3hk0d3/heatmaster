@@ -379,5 +379,5 @@ export function clampThermostatState(state: ThermostatState, nowMs: number): The
     valves.set(valveId, { ...expectation, sent });
     changed = true;
   }
-  return changed ? { rooms, valves } : state;
+  return changed ? { ...state, rooms, valves } : state;
 }

@@ -7,6 +7,7 @@ import {
   EMPTY_THERMOSTAT_STATE,
   FRESH_STORED,
   PRESET_NAMES,
+  SENT_KEPT,
   TRVZB_THERMOSTAT,
   TRV_ZBT_THERMOSTAT,
   WEEKDAYS,
@@ -45,12 +46,15 @@ import type {
   SensorRef,
   SetPoint,
   SettingValues,
+  SentWrite,
   Thermostat,
+  ThermostatState,
   ThermostatWanted,
   ValveExpectation,
   ValveRecord,
   ValveSpec,
   Week,
+  WindowOpening,
   WindowPatch,
   WindowSettings,
   World,
@@ -805,5 +809,119 @@ export function makeMembership(
   return {
     rooms: new Map(Object.entries(rooms).map(([id, valveIds]) => [id, { name: id, valveIds }])),
     ignored,
+  };
+}
+
+/** An instant from 2023 to 2033, in epoch milliseconds. */
+const instant = fc.integer({ min: 1_700_000_000_000, max: 2_000_000_000_000 });
+const tenth = fc.integer({ min: 40, max: 350 }).map((n) => n / 10);
+const roomId = fc.stringMatching(/^[a-z][a-z0-9_]{0,8}$/);
+const valveId = fc
+  .integer({ min: 0, max: 255 })
+  .map((n) => `z2m:0x00124b00000000${n.toString(16)}`);
+
+const arbHeld: fc.Arbitrary<Thermostat> = fc.oneof(
+  fc.record({
+    kind: fc.constant("override" as const),
+    target: tenth,
+    preset: maybe(preset),
+    rule: endRule,
+    endsAt: maybe(instant),
+    origin: fc.record({
+      source: fc.constantFrom<Origin["source"]>("valve", "climate", "api"),
+      valveId: maybe(valveId),
+    }),
+    since: instant,
+  }),
+  fc.record({
+    kind: fc.constant("off" as const),
+    rule: endRule,
+    endsAt: maybe(instant),
+    origin: fc.record({
+      source: fc.constantFrom<Origin["source"]>("valve", "climate", "api"),
+      valveId: maybe(valveId),
+    }),
+    since: instant,
+  }),
+);
+
+const arbWanted: fc.Arbitrary<ThermostatWanted> = fc.record({
+  mode: fc.constantFrom<ThermostatWanted["mode"]>("off", "auto", "heat"),
+  setpoint: maybe(tenth),
+  scheduled: fc.boolean(),
+});
+
+/** Newest first, each wanted state at most once, at most `SENT_KEPT`: as the reader keeps them. */
+const arbSent: fc.Arbitrary<readonly SentWrite[]> = fc
+  .uniqueArray(arbWanted, { maxLength: SENT_KEPT, selector: (w) => JSON.stringify(w) })
+  .chain((wanted) =>
+    fc.uniqueArray(instant, { minLength: wanted.length, maxLength: wanted.length }).chain((ats) =>
+      fc
+        .array(
+          fc.record({
+            mode: maybe(fc.constantFrom<ThermostatWanted["mode"]>("off", "auto", "heat")),
+            setpoint: maybe(tenth),
+          }),
+          { minLength: wanted.length, maxLength: wanted.length },
+        )
+        .map((froms) => {
+          const newestFirst = [...ats].sort((a, b) => b - a);
+          return wanted.map((w, i) => ({
+            wanted: w,
+            at: newestFirst[i] ?? 0,
+            from: froms[i] ?? { mode: undefined, setpoint: undefined },
+          }));
+        }),
+    ),
+  );
+
+const arbSavedWeek: fc.Arbitrary<SavedWeek> = fc.record({
+  key: fc.string(),
+  values: fc.array(tenth, { maxLength: 6 }),
+});
+
+const arbExpectation: fc.Arbitrary<ValveExpectation> = fc.record({
+  roomId,
+  confirmed: maybe(arbWanted),
+  sent: arbSent,
+  week: maybe(arbSavedWeek),
+  written: maybe(arbSavedWeek),
+  previous: maybe(arbSavedWeek),
+});
+
+/** Any opening, active or ended. */
+export const arbWindowOpening: fc.Arbitrary<WindowOpening> = fc.record({
+  startedAt: instant,
+  temperatureSince: maybe(instant),
+  temperatureEndedAt: maybe(instant),
+  suspendedAt: maybe(instant),
+  limitAt: maybe(instant),
+  droppedAt: maybe(instant),
+  endedAt: maybe(instant),
+});
+
+const mapOf = <K, V>(key: fc.Arbitrary<K>, value: fc.Arbitrary<V>): fc.Arbitrary<Map<K, V>> =>
+  fc
+    .uniqueArray(fc.tuple(key, value), { maxLength: 4, selector: ([k]) => k })
+    .map((entries) => new Map(entries));
+
+/** Any state `state.json` can hold: room thermostats, valve expectations and openings. */
+export const arbThermostatState: fc.Arbitrary<ThermostatState> = fc.record({
+  rooms: mapOf(roomId, arbHeld),
+  valves: mapOf(valveId, arbExpectation),
+  windows: mapOf(roomId, arbWindowOpening),
+});
+
+/** An opening that started ten minutes before `BUILDER_NOW` and is held by nothing else yet. */
+export function makeOpening(options: Partial<WindowOpening> = {}): WindowOpening {
+  return {
+    startedAt: BUILDER_NOW_MS - 10 * MINUTE_MS,
+    temperatureSince: undefined,
+    temperatureEndedAt: undefined,
+    suspendedAt: undefined,
+    limitAt: undefined,
+    droppedAt: undefined,
+    endedAt: undefined,
+    ...options,
   };
 }

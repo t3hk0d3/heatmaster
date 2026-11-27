@@ -386,6 +386,23 @@ export { PROFILES, findProfile, validateProfile } from "./profiles/index.ts";
 export type { Binding, Profile } from "./profiles/index.ts";
 export { TRVZB_SPEC, TRVZB_THERMOSTAT } from "./profiles/sonoff-trvzb.ts";
 export { TRV_ZBT_SPEC, TRV_ZBT_THERMOSTAT } from "./profiles/sonoff-trv-zbt.ts";
+export {
+  contactVerdict,
+  dropDetected,
+  noteTrails,
+  stillFor,
+  windowHolds,
+  windowStep,
+} from "./window.ts";
+export type {
+  ContactReading,
+  ContactVerdict,
+  TrailPoint,
+  Trails,
+  WindowInput,
+  WindowOpening,
+  WindowStep,
+} from "./window.ts";
 export { commonMatch } from "./thermostat-adapter.ts";
 export type { AdapterContext, ThermostatAdapter } from "./thermostat-adapter.ts";
 export { decodeDay, encodeDay } from "./profiles/sonoff-codec.ts";

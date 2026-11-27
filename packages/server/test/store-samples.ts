@@ -5,6 +5,7 @@ import type {
   Thermostat,
   ThermostatState,
   ValveRecord,
+  WindowOpening,
 } from "@heatmaster/core";
 
 const WEEK = [
@@ -184,15 +185,30 @@ export const SAMPLE_OVERRIDE: Extract<Thermostat, Readonly<{ kind: "override" }>
   since: 1_700_000_000_000,
 };
 
-/** Only the living room's override; no valve expectation. */
+/** Only the living room's override; no valve expectation, no opening. */
 export function overrideState(): ThermostatState {
-  return { rooms: new Map([["living_room", SAMPLE_OVERRIDE]]), valves: new Map() };
+  return {
+    rooms: new Map([["living_room", SAMPLE_OVERRIDE]]),
+    valves: new Map(),
+    windows: new Map(),
+  };
 }
+
+/** The office's window opened at 1_700_000_000_000, with every instant an opening holds. */
+export const SAMPLE_OPENING: WindowOpening = {
+  startedAt: 1_700_000_000_000,
+  temperatureSince: 1_700_000_600_000,
+  temperatureEndedAt: 1_700_000_300_000,
+  suspendedAt: 1_700_000_900_000,
+  limitAt: 1_700_007_200_000,
+  droppedAt: 1_700_000_950_000,
+  endedAt: 1_700_008_000_000,
+};
 
 /**
  * Every field the state file holds: an override with a preset from a valve, a room turned off
- * until cancelled, a confirmed valve with a sent write, a saved, a written and a previous week, and a
- * taken-over valve.
+ * until cancelled, a confirmed valve with a sent write, a saved, a written and a previous week, a
+ * taken-over valve, and an opening with every instant.
  */
 export function sampleThermostats(): ThermostatState {
   return {
@@ -246,5 +262,6 @@ export function sampleThermostats(): ThermostatState {
         },
       ],
     ]),
+    windows: new Map([["office", SAMPLE_OPENING]]),
   };
 }

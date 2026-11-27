@@ -28,6 +28,7 @@ import {
   record,
   releasedOnly,
   sampleLedger,
+  SAMPLE_OPENING,
   sampleStored,
   sampleThermostats,
   SAMPLE_VALVE,
@@ -1227,8 +1228,24 @@ describe("stores", () => {
       describe("With a valid file holding an override", () => {
         it("ok with that override", async () => {
           const w = world();
-          put(stateFile(w), { version: 1, ...thermostatStateToRaw(overrideState()) });
+          put(stateFile(w), { version: 2, ...thermostatStateToRaw(overrideState()) });
           expect(await store(w).load()).toEqual({ state: "ok", thermostats: overrideState() });
+        });
+      });
+      describe("With a version 1 file holding an override", () => {
+        it("ok with that override and no opening", async () => {
+          const w = world();
+          const { rooms, valves } = thermostatStateToRaw(overrideState());
+          put(stateFile(w), { version: 1, rooms, valves });
+          expect(await store(w).load()).toEqual({ state: "ok", thermostats: overrideState() });
+        });
+      });
+      describe("With a version 2 file holding an opening", () => {
+        it("ok with that opening", async () => {
+          const w = world();
+          put(stateFile(w), { version: 2, ...thermostatStateToRaw(sampleThermostats()) });
+          const loaded = await store(w).load();
+          expect(loaded.thermostats.windows).toEqual(new Map([["office", SAMPLE_OPENING]]));
         });
       });
       describe("With bad JSON", () => {
@@ -1243,22 +1260,22 @@ describe("stores", () => {
           expect((await store(w).load()).reason).toMatch(/^SyntaxError: /);
         });
       });
-      describe("With version 2", () => {
+      describe("With version 3", () => {
         it("unreadable", async () => {
           const w = world();
-          put(stateFile(w), { version: 2, rooms: {}, valves: {} });
+          put(stateFile(w), { version: 3, rooms: {}, valves: {}, windows: {} });
           expect((await store(w).load()).state).toBe("unreadable");
         });
         it("its reason names the version", async () => {
           const w = world();
-          put(stateFile(w), { version: 2, rooms: {}, valves: {} });
-          expect((await store(w).load()).reason).toContain("2");
+          put(stateFile(w), { version: 3, rooms: {}, valves: {}, windows: {} });
+          expect((await store(w).load()).reason).toContain("3");
         });
       });
       describe("With a valid file", () => {
         it("no reason", async () => {
           const w = world();
-          put(stateFile(w), { version: 1, ...thermostatStateToRaw(overrideState()) });
+          put(stateFile(w), { version: 2, ...thermostatStateToRaw(overrideState()) });
           expect((await store(w).load()).reason).toBeUndefined();
         });
       });
@@ -1269,7 +1286,7 @@ describe("stores", () => {
           const rooms = raw.rooms as Record<string, Record<string, unknown>>;
           const living = rooms.living_room ?? {};
           put(stateFile(w), {
-            version: 1,
+            version: 2,
             ...raw,
             rooms: { living_room: { ...living, kind: "boost" } },
           });
@@ -1281,7 +1298,7 @@ describe("stores", () => {
           const rooms = raw.rooms as Record<string, Record<string, unknown>>;
           const living = rooms.living_room ?? {};
           put(stateFile(w), {
-            version: 1,
+            version: 2,
             ...raw,
             rooms: { living_room: { ...living, kind: "boost" } },
           });
@@ -1291,14 +1308,19 @@ describe("stores", () => {
     });
 
     describe("save", () => {
-      it("writes { version: 1, rooms, valves } and load reads it back", async () => {
+      it("writes { version: 2, rooms, valves, windows } and load reads it back", async () => {
         const w = world();
         const first = store(w);
         await first.load();
         await first.save(sampleThermostats());
-        expect(Object.keys(jsonOf(stateFile(w)))).toEqual(["version", "rooms", "valves"]);
+        expect(Object.keys(jsonOf(stateFile(w)))).toEqual([
+          "version",
+          "rooms",
+          "valves",
+          "windows",
+        ]);
         expect(jsonOf(stateFile(w))).toEqual({
-          version: 1,
+          version: 2,
           ...thermostatStateToRaw(sampleThermostats()),
         });
         expect(await store(w).load()).toEqual({ state: "ok", thermostats: sampleThermostats() });
@@ -1314,6 +1336,7 @@ describe("stores", () => {
           const broken: ThermostatState = {
             rooms: new Map([["living_room", { ...living, target: Number.NaN } as Thermostat]]),
             valves: new Map(),
+            windows: new Map(),
           };
           expect(await rejectionOf(saving.save(broken))).toBeInstanceOf(RangeError);
           expect(readFileSync(stateFile(w), "utf8")).toBe(before);
@@ -1350,7 +1373,7 @@ describe("stores", () => {
         });
         it("state.json holds an empty state", async () => {
           const { w } = await resetUnreadable();
-          expect(jsonOf(stateFile(w))).toEqual({ version: 1, rooms: {}, valves: {} });
+          expect(jsonOf(stateFile(w))).toEqual({ version: 2, rooms: {}, valves: {}, windows: {} });
         });
         it("a later save succeeds", async () => {
           const { w, reset } = await resetUnreadable();
@@ -1363,14 +1386,22 @@ describe("stores", () => {
 
   describe("migrateStateFile", () => {
     describe("With version 1", () => {
-      it("returns the file unchanged", () => {
+      it("returns version 2 with no opening", () => {
         const file = { version: 1, rooms: {}, valves: {} };
+        expect(migrateStateFile(file)).toEqual({ version: 2, rooms: {}, valves: {}, windows: {} });
+      });
+    });
+    describe("With version 2", () => {
+      it("returns the file unchanged", () => {
+        const file = { version: 2, rooms: {}, valves: {}, windows: {} };
         expect(migrateStateFile(file)).toEqual(file);
       });
     });
-    describe("With version 2 or no version", () => {
+    describe("With version 3 or no version", () => {
       it("throws", () => {
-        expect(() => migrateStateFile({ version: 2, rooms: {}, valves: {} })).toThrow();
+        expect(() =>
+          migrateStateFile({ version: 3, rooms: {}, valves: {}, windows: {} }),
+        ).toThrow();
         expect(() => migrateStateFile({ rooms: {}, valves: {} })).toThrow();
       });
     });

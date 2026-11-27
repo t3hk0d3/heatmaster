@@ -1,10 +1,13 @@
+import { test as fcTest } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import {
   BUILDER_NOW,
+  arbThermostatState,
   BUILDER_ROOM,
   BUILDER_SCHEDULE,
   BUILDER_VALVE,
   makeManaged,
+  makeOpening,
   makeSpec,
   makeThermostat,
   points,
@@ -110,7 +113,7 @@ function roomWorld(
 
 /** A state with only the given room's thermostat. */
 function overridden(thermostat: Thermostat): ThermostatState {
-  return { rooms: new Map([[BUILDER_ROOM, thermostat]]), valves: new Map() };
+  return { rooms: new Map([[BUILDER_ROOM, thermostat]]), valves: new Map(), windows: new Map() };
 }
 
 function command(world: World, given: ThermostatCommand, origin = API_ORIGIN): readonly Effect[] {
@@ -177,7 +180,7 @@ function entryOf(stored: StoredConfig, roomId = BUILDER_ROOM): RoomEntry | undef
 
 /** A raw state with one valve whose `sent` list is given. */
 function rawWithSent(sent: readonly unknown[]): unknown {
-  return { rooms: {}, valves: { [BUILDER_VALVE]: { room: BUILDER_ROOM, sent } } };
+  return { rooms: {}, valves: { [BUILDER_VALVE]: { room: BUILDER_ROOM, sent } }, windows: {} };
 }
 
 function rawSent(mode: string, setpoint: number, at: number): unknown {
@@ -311,7 +314,11 @@ describe("thermostat", () => {
           expect(effects).toEqual([
             {
               kind: "saveThermostats",
-              state: { rooms: new Map([[BUILDER_ROOM, expected]]), valves: new Map() },
+              state: {
+                rooms: new Map([[BUILDER_ROOM, expected]]),
+                valves: new Map(),
+                windows: new Map(),
+              },
             },
           ]);
         });
@@ -717,6 +724,7 @@ describe("thermostat", () => {
         const state: ThermostatState = {
           rooms: new Map([[BUILDER_ROOM, makeThermostat({ target: Number.NaN })]]),
           valves: new Map(),
+          windows: new Map(),
         };
         expect(() => thermostatStateToRaw(state)).toThrow(RangeError);
         expect(() => thermostatStateToRaw(state)).toThrow(BUILDER_ROOM);
@@ -735,6 +743,7 @@ describe("thermostat", () => {
         const state: ThermostatState = {
           rooms: new Map(),
           valves: new Map([[BUILDER_VALVE, expectation]]),
+          windows: new Map(),
         };
         expect(() => thermostatStateToRaw(state)).toThrow(RangeError);
         expect(() => thermostatStateToRaw(state)).toThrow(BUILDER_VALVE);
@@ -779,6 +788,7 @@ describe("thermostat", () => {
             [BUILDER_VALVE, confirmed],
             [V2, takenOver],
           ]),
+          windows: new Map(),
         };
         const raw: unknown = JSON.parse(JSON.stringify(thermostatStateToRaw(state)));
         expect(thermostatStateFromRaw(raw)).toEqual(state);
@@ -786,7 +796,7 @@ describe("thermostat", () => {
     });
     describe("With no valves key", () => {
       it("valves is an empty map", () => {
-        expect(thermostatStateFromRaw({ rooms: {} })?.valves).toEqual(new Map());
+        expect(thermostatStateFromRaw({ rooms: {}, windows: {} })?.valves).toEqual(new Map());
       });
     });
     describe("With five sent entries", () => {
@@ -801,7 +811,7 @@ describe("thermostat", () => {
     });
     describe("With a valve without room", () => {
       it("undefined", () => {
-        const raw = { rooms: {}, valves: { [BUILDER_VALVE]: { sent: [] } } };
+        const raw = { rooms: {}, valves: { [BUILDER_VALVE]: { sent: [] } }, windows: {} };
         expect(thermostatStateFromRaw(raw)).toBeUndefined();
       });
     });
@@ -825,6 +835,7 @@ describe("thermostat", () => {
               since: NOW_MS,
             },
           },
+          windows: {},
         };
         expect(thermostatStateFromRaw(raw)).toBeUndefined();
       });
@@ -840,19 +851,67 @@ describe("thermostat", () => {
               since: NOW_MS,
             },
           },
+          windows: {},
         };
         expect(thermostatStateFromRaw(raw)).toBeUndefined();
       });
     });
     describe("With an unknown key", () => {
       it("undefined", () => {
-        expect(thermostatStateFromRaw({ rooms: {}, valves: {}, extra: true })).toBeUndefined();
+        expect(
+          thermostatStateFromRaw({ rooms: {}, valves: {}, windows: {}, extra: true }),
+        ).toBeUndefined();
       });
     });
-    describe("With an empty object", () => {
+    describe("With only an empty windows object", () => {
       it("EMPTY_THERMOSTAT_STATE", () => {
-        expect(thermostatStateFromRaw({})).toEqual(EMPTY_THERMOSTAT_STATE);
+        expect(thermostatStateFromRaw({ windows: {} })).toEqual(EMPTY_THERMOSTAT_STATE);
       });
+    });
+  });
+
+  describe("thermostatStateFromRaw", () => {
+    describe("With a windows entry", () => {
+      it("reads the opening", () => {
+        const raw = {
+          rooms: {},
+          valves: {},
+          windows: {
+            [BUILDER_ROOM]: { started_at: NOW_MS - 2 * 60 * MINUTE_MS, limit_at: NOW_MS },
+          },
+        };
+        expect(thermostatStateFromRaw(raw)?.windows).toEqual(
+          new Map([
+            [
+              BUILDER_ROOM,
+              makeOpening({ startedAt: NOW_MS - 2 * 60 * MINUTE_MS, limitAt: NOW_MS }),
+            ],
+          ]),
+        );
+      });
+    });
+    describe("With windows missing", () => {
+      it("is unreadable", () => {
+        expect(thermostatStateFromRaw({ rooms: {}, valves: {} })).toBeUndefined();
+      });
+    });
+    describe("With an opening whose started_at is -1", () => {
+      it("is unreadable", () => {
+        const raw = { rooms: {}, valves: {}, windows: { [BUILDER_ROOM]: { started_at: -1 } } };
+        expect(thermostatStateFromRaw(raw)).toBeUndefined();
+      });
+    });
+  });
+
+  describe("thermostatStateToRaw", () => {
+    describe("Round trip", () => {
+      fcTest.prop([arbThermostatState])(
+        "reading what it writes gives the same state (property)",
+        (state) => {
+          const raw: unknown = JSON.parse(JSON.stringify(thermostatStateToRaw(state)));
+          expect(thermostatStateFromRaw(raw)).toEqual(state);
+        },
+      );
     });
   });
 });

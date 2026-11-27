@@ -434,7 +434,7 @@ function nextThermostats(
     const ids = new Set(resolved.map((room) => room.id));
     for (const roomId of [...rooms.keys()]) if (!ids.has(roomId)) rooms.delete(roomId);
   }
-  return rooms.size === state.rooms.size ? state : { rooms, valves: state.valves };
+  return rooms.size === state.rooms.size ? state : { ...state, rooms };
 }
 
 /** A valve's memory marked by age, with this tick's desired schedule values noted. */
@@ -549,7 +549,7 @@ function committed(
       changed = true;
     }
   }
-  return changed ? { rooms, valves } : given;
+  return changed ? { ...given, rooms, valves } : given;
 }
 
 function roomProblems(plan: RoomPlan, world: World): readonly Problem[] {

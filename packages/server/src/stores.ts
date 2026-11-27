@@ -48,7 +48,7 @@ import { consoleErrorLog, HeatmasterError, type ErrorLog } from "./errors.ts";
 export const CONFIG_FILE_VERSION = 3;
 export const LEDGER_FILE_VERSION = 1;
 export const PACING_FILE_VERSION = 1;
-export const STATE_FILE_VERSION = 1;
+export const STATE_FILE_VERSION = 2;
 export const COPY_FILE_VERSION = 1;
 /** The readable copy and the four before it. */
 export const COPY_GENERATIONS = 5;
@@ -169,7 +169,12 @@ export function migrateCopyFile(file: File): File {
 }
 
 export function migrateStateFile(file: File): File {
-  return migrateFile(file, STATE_FILE_VERSION);
+  let migrated = migrateFile(file, STATE_FILE_VERSION);
+  if (migrated.version === 1) {
+    // Version 2 adds the rooms' window openings; version 1 had none.
+    migrated = { ...migrated, version: 2, windows: {} };
+  }
+  return migrated;
 }
 
 function errnoCode(error: unknown): string | undefined {

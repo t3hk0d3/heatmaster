@@ -1294,6 +1294,7 @@ describe("adopt", () => {
           valves: new Map([
             [V, makeExpectation({ sent: [sent(heat(22), nowMs + DAY_MS, seen("auto", 19))] })],
           ]),
+          windows: new Map(),
         };
         const future: ThermostatState = {
           ...state,
@@ -1313,6 +1314,7 @@ describe("adopt", () => {
           valves: new Map([
             [V, makeExpectation({ sent: [sent(heat(22), nowMs - MINUTE_MS, seen("auto", 19))] })],
           ]),
+          windows: new Map(),
         };
         expect(clampThermostatState(state, nowMs)).toBe(state);
       });

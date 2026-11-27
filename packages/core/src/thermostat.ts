@@ -26,6 +26,7 @@ import {
   sameThermostat,
   sameWanted,
 } from "./thermostat-rules.ts";
+import type { WindowOpening } from "./window.ts";
 
 export {
   SCHEDULE,
@@ -110,14 +111,19 @@ export type ValveExpectation = Readonly<{
   previous: SavedWeek | undefined;
 }>;
 
-/** Everything `state.json` holds; `valves` is by valve id. */
+/** Everything `state.json` holds; `valves` is by valve id, `windows` by room id. */
 export type ThermostatState = Readonly<{
   rooms: Thermostats;
   valves: ReadonlyMap<string, ValveExpectation>;
+  windows: ReadonlyMap<string, WindowOpening>;
 }>;
 
-/** Every room on its schedule, no valve expectation. */
-export const EMPTY_THERMOSTAT_STATE: ThermostatState = { rooms: new Map(), valves: new Map() };
+/** Every room on its schedule, no valve expectation, no opening. */
+export const EMPTY_THERMOSTAT_STATE: ThermostatState = {
+  rooms: new Map(),
+  valves: new Map(),
+  windows: new Map(),
+};
 
 /** How a change ends; `durationMs` undefined: the room's duration. */
 export type EndChoice = Readonly<{ rule: EndRule; durationMs: number | undefined }>;
@@ -220,7 +226,7 @@ export function thermostatCommand(
   const thermostats = new Map(state.rooms);
   if (next.kind === "schedule") thermostats.delete(roomId);
   else thermostats.set(roomId, next);
-  return [{ kind: "saveThermostats", state: { rooms: thermostats, valves: state.valves } }];
+  return [{ kind: "saveThermostats", state: { ...state, rooms: thermostats } }];
 }
 
 type WindowChoice = Extract<RoomChoice, { kind: `window_${string}` }>;
@@ -399,6 +405,25 @@ function weekToRaw(week: SavedWeek | undefined): Record<string, unknown> | undef
   return week === undefined ? undefined : { key: week.key, values: [...week.values] };
 }
 
+function openingToRaw(opening: WindowOpening): Record<string, unknown> {
+  return {
+    started_at: opening.startedAt,
+    ...optional("temperature_since", opening.temperatureSince),
+    ...optional("temperature_ended_at", opening.temperatureEndedAt),
+    ...optional("suspended_at", opening.suspendedAt),
+    ...optional("limit_at", opening.limitAt),
+    ...optional("dropped_at", opening.droppedAt),
+    ...optional("ended_at", opening.endedAt),
+  };
+}
+
+/** `raw` itself; a RangeError naming `what` when it holds an instant the reader refuses. */
+function instantsRaw(raw: Record<string, unknown>, what: string): Record<string, unknown> {
+  const bad = Object.values(raw).some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0);
+  if (bad) throw new RangeError(`the opening of ${what} holds an instant that is not valid`);
+  return raw;
+}
+
 /** Every number in `raw`, at any depth, is finite. */
 function allFinite(raw: unknown): boolean {
   if (typeof raw === "number") return Number.isFinite(raw);
@@ -414,9 +439,9 @@ function finiteRaw(raw: Record<string, unknown>, what: string): Record<string, u
 }
 
 /**
- * `{ rooms, valves }` of `state.json`; the store adds `version`. Keys left undefined are left out.
- * Throws a RangeError for a state holding a number that is not finite (JSON would write `null`,
- * and the file could not be read back).
+ * `{ rooms, valves, windows }` of `state.json`; the store adds `version`. Keys left undefined are
+ * left out. Throws a RangeError for a state holding a number that is not finite (JSON would write
+ * `null`, and the file could not be read back), or an opening holding a negative instant.
  */
 export function thermostatStateToRaw(state: ThermostatState): Record<string, unknown> {
   const rooms: Record<string, unknown> = {};
@@ -429,7 +454,11 @@ export function thermostatStateToRaw(state: ThermostatState): Record<string, unk
   for (const [valveId, expectation] of state.valves) {
     valves[valveId] = finiteRaw(expectationToRaw(expectation), `valve ${valveId}`);
   }
-  return { rooms, valves };
+  const windows: Record<string, unknown> = {};
+  for (const [roomId, opening] of state.windows) {
+    windows[roomId] = instantsRaw(openingToRaw(opening), `room ${roomId}`);
+  }
+  return { rooms, valves, windows };
 }
 
 /** Thrown inside the reader on anything not well formed; never leaves this module. */
@@ -459,6 +488,12 @@ function objectOf(
 
 function finite(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : malformed();
+}
+
+/** An instant: a finite number of epoch milliseconds, not negative. */
+function instant(value: unknown): number {
+  const ms = finite(value);
+  return ms >= 0 ? ms : malformed();
 }
 
 function text(value: unknown): string {
@@ -556,6 +591,30 @@ function expectationFromRaw(value: unknown): ValveExpectation {
   };
 }
 
+function openingFromRaw(value: unknown): WindowOpening {
+  const obj = objectOf(
+    value,
+    ["started_at"],
+    [
+      "temperature_since",
+      "temperature_ended_at",
+      "suspended_at",
+      "limit_at",
+      "dropped_at",
+      "ended_at",
+    ],
+  );
+  return {
+    startedAt: instant(obj.started_at),
+    temperatureSince: maybe(obj.temperature_since, instant),
+    temperatureEndedAt: maybe(obj.temperature_ended_at, instant),
+    suspendedAt: maybe(obj.suspended_at, instant),
+    limitAt: maybe(obj.limit_at, instant),
+    droppedAt: maybe(obj.dropped_at, instant),
+    endedAt: maybe(obj.ended_at, instant),
+  };
+}
+
 /** An object keyed by id, each item read; a missing one is an empty map. */
 function mapFromRaw<T>(value: unknown, read: (value: unknown) => T): ReadonlyMap<string, T> {
   if (value === undefined) return new Map();
@@ -564,15 +623,17 @@ function mapFromRaw<T>(value: unknown, read: (value: unknown) => T): ReadonlyMap
 }
 
 /**
- * Reads `{ rooms, valves }` of `state.json`; undefined for anything not well formed. A missing
- * `rooms` or `valves` key is an empty map.
+ * Reads `{ rooms, valves, windows }` of `state.json`; undefined for anything not well formed,
+ * including a missing `windows` key or an opening's instant that is negative. A missing `rooms` or
+ * `valves` key is an empty map.
  */
 export function thermostatStateFromRaw(raw: unknown): ThermostatState | undefined {
   try {
-    const doc = objectOf(raw, [], ["rooms", "valves"]);
+    const doc = objectOf(raw, ["windows"], ["rooms", "valves"]);
     return {
       rooms: mapFromRaw(doc.rooms, thermostatFromRaw),
       valves: mapFromRaw(doc.valves, expectationFromRaw),
+      windows: mapFromRaw(doc.windows, openingFromRaw),
     };
   } catch (error) {
     if (error === MALFORMED) return undefined;

@@ -332,7 +332,7 @@ function seedFiles(dataDir: string, publicDir: string, seed: Seed): void {
   } else if (seed.state !== undefined) {
     writeFileSync(
       path.join(dataDir, "state.json"),
-      JSON.stringify({ version: 1, ...thermostatStateToRaw(seed.state) }),
+      JSON.stringify({ version: 2, ...thermostatStateToRaw(seed.state) }),
     );
   }
   if (seed.copy !== undefined) {
@@ -5782,6 +5782,7 @@ describe("runtime", () => {
               },
             ],
           ]),
+          windows: new Map(),
         };
         await boot({ seed: { ...managedSeed([A]), state } });
         const world = tickWorlds[0];
