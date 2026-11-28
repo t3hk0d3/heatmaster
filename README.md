@@ -9,6 +9,7 @@ own web page and in Home Assistant.
 Heatmaster runs the week's schedule on each valve itself (onboard) and feeds each valve a weighted
 room temperature taken from the room's sensors in Home Assistant. Since 0.3.0 each room is also one
 thermostat, and Heatmaster sets the valves' mode (see [The room thermostat](#the-room-thermostat)).
+Since 0.4.0 a room drops to freeze protection while a window is open (see [Open windows](#open-windows)).
 Every problem it detects is shown on its page and as Home Assistant entities. It runs as a Home
 Assistant app (add-on) or as a plain container.
 
@@ -258,7 +259,8 @@ Heatmaster writes each managed valve's `frost_protection_temperature`: the room'
 
 The room states, and for each valve the state Heatmaster saw it confirm and the writes sent since,
 are kept in `state.json` in `/data`. A missing file means every room is on its schedule and every
-valve is taken over. A change made on a valve is saved before any valve is written for it, so a
+valve is taken over. Since 0.4.0 the file is version 2 and also holds each room's open window (see
+[Open windows](#open-windows)). A change made on a valve is saved before any valve is written for it, so a
 failed save is tried again with the same report on the next tick, and meanwhile no mode or setpoint
 is written; schedules, temperature pushes and frost protection go on.
 
@@ -267,6 +269,195 @@ nothing, and a problem says so. It does not overwrite the file. The page then of
 (`POST /api/thermostats/reset`): the unreadable file is set aside, an empty state is saved, every
 room goes back to its schedule and every valve is taken over. Start over is refused while the file
 can be read.
+
+## Open windows
+
+Since 0.4.0 a room drops into **open-window mode** while a window is open, and goes back to what its
+thermostat says once the window is closed. Open-window mode holds every valve of the room at freeze
+protection: `heat` at the room's `frost` preset (7 °C unless changed), limited to each valve's range.
+It does not touch the room's thermostat, which keeps running underneath: when the mode ends, the
+valves are given what the thermostat says at that moment. An override that ran out meanwhile is not
+revived. A room whose thermostat is `off` gets no window writes; its opening is still tracked.
+
+### What opens a window
+
+- **Contacts.** A room lists window contacts, which are `binary_sensor` entities of Home Assistant:
+  `on` is open, `off` is closed, anything else is unknown. Any open contact opens the window; all
+  contacts closed closes it. A contact may be listed in more than one room. Names do not tell a window
+  from a door, so only list the ones you want; an internal door is simply not listed.
+- **A fast fall of the temperature**, for a window opened too little for its contact to notice (or a
+  room with no contact). Each of the room's temperature sensors is watched on its own, and any one
+  can trigger. On a new reading of a fresh sensor, Heatmaster looks at the highest value that sensor
+  had in force at any moment of the last `within_min` minutes (the value in force `within_min` ago
+  counts). If the reading is at least `drop_c` below it, the room enters the mode. The defaults,
+  0.4 °C in 20 minutes, come from one room's sensor: on the night of a window opened at 08:08 it
+  triggered at 08:22, 14 minutes in, while the usual cooling of that room never reaches 0.4 °C in 20
+  minutes.
+
+Details:
+
+- **Debounce.** The mode starts when a contact has been open for `open_debounce_s` (30 s) and ends
+  when all have been closed for `close_debounce_s` (60 s). The contact that flickers `off`, `on`, `off`
+  within 100 ms when a window closes is absorbed by that.
+- **An unavailable or unknown contact** keeps its last known state for `contact_unavailable_min` (30
+  minutes). After that it counts as closed, and the problem `contact_unavailable` is shown. A contact
+  with no known state at all (for instance after a restart, while it is still unavailable) holds an
+  opening for that time before it counts as closed.
+- A reading is not used as a reference if it is from before the sensor's last unavailable state, or
+  from before the window closed: a drop must be new. Sensor histories are not saved, so after a start
+  a sensor's first reading only sets its reference.
+- While the mode holds the room, or is suspended, drops are not judged.
+- **How a temperature-triggered mode ends** (`temperature.end`): `fixed` (default) after
+  `fixed_min` (30 minutes), after which the room cools again and re-enters the mode if the window is
+  still open; or `stopped_falling`, once no sensor of the room has reported a lower value than its
+  previous one for `still_min` (20 minutes).
+- If a room has both, the mode lasts while either holds it.
+
+### Openings, the limit and its notification
+
+An **opening** is one episode of a window being open. It starts with the mode and ends when the
+contacts are closed and the temperature side has ended. An ended opening is remembered for the
+longest of `rejoin_min`, `within_min` and `still_min`. A temperature trigger within `rejoin_min` of
+the end of the opening joins it (the limit keeps counting from its start, so a forgotten window in a
+room with no contact still reaches the limit); a later one starts a new opening. Readings from
+before the window closed never start a new opening.
+
+An opening holds the room for at most `limit_min` (120 minutes by default, 10 minutes to 24 hours, or
+`none`). At the limit:
+
+- with `after_limit: heat` the room heats again (the thermostat's state is written); with `stay` it
+  keeps freeze protection;
+- Heatmaster creates a Home Assistant notification ("A window has been open for 2 h in <room>;
+  heating resumed"), unless `notify` is off or the room is `off`, and the room shows the problem
+  `window_open_too_long` until the opening ends;
+- the notification is dismissed when the opening ends;
+- nothing enters the mode again until the opening has ended.
+
+A limit reached while Home Assistant is down is announced once it is back. Heatmaster does not retry
+a notification that Home Assistant rejects; the problem stays either way. An opening that was
+suspended (below) runs no limit: no notification and no problem.
+
+### A person's change during an opening
+
+`manual_change` decides:
+
+- **`resume_heating`** (default). A change made on a valve, in the room's `climate` entity or through
+  the API counts, whatever value it lands on, even the room's current target. The room's thermostat
+  takes it as in [Changes made on a valve](#changes-made-on-a-valve), and the opening is
+  **suspended** until it ends: the valves get the thermostat's state at once.
+- **`ignore`.** A change on a valve is not adopted. After the 10-second settle the valve is given
+  open-window mode again, and the room's status says the change was dropped. A command from Home
+  Assistant or the page still changes the thermostat, but its valves wait until the window closes;
+  the status says so.
+
+With `action: off` a TRVZB's knob does nothing while the window holds the room, so `resume_heating`
+works there only from Home Assistant or the page; the status says so. That is why the default action
+is `frost_heat`: in `heat` a knob turn is reported and judged as usual.
+
+Heatmaster's own window writes are never taken for a person's change. They are paced like any write
+(see [What Heatmaster does to a valve](#what-heatmaster-does-to-a-valve)); a failed one is not
+counted as "does not keep its setting".
+
+### The valves' own window detection
+
+Sonoff valves have their own `open_window` function. It ignores the room's contacts and sensors, and
+two detectors in one room would fight. `valve_detection` says what Heatmaster does:
+
+- `off_when_watched` (default): in a room Heatmaster watches (it lists a contact, or temperature
+  detection is on with at least one sensor), every valve is written `open_window: OFF`;
+- `always_off`: written on every managed valve;
+- `leave`: never written. A valve is left as it is, including an OFF Heatmaster wrote earlier.
+
+The valve's original `open_window` is saved the first time Heatmaster writes it (valves joined before
+0.4.0 have none until then), and put back on release and when the room stops being watched.
+In rooms Heatmaster does not watch, the valve's own detection stays on; whether it can change the
+valve's mode there is not measured yet, and Heatmaster would take such a change for a person's.
+
+### Settings
+
+Every setting has a house default (`settings.window`) and an optional value per room (the room's
+`window`); the room's value wins. They are edited in the config editor; the ones marked HA are also
+entities.
+
+| Key                       | Values                                    | Default            | HA     |
+| ------------------------- | ----------------------------------------- | ------------------ | ------ |
+| `enabled`                 | on, off: window handling in the room      | on                 | switch |
+| `action`                  | `frost_heat`, `off`                       | `frost_heat`       | select |
+| `target`                  | a preset name, or °C (4 to 35)            | `frost`            |        |
+| `open_debounce_s`         | seconds, 0 to 600                         | 30                 |        |
+| `close_debounce_s`        | seconds, 0 to 1800                        | 60                 |        |
+| `contact_unavailable_min` | minutes, 1 to 1440                        | 30                 |        |
+| `temperature.enabled`     | on, off                                   | on                 | switch |
+| `temperature.drop_c`      | 0.1 to 3, step 0.1                        | 0.4                |        |
+| `temperature.within_min`  | minutes, 5 to 120                         | 20                 |        |
+| `temperature.end`         | `fixed`, `stopped_falling`                | `fixed`            | select |
+| `temperature.fixed_min`   | minutes, 5 to 240                         | 30                 |        |
+| `temperature.still_min`   | minutes, 5 to 120                         | 20                 |        |
+| `temperature.rejoin_min`  | minutes, 0 to 240                         | 60                 |        |
+| `limit_min`               | minutes, 10 to 1440, or `none`            | 120                | select |
+| `after_limit`             | `heat`, `stay`                            | `heat`             |        |
+| `notify`                  | on, off                                   | on                 |        |
+| `manual_change`           | `resume_heating`, `ignore`                | `resume_heating`   | select |
+| `valve_detection`         | `off_when_watched`, `always_off`, `leave` | `off_when_watched` |        |
+
+An out-of-range value, or a preset that does not exist, is a config error like any other setting.
+
+```yaml
+settings:
+  window:
+    limit_min: 90
+    manual_change: ignore
+rooms:
+  bedroom:
+    contacts:
+      - ref: ha:binary_sensor.bedroom_window_contact
+    window:
+      temperature:
+        drop_c: 0.6
+```
+
+At most 16 contacts per room. Contacts are set in the config editor, or with the label
+`heatmaster_window_sensor` (see [Labels](#labels)). The page names a contact by its entity id for now.
+
+### In Home Assistant and on the page
+
+Each room's device gets, with MQTT discovery:
+
+- **`binary_sensor.heatmaster_<room id>_window`** ("Window", device class `window`): on while
+  open-window mode holds the room's valves. Attributes: `triggers` (`contact`, `temperature`),
+  `open_contacts`, `since`, `suspended` and `limit_reached`.
+- **`switch.heatmaster_<room id>_window_enabled`** and **`..._window_temperature`**: window handling,
+  and detection by temperature.
+- **`select.heatmaster_<room id>_window_action`**, **`..._window_end`**, **`..._window_limit`**
+  (30 min, 1 h, 2 h, 4 h, 8 h, none; a room with another limit shows an unknown state) and
+  **`..._window_manual_change`**. Each is a config change, like "Override ends".
+- The room's **`climate`** entity has `hvac_action: off` while the mode holds the room, and the
+  attribute `window`: `open`, `suspended`, `limit_reached` or none.
+- A notification `heatmaster_window_<room id>` at the limit. Heatmaster forwards nothing to phones; an
+  automation of yours can forward Home Assistant's.
+
+The page's status line for a room gives the window state: "Window open since 10:02", "Window:
+temperature falling since 10:02", "Window open, heating resumed after 2 h", "Window open, heating on
+by request", "Window open: the change at the valve was dropped", and the notes above. The room's
+`window` and `contacts` keys are listed in the config editor.
+
+### While Home Assistant is down, and at a restart
+
+Contacts and sensors are unknown while the link is down. Openings are then kept as they are: no new
+one, none ended by a contact. The limit and the `fixed` end still run on the clock. Contacts are read
+before any window write at a start. A saved opening whose contacts are now closed ends through the
+debounce; one still open continues with its saved start.
+
+The openings are kept in `state.json`, which is at version 2 since 0.4.0.
+
+Known limits of windows:
+
+- A Heatmaster write still in flight when a valve moves to another area may be taken for a person's
+  change in the new room.
+- Window writes have no priority in the write budget: with an empty bucket one waits for a token, up
+  to 30 minutes.
+- The drop rule is tuned on one room's sensor; others may report differently. The values are settings.
+- The valves' own window detection in rooms Heatmaster does not watch stays on (see above).
 
 ## Example config
 
@@ -359,6 +550,7 @@ runs.
 | `heatmaster_ignore`        | area          | The area is no room. Read only; you create and set it.                                                                 |
 | `heatmaster_schedule_<id>` | area          | The area's room uses schedule `<id>` (a `-` in the id becomes `_`). Named "Heatmaster: <name>". Heatmaster creates it. |
 | `heatmaster_temp_sensor`   | sensor entity | The entity is a temperature sensor of its room.                                                                        |
+| `heatmaster_window_sensor` | binary sensor | The entity is a window contact of its room (since 0.4.0). Same rules as `heatmaster_temp_sensor`.                      |
 | `room_temperature_sensor`  | sensor entity | Your own automation's label. Read once per room by the sensor import, never written.                                   |
 
 **Config to Home Assistant.** Heatmaster creates one label per schedule (it creates the name
@@ -397,6 +589,11 @@ it, and it is never deleted.
 
 A failed label write shows a problem and never blocks valve control; each label command times out
 after 10 seconds.
+
+Window contacts follow the same rules with the label `heatmaster_window_sensor` on a `binary_sensor`
+(the entity's area, else its device's area); the limit is 16 contacts per room. Problems:
+`contact_label_unused` for a labelled contact no room can take, and a listed contact that Home
+Assistant does not know is reported like a missing sensor.
 
 Known limits:
 
@@ -468,6 +665,19 @@ Nothing else needs to change: the sensors keep their `heatmaster_temp_sensor` la
   person's change: it becomes the room's override. The room's `origin` says which valve it was.
 - The problem `valve_not_auto` is gone: Heatmaster sets the mode, so a valve not in `auto` is
   no longer reported.
+
+## Upgrading to 0.4.0
+
+- Window handling is on in every room with the defaults. Temperature-drop detection is on, so every
+  room with a sensor can enter open-window mode; no room has contacts yet.
+- The valves' own window detection is switched off (`open_window: OFF`) in every room with a sensor
+  (`valve_detection: off_when_watched`). Valves in other rooms are left alone. Set `valve_detection:
+leave` to keep it as it is.
+- `state.json` moves to version 2 by itself.
+- **There is no downgrade to 0.3.x without restoring the app's backup.** 0.3.x cannot read a
+  version 2 `state.json`, the `open_window` originals in the ledger, or `settings.window` in the
+  config; it would show `state.json` as unreadable. Take a backup before upgrading.
+- Labels: Heatmaster now also owns `heatmaster_window_sensor`.
 
 ## Pending valves
 

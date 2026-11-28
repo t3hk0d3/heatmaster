@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0
+
+- A room drops into open-window mode while a window is open: its valves are held in `heat` at the `frost` preset
+  (or in `off`, setting `action`). The room's thermostat keeps running underneath; when the window is closed the
+  valves get what it says then. Any open contact opens the window, all closed close it, after a debounce
+  (30 s to open, 60 s to close).
+- Contacts are `binary_sensor` entities listed in a room's `contacts`, or labelled `heatmaster_window_sensor`, kept
+  in step with the config both ways like temperature sensors. A contact unavailable for 30 minutes counts as closed
+  and shows the problem `contact_unavailable`.
+- A fast fall of a room's temperature (0.4 °C within 20 minutes on one sensor, by default) also opens the window.
+  It ends after 30 minutes (`fixed`) or when the temperature stopped falling (`stopped_falling`). A new trigger
+  within 60 minutes joins the same opening.
+- An opening holds a room for at most 2 hours by default (`limit_min`). Then the room heats again (or stays at
+  freeze protection, `after_limit`), a Home Assistant notification is created and the problem
+  `window_open_too_long` is shown, until the opening ends. A limit reached while Home Assistant is down is announced
+  once it is back. A notification Home Assistant rejects is not retried.
+- A person's change during an opening (`manual_change`): `resume_heating` (default) counts whatever value it lands
+  on, applies it to the thermostat and suspends the opening, which then runs no limit; `ignore` gives the valve
+  open-window mode again, and a command from Home Assistant or the page waits until the window closes. With
+  `action: off` a TRVZB's knob does nothing.
+- The valves' own window detection is switched off in rooms Heatmaster watches (`valve_detection`: `off_when_watched`,
+  `always_off`, `leave`). `leave` leaves a valve as it is, including an OFF written earlier.
+- Every window behaviour is a setting for the house (`settings.window`) and for a room (`window`), 18 in all.
+- Home Assistant: per room a `binary_sensor` "Window" (attributes `triggers`, `open_contacts`, `since`, `suspended`,
+  `limit_reached`), two switches and four selects, and the attribute `window` on the climate entity.
+  The page shows the window in the room's status.
+- **Upgrade:** detection by temperature is on and the valves' own detection is off in every room with a sensor.
+  `state.json` moves to version 2 by itself. **A downgrade to 0.3.x needs the app's backup restored:** 0.3.x cannot
+  read `state.json` version 2, the saved `open_window` originals or `settings.window`.
+- Known limits: a Heatmaster write in flight when a valve moves to another area may be taken for a person's change
+  in the new room; window writes have no priority in the write budget (up to 30 minutes with an empty one); the drop
+  rule is tuned on one room's sensor; the valves' own detection in rooms Heatmaster does not watch may change a
+  valve's mode (not measured). Contacts are named by entity id on the page.
+
 ## 0.3.1
 
 - After a start, a valve whose request budget is empty is still asked to report once, without a token, at most once

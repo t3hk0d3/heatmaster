@@ -8,11 +8,15 @@ Zigbee2MQTT; since 0.3.0 each room is one thermostat. The full documentation is 
 - [The room thermostat](https://github.com/t3hk0d3/heatmaster#the-room-thermostat): room states, end
   rules, the climate entity and its two selects, changes made on a valve, frost protection,
   `state.json` and Start over
+- [Open windows](https://github.com/t3hk0d3/heatmaster#open-windows): contacts, the
+  `heatmaster_window_sensor` label, detection by a fall of the temperature, the limit and its
+  notification, a person's change during an opening, the valves' own detection and the settings
 - [Install as an app](https://github.com/t3hk0d3/heatmaster#install-as-an-app)
 - [First run](https://github.com/t3hk0d3/heatmaster#first-run)
 - [Labels](https://github.com/t3hk0d3/heatmaster#labels)
 - [Upgrading from 0.1](https://github.com/t3hk0d3/heatmaster#upgrading-from-01)
 - [Upgrading to 0.3.0](https://github.com/t3hk0d3/heatmaster#upgrading-to-030)
+- [Upgrading to 0.4.0](https://github.com/t3hk0d3/heatmaster#upgrading-to-040)
 - [Pending valves](https://github.com/t3hk0d3/heatmaster#pending-valves)
 - [What Heatmaster does to a valve](https://github.com/t3hk0d3/heatmaster#what-heatmaster-does-to-a-valve)
 - [Rollback](https://github.com/t3hk0d3/heatmaster#rollback)
@@ -24,6 +28,12 @@ Zigbee2MQTT; since 0.3.0 each room is one thermostat. The full documentation is 
 `heat`, so a valve left in an override stays at its temperature while the app is stopped, until the app
 runs again. Releasing a valve puts back its mode, its frost protection and, only if its original
 mode was `heat`, its setpoint. Valves joined before 0.3.0 keep theirs.
+
+**Windows.** From 0.4.0 a room whose window is open (a listed contact, or a fast fall of its
+temperature) is held at freeze protection and goes back to its thermostat when the window is closed.
+On upgrade, detection by temperature is on and the valves' own window detection is switched off in
+every room with a sensor. `state.json` moves to version 2, so **a downgrade to 0.3.x needs the app's
+backup restored**.
 
 **Who can open the page.** Only administrators: the Supervisor refuses the ingress of an app with
 `panel_admin` to every other user.

@@ -31,6 +31,42 @@ Known follow-ups left after plans 1 and 2 (0.2.0). None blocks daily use. Each l
   whose value is not in the new week, until the 24 h schedule re-assert. The simulator's P-own leaves these out (`zbtResidual` in
   `packages/core/test/sim/faults.ts`). Reading the valve's days back would end both, if a firmware ever reports them.
 
+## Windows (plan 3b)
+
+Known follow-ups left after 0.4.0.
+
+- **Measurements pending (M18–M20).** M18 and M19: a knob turn in `heat` and in `off` on the TRVZB and TRV-ZBT (the
+  window writes and `resume_heating` assume the 3a reports). M20: whether a valve's own window detection in a room
+  Heatmaster does not watch changes its mode (3a would adopt that as a person's change). Docs change if they differ.
+- **Pre-existing 3a simulator failure (P-keep).** Seed 1481946975 fails on `main` too: "place valve 0 in room a, knob
+  valve 1 +1, edit alt 0, edit default 0, turn valve 0 +1" ends with "b is override 20, the turn left override 17.5".
+  Needs its own diagnosis.
+- **P-own exclusion is sticky.** The simulator's P-own leaves out a valve that changed rooms while a write to it was
+  unconfirmed, for the rest of the run; a valve removed and re-added to the same room with a write in flight is not
+  covered. The behaviour itself is a known limit (README).
+- **Contact friendly names on the page.** `StateView` carries no entity names, so contacts show as entity ids.
+  Send names.
+- **Window writes have no pacing priority** (up to 30 minutes with an empty bucket). Give freeze protection a token first.
+- **Drop rule tuned on one room.** Check other rooms' sensors (0.2 °C steps, only on a change) and adjust defaults.
+- **Notices.** A pre-`try` failure in a notice is swallowed silently; no test for a stalled dismiss, the `stay` text,
+  the Russian `stay` text, the minutes form or a notify timeout; `notify` recomputes the room's name at execution and
+  can warn "room unknown" misleadingly.
+- **Behaviour edges.** A limit set under 30 s shows as "0 min"; `rejoin_min` below `within_min` is covered by the
+  kept-record rule but not validated; a rejoin keeps the old `startedAt` (the "command waits" note is cosmetic);
+  a never-reported new contact settles for 30 minutes without a restart; a contact sharing a device with a sensor may
+  still be polled; `knob_does_nothing` names the TRVZB for every model; a repeated `dismissed` on disabling an ended
+  past-limit opening; `limitReached` deferred while the thermostat is `off` or `notify` is off (fires on the first
+  live step after either changes); trails are not clamped on a clock jump back.
+- **Status.** `FROZEN_VERDICT` shows the trigger `contact` for every contact room while frozen or settling; the `ha_link_missing`
+  data key says `sensor` for a contact; the English time is 12-hour and the Russian "через 2 ч" reads oddly.
+- **Code.** `CONTACT_PREFIX`, `SENSOR_PREFIX` and the `"ha:"` literal are repeated in `change.ts`, `labels.ts` and
+  `label-sync.ts`; `committed(prune)` does two jobs; the sensor `with` rebuild in labels finds by ref;
+  `entityLabels` has no doc comment; a `const window` shadows the global in the web code; `binary_sensor.*` is always
+  treated as a contact in the refresh.
+- **Tests.** The simulator's scenes generate no contacts; the config's window settings have no property test; no
+  live-restart test with an open contact keeping `startedAt`; no test that a notice is not repeated on the next tick;
+  the `ignore` knob-back test does not assert the republish after the settle.
+
 ## Release process
 
 - The Supervisor sees a new version in `packaging/app/config.yaml` before its image exists (404). The release workflow
