@@ -51,6 +51,7 @@ import {
   TICK_INTERVAL_MS,
   createRuntime,
   executeEffects,
+  windowNotice,
   type ApplyOptions,
   type EffectContext,
   type HeatmasterRuntime,
@@ -5537,8 +5538,17 @@ describe("runtime", () => {
         const notice = ha.notices().at(0);
         expect(notice?.title).toBe(`Окно открыто: ${roomName}`);
         expect(notice?.message).toBe(
-          `Окно открыто уже 2 ч в ${roomName}; отопление снова включено.`,
+          `Окно открыто уже 2 ч: ${roomName}; отопление снова включено.`,
         );
+      });
+    });
+
+    describe("windowNotice in Russian with afterLimit stay", () => {
+      it("names the room after a colon, so its name is not declined", () => {
+        expect(windowNotice("ru", "Кабинет", 30 * MINUTE, "stay")).toEqual({
+          title: "Окно открыто: Кабинет",
+          message: "Окно открыто уже 30 мин: Кабинет; защита от замерзания сохранена.",
+        });
       });
     });
 

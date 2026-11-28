@@ -561,7 +561,7 @@ export function windowNotice(
   if (language === "ru") {
     return {
       title: `Окно открыто: ${roomName}`,
-      message: `Окно открыто уже ${limit} в ${roomName}; ${
+      message: `Окно открыто уже ${limit}: ${roomName}; ${
         afterLimit === "stay" ? "защита от замерзания сохранена" : "отопление снова включено"
       }.`,
     };

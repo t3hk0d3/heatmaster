@@ -687,6 +687,24 @@ describe("ha-link", () => {
       });
     });
 
+    describe("With a watched contact beside the sensor", () => {
+      it("the polls never ask Home Assistant for the contact", async () => {
+        const window = "binary_sensor.window";
+        const w = await world({
+          watch: [TEMP, window],
+          seed: (ha) => {
+            seed(ha);
+            ha.setState(window, "off", {}, T);
+          },
+        });
+        await until(() => {
+          if (w.ha.requests().length < 6) w.clock.advance(HA_POLL_MS);
+          expect(w.ha.requests().length).toBeGreaterThanOrEqual(6);
+        });
+        expect(w.ha.requests()).not.toContain(`GET /api/states/${window}`);
+      });
+    });
+
     describe("With nothing different at a poll", () => {
       it("changed is not sent", async () => {
         const w = await world();

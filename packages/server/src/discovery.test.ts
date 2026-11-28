@@ -579,6 +579,17 @@ describe("discovery", () => {
           value_template: "{{ value_json.window }}",
         });
       });
+      it("gives the window binary_sensor the attributes trigger, open contacts, since, suspended and limit_reached", () => {
+        expect(config.components.window).toMatchObject({
+          json_attributes_topic: "heatmaster/rooms/a/state",
+          json_attributes_template:
+            '{{ {"triggers": value_json.window_triggers, ' +
+            '"open_contacts": value_json.window_open_contacts, ' +
+            '"since": value_json.window_since, ' +
+            '"suspended": value_json.window_state == "suspended", ' +
+            '"limit_reached": value_json.window_state == "limit_reached"} | tojson }}',
+        });
+      });
       it("adds the two switches with their command topics", () => {
         expect(config.components.window_enabled).toMatchObject({
           platform: "switch",
@@ -669,6 +680,9 @@ describe("discovery", () => {
         expect(state.window_triggers).toEqual(["contact", "temperature"]);
         expect(state.window_since).toBe("2026-11-27T10:00:00.000Z");
       });
+      it("sets window_open_contacts to the open contacts' entity ids", () => {
+        expect(state.window_open_contacts).toEqual(["binary_sensor.w"]);
+      });
     });
     describe("With the room's limit 90 min", () => {
       it("sets window_limit null", () => {
@@ -699,6 +713,9 @@ describe("discovery", () => {
       it("sets window_triggers empty and window_since null", () => {
         expect(state.window_triggers).toEqual([]);
         expect(state.window_since).toBeNull();
+      });
+      it("sets window_open_contacts empty", () => {
+        expect(state.window_open_contacts).toEqual([]);
       });
     });
     describe("With an opening in each state", () => {
@@ -777,6 +794,7 @@ describe("discovery", () => {
           window_state: null,
           window_attr: null,
           window_triggers: [],
+          window_open_contacts: [],
           window_since: null,
           window_enabled: null,
           window_temperature: null,

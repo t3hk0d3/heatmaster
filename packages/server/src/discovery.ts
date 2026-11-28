@@ -185,6 +185,18 @@ const ATTRIBUTES_TEMPLATE =
   ].join(", ") +
   "} | tojson }}";
 
+/** The window binary_sensor's attributes (spec, Home Assistant): from the room state's keys. */
+const WINDOW_ATTRIBUTES_TEMPLATE =
+  "{{ {" +
+  [
+    '"triggers": value_json.window_triggers',
+    '"open_contacts": value_json.window_open_contacts',
+    '"since": value_json.window_since',
+    '"suspended": value_json.window_state == "suspended"',
+    '"limit_reached": value_json.window_state == "limit_reached"',
+  ].join(", ") +
+  "} | tojson }}";
+
 /** A window switch: its state is the room payload's `field`, its command goes to the set topic. */
 function windowSwitch(
   room: RoomView,
@@ -346,6 +358,8 @@ function roomConfig(
         state_topic: stateTopic,
         device_class: "window",
         value_template: template("window"),
+        json_attributes_topic: stateTopic,
+        json_attributes_template: WINDOW_ATTRIBUTES_TEMPLATE,
       },
       window_enabled: windowSwitch(room, id, "window_enabled", texts.windowEnabled),
       window_temperature: windowSwitch(room, id, "window_temperature", texts.windowTemperature),
@@ -534,6 +548,7 @@ function windowPayload(room: RoomView, texts: EntityTexts): Record<string, unkno
     window_attr:
       opening === undefined ? null : opening.state === "dropped" ? "open" : opening.state,
     window_triggers: opening?.triggers ?? [],
+    window_open_contacts: (opening?.openContacts ?? []).map((ref) => ref.replace(/^ha:/, "")),
     window_since: isoOrNull(opening?.since),
     window_enabled: settings === undefined ? null : onOff(settings.enabled),
     window_temperature: settings === undefined ? null : onOff(settings.temperature.enabled),

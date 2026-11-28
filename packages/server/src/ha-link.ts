@@ -535,7 +535,7 @@ export function createHaLink(
     const nextContacts = new Map<string, ContactReading>();
     let differs = false;
     for (const id of watched) {
-      if (id.startsWith("binary_sensor.")) {
+      if (isContact(id)) {
         const contact = computeContact(id);
         if (contact !== undefined) nextContacts.set(id, contact);
         if (!sameContact(contact, contactView.get(id))) differs = true;
@@ -619,17 +619,22 @@ export function createHaLink(
     if (refresh()) changed();
   }
 
+  function isContact(entityId: string): boolean {
+    return entityId.startsWith("binary_sensor.");
+  }
+
   function entitiesToAsk(sensorIds: Iterable<string>): Set<string> {
     const ids = new Set<string>();
     for (const sensorId of sensorIds) for (const id of deviceMembers(sensorId)) ids.add(id);
     return ids;
   }
 
+  /** Polls the watched sensors' liveness; contacts are left out, their events say it all. */
   async function poll(): Promise<void> {
     if (polling || state !== "up" || watched.size === 0) return;
     polling = true;
     try {
-      await fetchStates(entitiesToAsk(watched));
+      await fetchStates(entitiesToAsk([...watched].filter((id) => !isContact(id))));
     } finally {
       polling = false;
     }
