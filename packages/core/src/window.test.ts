@@ -196,6 +196,34 @@ describe("window", () => {
         expect(verdictOf([C1], {}).unavailable).toEqual([]);
       });
     });
+    describe("With a contact unknown for 10 min and never seen on or off", () => {
+      const reading: ContactReading = {
+        open: undefined,
+        changedAt: NOW_MS - 10 * MINUTE_MS,
+        lastOpen: undefined,
+        lastAt: undefined,
+      };
+      it("is settling", () => {
+        expect(verdictOf([C1], { [C1]: reading }).state).toBe("settling");
+      });
+      it("does not list it as unavailable", () => {
+        expect(verdictOf([C1], { [C1]: reading }).unavailable).toEqual([]);
+      });
+    });
+    describe("With a contact unknown for 31 min and never seen on or off", () => {
+      const reading: ContactReading = {
+        open: undefined,
+        changedAt: NOW_MS - 31 * MINUTE_MS,
+        lastOpen: undefined,
+        lastAt: undefined,
+      };
+      it("is closed", () => {
+        expect(verdictOf([C1], { [C1]: reading }).state).toBe("closed");
+      });
+      it("lists it as unavailable", () => {
+        expect(verdictOf([C1], { [C1]: reading }).unavailable).toEqual([C1]);
+      });
+    });
     describe("With a contact back from unavailable showing on, changedAt 5 s ago", () => {
       it("is settling", () => {
         expect(verdictOf([C1], { [C1]: shown(true, NOW_MS - 5 * SECOND_MS) }).state).toBe(
@@ -574,6 +602,130 @@ describe("window", () => {
           NOW_MS,
         );
         expect(step.opening).toBeUndefined();
+      });
+    });
+    describe("With the house frozen and a temperature opening past its fixed time", () => {
+      const step = () => windowStep(byTemperature(31 * MINUTE_MS), input({ frozen: true }), NOW_MS);
+      it("ends its temperature side", () => {
+        expect(step().opening?.temperatureEndedAt).toBe(NOW_MS);
+      });
+      it("ends the opening of a room with no contacts", () => {
+        expect(step().opening?.endedAt).toBe(NOW_MS);
+      });
+    });
+    describe("With rejoin 0 and an opening ended 1 min ago", () => {
+      it("keeps it", () => {
+        const opening = makeOpening({
+          startedAt: NOW_MS - 30 * MINUTE_MS,
+          endedAt: NOW_MS - MINUTE_MS,
+        });
+        const step = windowStep(
+          opening,
+          input({ settings: temperatureWith({ rejoinMs: 0 }) }),
+          NOW_MS,
+        );
+        expect(step.opening).toEqual(opening);
+      });
+    });
+    describe("With rejoin 0 and a drop 1 min after a temperature end", () => {
+      const opening = makeOpening({
+        startedAt: NOW_MS - 40 * MINUTE_MS,
+        temperatureEndedAt: NOW_MS - MINUTE_MS,
+        endedAt: NOW_MS - MINUTE_MS,
+      });
+      const step = () =>
+        windowStep(
+          opening,
+          input({ settings: temperatureWith({ rejoinMs: 0 }), drop: true }),
+          NOW_MS,
+        );
+      it("starts a new opening", () => {
+        expect(step().opening).toEqual(
+          makeOpening({ startedAt: NOW_MS, temperatureSince: NOW_MS }),
+        );
+      });
+      it("holds", () => {
+        expect(step().holds).toBe(true);
+      });
+    });
+    describe("With rejoin 0 and an opening ended longer ago than within and still (20 min)", () => {
+      it("drops it", () => {
+        const opening = makeOpening({
+          startedAt: NOW_MS - HOUR_MS,
+          endedAt: NOW_MS - 21 * MINUTE_MS,
+        });
+        const step = windowStep(
+          opening,
+          input({ settings: temperatureWith({ rejoinMs: 0 }) }),
+          NOW_MS,
+        );
+        expect(step.opening).toBeUndefined();
+      });
+    });
+    describe("With a suspended opening ended by temperature 10 min ago and a new drop", () => {
+      const opening = makeOpening({
+        startedAt: NOW_MS - 50 * MINUTE_MS,
+        suspendedAt: NOW_MS - 40 * MINUTE_MS,
+        temperatureEndedAt: NOW_MS - 10 * MINUTE_MS,
+        endedAt: NOW_MS - 10 * MINUTE_MS,
+      });
+      const step = () => windowStep(opening, input({ drop: true }), NOW_MS);
+      it("rejoins it", () => {
+        expect(step().opening).toMatchObject({
+          startedAt: opening.startedAt,
+          endedAt: undefined,
+          temperatureSince: NOW_MS,
+        });
+      });
+      it("clears suspendedAt", () => {
+        expect(step().opening?.suspendedAt).toBeUndefined();
+      });
+      it("holds the room", () => {
+        expect(step().holds).toBe(true);
+      });
+    });
+    describe("With an opening past its limit ended by temperature 10 min ago and a new drop", () => {
+      const opening = makeOpening({
+        startedAt: NOW_MS - 3 * HOUR_MS,
+        limitAt: NOW_MS - HOUR_MS,
+        notifiedAt: NOW_MS - HOUR_MS,
+        temperatureEndedAt: NOW_MS - 10 * MINUTE_MS,
+        endedAt: NOW_MS - 10 * MINUTE_MS,
+      });
+      const step = () => windowStep(opening, input({ drop: true }), NOW_MS);
+      it("keeps limitAt", () => {
+        expect(step().opening?.limitAt).toBe(NOW_MS - HOUR_MS);
+      });
+      it("reports the limit again", () => {
+        expect(step().limitReached).toBe(true);
+        expect(step().opening?.notifiedAt).toBe(NOW_MS);
+      });
+    });
+    describe("With an opening past its limit rejoined while the room is off", () => {
+      it("clears notifiedAt, so a later step reports the limit", () => {
+        const opening = makeOpening({
+          startedAt: NOW_MS - 3 * HOUR_MS,
+          limitAt: NOW_MS - HOUR_MS,
+          notifiedAt: NOW_MS - HOUR_MS,
+          temperatureEndedAt: NOW_MS - 10 * MINUTE_MS,
+          endedAt: NOW_MS - 10 * MINUTE_MS,
+        });
+        const step = windowStep(opening, input({ drop: true, thermostatOff: true }), NOW_MS);
+        expect(step.opening?.notifiedAt).toBeUndefined();
+      });
+    });
+    describe("With window handling disabled and an ended opening that had passed its limit", () => {
+      it("does not report dismissed", () => {
+        const opening = byContacts(NOW_MS - 3 * HOUR_MS, {
+          limitAt: NOW_MS - HOUR_MS,
+          endedAt: NOW_MS - MINUTE_MS,
+        });
+        const step = windowStep(
+          opening,
+          input({ settings: settingsWith({ enabled: false }) }),
+          NOW_MS,
+        );
+        expect(step.dismissed).toBe(false);
       });
     });
   });

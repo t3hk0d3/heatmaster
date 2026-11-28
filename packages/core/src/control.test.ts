@@ -49,7 +49,7 @@ import { EMPTY_LEDGER, FRESH_STORED, memberships, withRecord } from "./ledger.ts
 import type { ConfigState, Ledger, Membership, ValveRecord } from "./ledger.ts";
 import { EMPTY_MEMORY, START_TOKENS, mark, newValveMemory } from "./memory.ts";
 import type { ValveMemory } from "./memory.ts";
-import { DEFAULT_SETTINGS } from "./model.ts";
+import { DEFAULT_SETTINGS, DEFAULT_WINDOW_SETTINGS } from "./model.ts";
 import type { Config, Room, RoomEntry, SensorRef, SetPoint, WindowSettings } from "./model.ts";
 import { newState } from "./observation.ts";
 import type { DeviceState } from "./observation.ts";
@@ -4261,6 +4261,7 @@ describe("control", () => {
           openContacts: [CONTACT],
           since: nowOf(world) - 31 * SECOND_MS,
           holdsValves: true,
+          notes: [],
         });
       });
       it("reports heating false", () => {
@@ -4313,11 +4314,25 @@ describe("control", () => {
     });
 
     describe("With action off", () => {
+      const base = windowWorld({ action: "off" });
+      const result = tick(withContact(base, contactAt(base, true, 31 * SECOND_MS)));
       it("publishes off to the valves", () => {
-        const base = windowWorld({ action: "off" });
-        const result = tick(withContact(base, contactAt(base, true, 31 * SECOND_MS)));
         expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "off" }]);
         expect(publishes(valveEffects(result, V2))).toEqual([{ system_mode: "off" }]);
+      });
+      it("notes on the window that a knob does nothing", () => {
+        expect(result.rooms.get(BUILDER_ROOM)?.window?.notes).toEqual(["knob_does_nothing"]);
+      });
+    });
+
+    describe("With action off and the thermostat off", () => {
+      it("notes nothing on the window (it does not hold the valves)", () => {
+        const base = windowWorld({ action: "off" });
+        const world = withContact(
+          withThermostat(base, overrideAt(base, HOUR_MS, { kind: "off" })),
+          contactAt(base, true, 31 * SECOND_MS),
+        );
+        expect(tick(world).rooms.get(BUILDER_ROOM)?.window?.notes).toEqual([]);
       });
     });
 
@@ -4516,6 +4531,21 @@ describe("control", () => {
         const result = tick({ ...world, thermostats: save.state });
         expect(publishes(valveEffects(result, V))).toEqual([{ system_mode: "heat", setpoint: 7 }]);
       });
+      it("notes on the window that the valves wait for it to close", () => {
+        const result = tick({ ...world, thermostats: save.state });
+        expect(result.rooms.get(BUILDER_ROOM)?.window?.notes).toEqual(["command_waits"]);
+      });
+    });
+
+    describe("With an override made before the opening under ignore", () => {
+      it("notes nothing on the window", () => {
+        const base = openingWorld(10 * MINUTE_MS, { manualChange: "ignore" });
+        const override = overrideAt(base, HOUR_MS, {
+          origin: { source: "api", valveId: undefined },
+        });
+        const result = tick(withThermostat(base, override));
+        expect(result.rooms.get(BUILDER_ROOM)?.window?.notes).toEqual([]);
+      });
     });
 
     describe("With an opening reaching its 2 h limit and afterLimit heat", () => {
@@ -4595,6 +4625,36 @@ describe("control", () => {
       });
     });
 
+    describe("With a restart during an opening and its contact unknown since the restart", () => {
+      const base = openWorld();
+      const saved = base.thermostats?.windows.get(BUILDER_ROOM);
+      const unknown: ContactReading = {
+        open: undefined,
+        changedAt: nowOf(base),
+        lastOpen: undefined,
+        lastAt: undefined,
+      };
+      const world = restarted(withContact(base, unknown));
+      const results: TickResult[] = [];
+      let current = world;
+      for (let i = 0; i < 3; i++) {
+        const result = tick(current);
+        results.push(result);
+        current = next(current, result, 10 * MINUTE_MS);
+      }
+      it("keeps the opening", () => {
+        for (const result of results) expect(openingAfter(result)).toEqual(saved);
+      });
+      it("keeps holding the valves", () => {
+        for (const result of results) {
+          expect(result.rooms.get(BUILDER_ROOM)?.window?.holdsValves).toBe(true);
+        }
+      });
+      it("raises no contact_unavailable before 30 min", () => {
+        for (const result of results) expect(problemsOf(result, "contact_unavailable")).toEqual([]);
+      });
+    });
+
     describe("With a restart during an opening and contacts closed for a minute", () => {
       it("ends the opening", () => {
         const base = openWorld();
@@ -4616,6 +4676,69 @@ describe("control", () => {
       it("sets limitAt at the limit", () => {
         const late = frozen({ ...openWorld(2 * HOUR_MS), contacts: new Map() });
         expect(openingAfter(tick(late))?.limitAt).toBe(nowOf(late));
+      });
+    });
+
+    describe("With the HA link down during a temperature opening past its fixed time", () => {
+      it("ends the opening", () => {
+        const base = pairWorld([SENSOR]);
+        const opening = makeOpening({
+          startedAt: nowOf(base) - 31 * MINUTE_MS,
+          temperatureSince: nowOf(base) - 31 * MINUTE_MS,
+        });
+        const world = frozen({ ...withOpening(base, opening), contacts: new Map() });
+        expect(openingAfter(tick(world))?.endedAt).toBe(nowOf(world));
+      });
+    });
+
+    describe("With rejoin 0, the temperature fallen during an opening, and its contact closing", () => {
+      // The sensor fell from 20 to 19.4 while the window was open; the contact closed 61 s ago.
+      const settings: Partial<WindowSettings> = {
+        temperature: { ...DEFAULT_WINDOW_SETTINGS.temperature, rejoinMs: 0 },
+      };
+      const base = withWindow(pairWorld([SENSOR]), settings);
+      const startedAt = nowOf(base) - 10 * MINUTE_MS;
+      const trails = new Map([
+        [
+          SENSOR_ID,
+          [
+            { value: 20, at: nowOf(base) - 15 * MINUTE_MS },
+            { value: 19.4, at: nowOf(base) - 5 * MINUTE_MS },
+          ],
+        ],
+      ]);
+      const world = withOpening(
+        withSensor(
+          withContact(
+            { ...base, memory: { ...base.memory, trails } },
+            contactAt(base, false, 61 * SECOND_MS),
+          ),
+          reading(19.4, 5 * MINUTE_MS, nowOf(base)),
+        ),
+        makeOpening({ startedAt }),
+      );
+      const openings: (WindowOpening | undefined)[] = [];
+      let current = world;
+      for (let i = 0; i < 5; i++) {
+        const result = tick(current);
+        openings.push(openingAfter(result));
+        current = next(current, result, 3 * SECOND_MS);
+      }
+      it("ends the opening", () => {
+        expect(openings[0]?.endedAt).toBe(nowOf(world));
+      });
+      it("starts no new opening in the ticks after", () => {
+        for (const opening of openings) {
+          expect(opening).toMatchObject({ startedAt, endedAt: nowOf(world) });
+        }
+      });
+    });
+
+    describe("With window handling disabled and a contact unavailable for 31 min", () => {
+      it("raises no contact_unavailable", () => {
+        const base = windowWorld({ enabled: false });
+        const result = tick(withContact(base, contactAt(base, undefined, 31 * MINUTE_MS)));
+        expect(problemsOf(result, "contact_unavailable")).toEqual([]);
       });
     });
 

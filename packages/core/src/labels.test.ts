@@ -1490,6 +1490,41 @@ describe("labels", () => {
       });
     });
 
+    describe("With a contact listed in two rooms and not labelled", () => {
+      const plan = mirrorLabels(
+        configOf({ office: withContact(), hall: withContact() }),
+        ROOMS,
+        labelled([]),
+      );
+      it("plans one labelEntity adding heatmaster_window_sensor", () => {
+        expect(plan.ops.filter((op) => op.kind === "labelEntity")).toEqual([
+          { kind: "labelEntity", entityId: WINDOW, add: [WINDOW_SENSOR_LABEL], remove: [] },
+        ]);
+      });
+    });
+
+    describe("With a contact listed in two rooms and labelled", () => {
+      it("plans no op for it", () => {
+        const plan = mirrorLabels(
+          configOf({ office: withContact(), hall: withContact() }),
+          ROOMS,
+          labelled([WINDOW_SENSOR_LABEL]),
+        );
+        expect(naming(plan.ops, WINDOW)).toEqual([]);
+      });
+    });
+
+    describe("With a contact listed in two rooms that Home Assistant has no entry for", () => {
+      it("lists it as unlabellable once", () => {
+        const plan = mirrorLabels(
+          configOf({ office: withContact(), hall: withContact() }),
+          ROOMS,
+          makeSnapshot({ labels: labelsWith() }),
+        );
+        expect(plan.unlabellable).toEqual([WINDOW]);
+      });
+    });
+
     describe("With a configured contact Home Assistant has no entry for", () => {
       it("lists it as unlabellable", () => {
         const plan = mirrorLabels(
@@ -1552,6 +1587,41 @@ describe("labels", () => {
       });
       it("records an item contact_removed", () => {
         expect(required(edit).items).toEqual([item("contact_removed")]);
+      });
+    });
+
+    describe("With the label removed from a contact listed in two rooms", () => {
+      const listed = { ...entry(undefined), contacts: [{ ref: `ha:${WINDOW}` }] };
+      const edit = edits(
+        sceneOf(WINDOW, [WINDOW_SENSOR_LABEL]),
+        sceneOf(WINDOW, []),
+        { office: listed, hall: listed },
+        new Map(),
+        contacts,
+      );
+      it("removes it from both entries", () => {
+        expect(required(edit).config.rooms.get("office")?.contacts).toEqual([]);
+        expect(required(edit).config.rooms.get("hall")?.contacts).toEqual([]);
+      });
+      it("records an item contact_removed for each room", () => {
+        expect(required(edit).items).toEqual([
+          { ...item("contact_removed"), areaId: "office" },
+          { ...item("contact_removed"), areaId: "hall" },
+        ]);
+      });
+    });
+
+    describe("With the label added to a contact another room already lists", () => {
+      it("changes nothing (the label is the mirror's own)", () => {
+        expect(
+          edits(
+            sceneOf(WINDOW, []),
+            sceneOf(WINDOW, [WINDOW_SENSOR_LABEL]),
+            { hall: { ...entry(undefined), contacts: [{ ref: `ha:${WINDOW}` }] } },
+            new Map(),
+            contacts,
+          ),
+        ).toBeUndefined();
       });
     });
 

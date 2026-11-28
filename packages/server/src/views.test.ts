@@ -199,6 +199,7 @@ describe("views", () => {
           openContacts: ["ha:binary_sensor.window"],
           since: 5000,
           holdsValves: true,
+          notes: [],
         } as const;
         const view = viewOf({
           rooms: [

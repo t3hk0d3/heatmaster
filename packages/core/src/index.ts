@@ -260,6 +260,7 @@ export type {
   SubjectKind,
   SyncState,
   ValveStatus,
+  WindowNote,
   WindowStatus,
 } from "./status.ts";
 export {

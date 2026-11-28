@@ -78,6 +78,13 @@ export type ValveStatus = Readonly<{
 }>;
 
 /**
+ * What the status adds about an opening that holds the valves: `knob_does_nothing` under
+ * `action: off` (a TRVZB's knob is dead in `off`); `command_waits` under `ignore` after a room
+ * command made an override during the opening (the valves keep the window's action until it ends).
+ */
+export type WindowNote = "knob_does_nothing" | "command_waits";
+
+/**
  * A room's active opening (plan 3b). `state` is `dropped` while a valve change dropped under
  * `ignore` settles (`THERMOSTAT_SETTLE_MS`), else `limit_reached` once past its limit, else
  * `suspended` after a person's change, else `open`. `openContacts` are the contacts counted open,
@@ -89,6 +96,7 @@ export type WindowStatus = Readonly<{
   openContacts: readonly string[];
   since: number;
   holdsValves: boolean;
+  notes: readonly WindowNote[];
 }>;
 
 /**

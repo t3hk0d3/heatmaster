@@ -1,7 +1,8 @@
 import { sensorId } from "./model.ts";
-import type { Room } from "./model.ts";
+import type { Room, WindowSettings } from "./model.ts";
 import { problemContactUnavailable, problemWindowOpenTooLong } from "./status.ts";
-import type { Problem, WindowStatus } from "./status.ts";
+import type { Problem, WindowNote, WindowStatus } from "./status.ts";
+import type { Thermostat } from "./thermostat.ts";
 import { THERMOSTAT_SETTLE_MS } from "./thermostat-rules.ts";
 import { contactVerdict, dropDetected, stillFor } from "./window.ts";
 import type {
@@ -96,11 +97,38 @@ export function windowDropSettles(opening: WindowOpening | undefined, nowMs: num
   return age >= 0 && age < THERMOSTAT_SETTLE_MS;
 }
 
+/**
+ * The notes on an opening that holds the valves: `knob_does_nothing` under `action: off`;
+ * `command_waits` under `ignore` while the thermostat is an override a room command made since
+ * the opening started (W6 leaves no other trace of the command).
+ */
+function windowNotes(
+  opening: WindowOpening,
+  holdsValves: boolean,
+  settings: WindowSettings,
+  thermostat: Thermostat | undefined,
+): readonly WindowNote[] {
+  if (!holdsValves) return [];
+  const notes: WindowNote[] = [];
+  if (settings.action === "off") notes.push("knob_does_nothing");
+  if (
+    settings.manualChange === "ignore" &&
+    thermostat?.kind === "override" &&
+    thermostat.origin.source !== "valve" &&
+    thermostat.since >= opening.startedAt
+  ) {
+    notes.push("command_waits");
+  }
+  return notes;
+}
+
 /** The status of the room's active opening; undefined when it has none. */
 export function windowStatus(
   opening: WindowOpening | undefined,
   contacts: ContactVerdict | undefined,
   holdsValves: boolean,
+  settings: WindowSettings,
+  thermostat: Thermostat | undefined,
   nowMs: number,
 ): WindowStatus | undefined {
   if (opening === undefined || opening.endedAt !== undefined) return undefined;
@@ -120,20 +148,23 @@ export function windowStatus(
     openContacts: contacts?.open ?? [],
     since: opening.startedAt,
     holdsValves,
+    notes: windowNotes(opening, holdsValves, settings, thermostat),
   };
 }
 
 /**
  * `contact_unavailable` for each contact counted closed for being unavailable too long, and
  * `window_open_too_long` while the opening is past its limit and has not ended, unless the room
- * is off (nothing heats).
+ * is off (nothing heats). None while the room's window handling is off.
  */
 export function windowProblems(
   roomId: string,
+  settings: WindowSettings,
   contacts: ContactVerdict | undefined,
   opening: WindowOpening | undefined,
   thermostatOff: boolean,
 ): readonly Problem[] {
+  if (!settings.enabled) return [];
   const problems = (contacts?.unavailable ?? []).map(problemContactUnavailable);
   if (opening?.limitAt !== undefined && opening.endedAt === undefined && !thermostatOff) {
     problems.push(problemWindowOpenTooLong(roomId));

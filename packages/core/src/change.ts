@@ -127,7 +127,7 @@ function checkContacts(
   const fresh = entryContacts(config).filter((contact) => !known.has(contactId(contact)));
   for (const contact of fresh) {
     const id = contactId(contact);
-    if (!haLinked) throw new ChangeRefused("ha_link_missing", { sensor: id });
+    if (!haLinked) throw new ChangeRefused("ha_link_missing", { contact: id });
     const info = contacts.get(id.slice(CONTACT_PREFIX.length));
     if (info?.exists !== true) throw new ChangeRefused("contact_unknown", { contact: id });
     if (!info.isBinary) throw new ChangeRefused("contact_not_binary", { contact: id });

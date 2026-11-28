@@ -104,7 +104,11 @@ function judgeContact(
     reading.changedAt !== undefined &&
     nowMs - reading.changedAt < settings.contactUnavailableMs
   ) {
-    open = reading.lastOpen ?? false;
+    // Unknown since a restart with no state seen before: neither open nor closed yet (FR-unknown).
+    if (reading.lastOpen === undefined) {
+      return { countsOpen: false, countsClosed: false, since: undefined, gone: false };
+    }
+    open = reading.lastOpen;
     since = reading.lastAt;
   } else {
     // Unavailable too long, or never seen: closed. A contact last seen open counts closed from
@@ -123,7 +127,9 @@ function judgeContact(
 
 /**
  * The room's contacts after debounce: `open` when any counts open, `closed` when every one counts
- * closed (or none is listed), else `settling`. A contact with no reading counts closed.
+ * closed (or none is listed), else `settling`. A contact with no reading counts closed. One that
+ * is unavailable or unknown with no open or closed state seen counts neither until
+ * `contactUnavailableMs` after its change, then closed and unavailable.
  */
 export function contactVerdict(
   contacts: readonly ContactRef[],
@@ -261,6 +267,20 @@ function newOpening(startedAt: number, temperatureSince: number | undefined): Wi
   };
 }
 
+/**
+ * An ended opening continued by a new drop (FR-rejoin-flags): the person's suspension is over, the
+ * limit stays reached, and a limit whose notice the end dismissed is reported again.
+ */
+function rejoined(opening: WindowOpening, nowMs: number): WindowOpening {
+  return {
+    ...opening,
+    endedAt: undefined,
+    temperatureSince: nowMs,
+    suspendedAt: undefined,
+    notifiedAt: opening.limitAt === undefined ? opening.notifiedAt : undefined,
+  };
+}
+
 /** Whether the temperature side of an active opening, held by a drop since `since`, ends now. */
 function temperatureEnds(
   opening: WindowOpening,
@@ -283,10 +303,11 @@ function temperatureEnds(
 /**
  * One tick of a room's opening. It starts on open contacts (at their `openSince`) or a drop, ends
  * when neither contacts nor a drop hold it, rejoins on a new drop within `rejoinMs` of a
- * temperature end, and is dropped `rejoinMs` after it ended or when window handling is off. It
- * is suspended by a person's change under `resume_heating` (W6), and, unless suspended, reaches
- * its limit `limitMs` after it started (T6-Q1). While the house is frozen nothing starts, and contacts and temperature
- * end nothing but the fixed end (W13).
+ * temperature end, and is dropped once the longest of `rejoinMs`, `withinMs` and `stillMs` has
+ * passed since it ended (its end keeps older readings from the drop rule until then), or when
+ * window handling is off. It is suspended by a person's change under `resume_heating` (W6), and,
+ * unless suspended, reaches its limit `limitMs` after it started (T6-Q1). While the house is
+ * frozen nothing starts, and contacts and temperature end nothing but the fixed end (W13).
  */
 export function windowStep(
   opening: WindowOpening | undefined,
@@ -300,21 +321,28 @@ export function windowStep(
       holds: false,
       holdsValves: false,
       limitReached: false,
-      dismissed: opening?.limitAt !== undefined,
+      dismissed: opening?.limitAt !== undefined && opening.endedAt === undefined,
     };
   }
 
+  const detection = settings.temperature;
   let o = opening;
-  if (o?.endedAt !== undefined && nowMs - o.endedAt > settings.temperature.rejoinMs) o = undefined;
+  // An ended opening is kept while its end still bars older readings from the drop rule (FR-rejoin).
+  const keepMs = Math.max(detection.rejoinMs, detection.withinMs, detection.stillMs);
+  if (o?.endedAt !== undefined && nowMs - o.endedAt > keepMs) o = undefined;
 
   const startByContacts = !frozen && contacts?.state === "open";
-  const startByDrop = !frozen && settings.temperature.enabled && input.drop;
+  const startByDrop = !frozen && detection.enabled && input.drop;
   if ((o === undefined || o.endedAt !== undefined) && (startByContacts || startByDrop)) {
     const rejoin =
-      o !== undefined && startByDrop && !startByContacts && o.temperatureEndedAt !== undefined;
+      o?.endedAt !== undefined &&
+      nowMs - o.endedAt <= detection.rejoinMs &&
+      startByDrop &&
+      !startByContacts &&
+      o.temperatureEndedAt !== undefined;
     o =
       o !== undefined && rejoin
-        ? { ...o, endedAt: undefined, temperatureSince: nowMs }
+        ? rejoined(o, nowMs)
         : newOpening(
             startByContacts ? (contacts.openSince ?? nowMs) : nowMs,
             startByDrop ? nowMs : undefined,

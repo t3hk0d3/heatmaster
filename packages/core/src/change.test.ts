@@ -560,6 +560,16 @@ describe("change", () => {
       });
     });
 
+    describe("With a config listing a new contact and haLinked false", () => {
+      it("refuses with ha_link_missing, naming the contact", () => {
+        const world = first(devicesOf({ [V1]: observedView() }));
+        const raw = doc({ living: { contacts: [{ ref: "ha:binary_sensor.window" }] } });
+        const refused = refusal(() => plan(world, raw, { haLinked: false }));
+        expect(refused.code).toBe("ha_link_missing");
+        expect(refused.data).toEqual({ contact: "ha:binary_sensor.window" });
+      });
+    });
+
     describe("With a config listing a contact that is not a binary_sensor", () => {
       it("refuses with contact_not_binary", () => {
         const world = first(devicesOf({ [V1]: observedView() }));

@@ -18,7 +18,7 @@ import type {
 } from "./model.ts";
 import type { Liveness } from "./observation.ts";
 import type { Evidence, SettingKey, ValveMode } from "./settings.ts";
-import type { ProblemKind, Severity, Subject, SyncState } from "./status.ts";
+import type { ProblemKind, Severity, Subject, SyncState, WindowNote } from "./status.ts";
 
 /** `message` is English, for logs and `curl`. The web page shows its own text for the `code`. */
 export type ApiError = Readonly<{
@@ -47,7 +47,8 @@ export type ThermostatView = Readonly<{
 
 /**
  * A room's active opening: `since` is epoch milliseconds, `openContacts` are contact refs
- * (`ha:<entity id>`), `holdsValves` says whether its valves are held at the window's action.
+ * (`ha:<entity id>`), `holdsValves` says whether its valves are held at the window's action,
+ * `notes` what the status adds while they are.
  */
 export type WindowView = Readonly<{
   state: "open" | "suspended" | "limit_reached" | "dropped";
@@ -55,6 +56,7 @@ export type WindowView = Readonly<{
   openContacts: readonly string[];
   since: number;
   holdsValves: boolean;
+  notes: readonly WindowNote[];
 }>;
 
 /** A room's merged window settings as JSON: durations in milliseconds, `limitMs` null for none. */

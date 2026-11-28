@@ -198,6 +198,7 @@ describe("status", () => {
         openContacts: ["ha:binary_sensor.window"],
         since: NOW.epochMilliseconds,
         holdsValves: true,
+        notes: [],
       };
       const held = roomStatus(
         ROOM,

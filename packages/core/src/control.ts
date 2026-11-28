@@ -692,7 +692,13 @@ function roomProblems(plan: RoomPlan, world: World): readonly Problem[] {
   }
   const { sense, opening } = plan.window;
   problems.push(
-    ...windowProblems(plan.room.id, sense.contacts, opening, plan.thermostat?.kind === "off"),
+    ...windowProblems(
+      plan.room.id,
+      sense.settings,
+      sense.contacts,
+      opening,
+      plan.thermostat?.kind === "off",
+    ),
   );
   return problems;
 }
@@ -1553,6 +1559,8 @@ function control(world: World, clamped: boolean, pending: readonly Pending[]): T
           plan.window.opening,
           plan.window.sense.contacts,
           plan.window.holdsValves,
+          plan.window.sense.settings,
+          plan.thermostat,
           nowMs,
         ),
       ),

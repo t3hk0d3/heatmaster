@@ -650,6 +650,7 @@ describe("discovery", () => {
       openContacts: ["ha:binary_sensor.w"],
       since: Date.UTC(2026, 10, 27, 10, 0, 0),
       holdsValves: true,
+      notes: [],
     };
     describe("With an opening holding the valves", () => {
       const state = payload({
