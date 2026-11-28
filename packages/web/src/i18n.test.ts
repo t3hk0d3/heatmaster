@@ -162,6 +162,9 @@ describe("i18n", () => {
           "room.window.stay_bare",
           "room.window.suspended",
           "room.window.dropped",
+          "room.window.note.knob_does_nothing",
+          "room.window.note.command_waits",
+          "error.ha_link_missing.contact",
           "room.window.hours",
           "room.window.minutes",
           "room.end.next_change",
@@ -223,6 +226,12 @@ describe("i18n", () => {
         ] as const) {
           expect(DICTIONARIES.ru[key], key).toContain("зафиксирован");
           expect(DICTIONARIES.ru[key], key).not.toContain("заморож");
+        }
+      });
+      it("says what follows the window limit with спустя, never через", () => {
+        for (const key of ["room.window.heat", "room.window.stay"] as const) {
+          expect(DICTIONARIES.ru[key], key).toContain("спустя {limit}");
+          expect(DICTIONARIES.ru[key], key).not.toContain("через");
         }
       });
       it("uses the grammatical forms the review asked for", () => {

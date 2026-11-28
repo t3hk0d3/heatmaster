@@ -716,6 +716,7 @@ describe("render", () => {
               openContacts: ["ha:Bedroom window"],
               since: at,
               holdsValves: true,
+              notes: [],
             },
           }),
         ).toMatch(/^Window open since 10:02\D*\(Bedroom window\)$/);
@@ -731,6 +732,7 @@ describe("render", () => {
               openContacts: [],
               since: at,
               holdsValves: true,
+              notes: [],
             },
           }),
         ).toMatch(/^Window: temperature falling since 10:02/);
@@ -746,6 +748,7 @@ describe("render", () => {
               openContacts: [],
               since: at,
               holdsValves: false,
+              notes: [],
             },
           }),
         ).toContain("heating on by request");
@@ -762,6 +765,7 @@ describe("render", () => {
               openContacts: [],
               since: at,
               holdsValves: false,
+              notes: [],
             },
           }),
         ).toBe("Window open, heating resumed after 2 h");
@@ -778,9 +782,42 @@ describe("render", () => {
               openContacts: [],
               since: at,
               holdsValves: true,
+              notes: [],
             },
           }),
         ).toBe("Window open, freeze protection kept after 30 min");
+      });
+    });
+    describe("With action off and the window holding the valves", () => {
+      it("adds that a TRVZB's knob does nothing", () => {
+        expect(
+          lineOf({
+            window: {
+              state: "open",
+              triggers: ["temperature"],
+              openContacts: [],
+              since: at,
+              holdsValves: true,
+              notes: ["knob_does_nothing"],
+            },
+          }),
+        ).toMatch(/^Window: temperature falling since 10:02\D*\. .*knob does nothing/);
+      });
+    });
+    describe("With a room command waiting for the window under ignore", () => {
+      it("adds that the valves stay in open-window mode until the window closes", () => {
+        expect(
+          lineOf({
+            window: {
+              state: "open",
+              triggers: ["contact"],
+              openContacts: [],
+              since: at,
+              holdsValves: true,
+              notes: ["command_waits"],
+            },
+          }),
+        ).toContain(en["room.window.note.command_waits"]);
       });
     });
     describe("With a dropped change", () => {
@@ -793,6 +830,7 @@ describe("render", () => {
               openContacts: [],
               since: at,
               holdsValves: true,
+              notes: [],
             },
           }),
         ).toContain("the change at the valve was dropped");
@@ -1184,6 +1222,7 @@ describe("render", () => {
         const sent: Record<string, Record<string, string>> = {
           revision_conflict: { expected: "1", current: "2" },
           ha_link_missing: { sensor: "s" },
+          "ha_link_missing.contact": { contact: "c" },
           sensor_unknown: { sensor: "s" },
           sensor_not_temperature: { sensor: "s" },
           sensor_on_valve: { sensor: "s" },
@@ -1222,6 +1261,19 @@ describe("render", () => {
         expect(text(renderError(error, t))).toContain(
           "you edited revision 3, the server has revision 4",
         );
+      });
+    });
+    describe("With ha_link_missing for a contact", () => {
+      it("names the window contact, in en and ru", () => {
+        const error = apiError("ha_link_missing", { contact: "ha:binary_sensor.w" });
+        for (const language of ["en", "ru"] as const) {
+          expect(text(renderError(error, translator(language)))).toBe(
+            DICTIONARIES[language]["error.ha_link_missing.contact"].replace(
+              "{contact}",
+              "ha:binary_sensor.w",
+            ),
+          );
+        }
       });
     });
     describe("With a code http_<n>", () => {

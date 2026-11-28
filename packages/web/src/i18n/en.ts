@@ -13,6 +13,7 @@ import type {
   SyncState,
   UnplacedReason,
   ValveMode,
+  WindowNote,
 } from "@heatmaster/core";
 
 /** Why a contact carries the Heatmaster label but is used by no room (`problemContactLabelUnused`). */
@@ -56,7 +57,8 @@ type CodedKey =
   | `mode.${ValveMode}`
   | `severity.${Severity}`
   | `setting.${SettingKey}`
-  | `evidence.${Evidence}`;
+  | `evidence.${Evidence}`
+  | `room.window.note.${WindowNote}`;
 
 type ErrorCode =
   | ChangeRefusedCode
@@ -151,6 +153,10 @@ export const en = {
   "room.window.stay_bare": "Window open, freeze protection kept after the time limit",
   "room.window.suspended": "Window open, heating on by request",
   "room.window.dropped": "Window open: the change at the valve was dropped",
+  "room.window.note.knob_does_nothing":
+    "The valves are off for the window, and a TRVZB's knob does nothing while it is off",
+  "room.window.note.command_waits":
+    "The room's change is kept, and its valves stay in open-window mode until the window closes",
   "room.window.hours": "{n} h",
   "room.window.minutes": "{n} min",
   "room.state.origin": "Changed on {origin}",
@@ -426,6 +432,8 @@ export const en = {
   "error.timezone_missing":
     "The time zone is not known. Set timezone in the settings of the configuration: there is no Home Assistant link to give the house's time zone.",
   "error.ha_link_missing": "Sensor {sensor} needs the Home Assistant link, and none is set up.",
+  "error.ha_link_missing.contact":
+    "Window contact {contact} needs the Home Assistant link, and none is set up.",
   "error.sensor_unknown": "Sensor {sensor} does not exist in Home Assistant.",
   "error.sensor_not_temperature": "{sensor} is not a temperature sensor.",
   "error.sensor_on_valve": "{sensor} belongs to a valve and cannot be a room sensor.",

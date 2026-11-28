@@ -55,12 +55,16 @@ export const ru: Dictionary = {
   "room.window.open": "Окно открыто с {since}",
   "room.window.open_contacts": "Окно открыто с {since} ({contacts})",
   "room.window.open_temperature": "Окно: температура падает с {since}",
-  "room.window.heat": "Окно открыто, отопление включено снова через {limit}",
-  "room.window.stay": "Окно открыто, защита от замерзания сохранена через {limit}",
+  "room.window.heat": "Окно открыто, отопление включено снова спустя {limit}",
+  "room.window.stay": "Окно открыто, защита от замерзания сохранена спустя {limit}",
   "room.window.heat_bare": "Окно открыто, отопление включено снова по истечении времени",
   "room.window.stay_bare": "Окно открыто, защита от замерзания сохранена по истечении времени",
   "room.window.suspended": "Окно открыто, отопление включено по запросу",
   "room.window.dropped": "Окно открыто: изменение на клапане отменено",
+  "room.window.note.knob_does_nothing":
+    "Клапаны выключены из-за окна, а ручка TRVZB в выключенном режиме ничего не делает",
+  "room.window.note.command_waits":
+    "Изменение для комнаты сохранено, но клапаны остаются в режиме открытого окна, пока окно не закроется",
   "room.window.hours": "{n} ч",
   "room.window.minutes": "{n} мин",
   "room.state.origin": "Изменено: {origin}",
@@ -337,6 +341,8 @@ export const ru: Dictionary = {
   "error.timezone_missing":
     "Часовой пояс неизвестен. Укажите timezone в настройках конфигурации: связи с Home Assistant нет, и он не сообщит часовой пояс дома.",
   "error.ha_link_missing": "Для датчика {sensor} нужна связь с Home Assistant, а она не настроена.",
+  "error.ha_link_missing.contact":
+    "Для датчика окна {contact} нужна связь с Home Assistant, а она не настроена.",
   "error.sensor_unknown": "Датчика {sensor} нет в Home Assistant.",
   "error.sensor_not_temperature": "{sensor} не является датчиком температуры.",
   "error.sensor_on_valve": "{sensor} принадлежит клапану и не может быть датчиком комнаты.",

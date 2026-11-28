@@ -290,7 +290,8 @@ function renderRoomWindow(
   } else {
     line = t("room.window.dropped");
   }
-  return textElement("p", line, { class: "room-window" });
+  const notes = window.notes.map((note) => t(`room.window.note.${note}`));
+  return textElement("p", [line, ...notes].join(". "), { class: "room-window" });
 }
 
 function renderRoomState(
@@ -754,10 +755,17 @@ function issueLines(error: ApiError): readonly string[] {
   });
 }
 
+/** An error's text key: `error.<code>.contact` when the error names a contact and has one. */
+function errorKey(error: ApiError): string {
+  const key = `error.${error.code}`;
+  const variant = `${key}.contact`;
+  return typeof error.data.contact === "string" && isTextKey(variant) ? variant : key;
+}
+
 function errorText(error: ApiError, t: Translate): string {
   const httpStatus = /^http_(\d+)$/.exec(error.code)?.[1];
   if (httpStatus !== undefined) return t("error.http", { status: Number(httpStatus) });
-  const key = `error.${error.code}`;
+  const key = errorKey(error);
   if (isTextKey(key)) return t(key, errorParams(error.data, t));
   return error.message === "" ? error.code : error.message;
 }
